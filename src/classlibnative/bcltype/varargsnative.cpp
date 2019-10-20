@@ -87,8 +87,8 @@ static void InitCommon(VARARGS *data, VASigCookie** cookie)
     //  STACK_GROWS_DOWN_ON_ARGS_WALK
 
     //   <return address>  ;; lower memory                  
-    //   <varargs_cookie>         \
-    //   <argN>                    \
+    //   <varargs_cookie>         '\'
+    //   <argN>                    '\'
     //                              += sizeOfArgs     
     //                             /
     //   <arg1>                   /
@@ -530,7 +530,7 @@ TryAgain:
         case ELEMENT_TYPE_U8:
         case ELEMENT_TYPE_R8:
         value->type = MscorlibBinder::GetElementType(elemType);
-#if !defined(_WIN64) && (DATA_ALIGNMENT > 4)
+#if !defined(BIT64) && (DATA_ALIGNMENT > 4)
         if ( fData && origArgPtr == value->data ) {
             // allocate an aligned copy of the value
             value->data = value->type.GetMethodTable()->Box(origArgPtr, FALSE)->UnBox();

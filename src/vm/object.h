@@ -35,9 +35,10 @@ void ErectWriteBarrierForMT(MethodTable **dst, MethodTable *ref);
  *  |                        sync block index, which is at a negative offset
  *  |
  *  +-- code:StringObject       - String objects are specialized objects for string
- *  |                        storage/retrieval for higher performance
+ *  |                        storage/retrieval for higher performance (UCS-2 / UTF-16 data)
  *  |
- *  +-- code:StringBufferObject - StringBuffer instance layout.  
+ *  +-- code:Utf8StringObject       - String objects are specialized objects for string
+ *  |                        storage/retrieval for higher performance (UTF-8 data)
  *  |
  *  +-- BaseObjectWithCachedData - Object Plus one object field for caching.
  *  |       |
@@ -53,11 +54,7 @@ void ErectWriteBarrierForMT(MethodTable **dst, MethodTable *ref);
  *  |       |
  *  |       +-  PtrArray   - Array of OBJECTREFs, different than base arrays because of pObjectClass
  *  |              
- *  +-- code:AppDomainBaseObject - The base object for the class AppDomain
- *  |              
  *  +-- code:AssemblyBaseObject - The base object for the class Assembly
- *  |
- *  +-- code:ContextBaseObject   - base object for class Context
  *
  *
  * PLEASE NOTE THE FOLLOWING WHEN ADDING A NEW OBJECT TYPE:
@@ -88,8 +85,6 @@ class MethodTable;
 class Thread;
 class BaseDomain;
 class Assembly;
-class Context;
-class CtxStaticData;
 class DomainAssembly;
 class AssemblyNative;
 class WaitHandleNative;
@@ -97,82 +92,34 @@ class ArgDestination;
 
 struct RCW;
 
-#if CHECK_APP_DOMAIN_LEAKS
+#ifdef _TARGET_64BIT_
+#define OBJHEADER_SIZE      (sizeof(DWORD) /* m_alignpad */ + sizeof(DWORD) /* m_SyncBlockValue */)
+#else
+#define OBJHEADER_SIZE      sizeof(DWORD) /* m_SyncBlockValue */
+#endif
 
-class Object;
+#define OBJECT_SIZE         TARGET_POINTER_SIZE /* m_pMethTab */
+#define OBJECT_BASESIZE     (OBJHEADER_SIZE + OBJECT_SIZE)
 
-class SetAppDomainAgilePendingTable
-{
-public:
+#ifdef _TARGET_64BIT_
+#define ARRAYBASE_SIZE      (OBJECT_SIZE /* m_pMethTab */ + sizeof(DWORD) /* m_NumComponents */ + sizeof(DWORD) /* pad */)
+#else
+#define ARRAYBASE_SIZE      (OBJECT_SIZE /* m_pMethTab */ + sizeof(DWORD) /* m_NumComponents */)
+#endif
 
-    SetAppDomainAgilePendingTable ();
-    ~SetAppDomainAgilePendingTable ();
-
-    void PushReference (Object *pObject)
-    {
-        STATIC_CONTRACT_THROWS;
-        STATIC_CONTRACT_GC_NOTRIGGER;
-
-        PendingEntry entry;
-        entry.pObject = pObject;
-
-        m_Stack.Push(entry);
-    }
-
-    void PushParent (Object *pObject)
-    {
-        STATIC_CONTRACT_THROWS;
-        STATIC_CONTRACT_GC_NOTRIGGER;
-
-        PendingEntry entry;
-        entry.pObject = (Object*)((size_t)pObject | 1);
-
-        m_Stack.Push(entry);
-    }
-
-    Object *GetPendingObject (bool *pfReturnedToParent)
-    {
-        STATIC_CONTRACT_THROWS;
-        STATIC_CONTRACT_GC_NOTRIGGER;
-
-        if (!m_Stack.Count())
-            return NULL;
-
-        PendingEntry *pPending = m_Stack.Pop();
-
-        *pfReturnedToParent = pPending->fMarked != 0;
-        return (Object*)((size_t)pPending->pObject & ~1);
-    }
-
-private:
-
-    union PendingEntry
-    {
-        Object *pObject;
-
-        // Indicates whether the current thread set BIT_SBLK_AGILE_IN_PROGRESS
-        // on the object.  Entries without this flag set are unexplored
-        // objects.
-        size_t fMarked:1;
-    };
-
-    CStackArray<PendingEntry> m_Stack;
-};
-
-#endif //CHECK_APP_DOMAIN_LEAKS
-
+#define ARRAYBASE_BASESIZE  (OBJHEADER_SIZE + ARRAYBASE_SIZE)
 
 //
 // The generational GC requires that every object be at least 12 bytes
 // in size.   
 
-#define MIN_OBJECT_SIZE     (2*sizeof(BYTE*) + sizeof(ObjHeader))
+#define MIN_OBJECT_SIZE     (2*TARGET_POINTER_SIZE + OBJHEADER_SIZE)
 
 #define PTRALIGNCONST (DATA_ALIGNMENT-1)
 
 #ifndef PtrAlign
 #define PtrAlign(size) \
-    ((size + PTRALIGNCONST) & (~PTRALIGNCONST))
+    (((size) + PTRALIGNCONST) & (~PTRALIGNCONST))
 #endif //!PtrAlign
 
 // code:Object is the respesentation of an managed object on the GC heap.
@@ -207,28 +154,35 @@ class Object
         m_pMethTab = pMT;
     }
 
-    VOID SetMethodTable(MethodTable *pMT)
+    VOID SetMethodTable(MethodTable *pMT
+                        DEBUG_ARG(BOOL bAllowArray = FALSE))
     { 
         LIMITED_METHOD_CONTRACT;
         m_pMethTab = pMT; 
+
+#ifdef _DEBUG
+        if (!bAllowArray)
+        {
+            AssertNotArray();
+        }
+#endif // _DEBUG
     }
 
-    VOID SetMethodTableForLargeObject(MethodTable *pMT)
+    VOID SetMethodTableForLargeObject(MethodTable *pMT
+                                      DEBUG_ARG(BOOL bAllowArray = FALSE))
     {
         // This function must be used if the allocation occurs on the large object heap, and the method table might be a collectible type
         WRAPPER_NO_CONTRACT;
         ErectWriteBarrierForMT(&m_pMethTab, pMT);
-    }
- 
-#endif //!DACCESS_COMPILE
 
-    // An object might be a proxy of some sort, with a thunking VTable.  If so, we can
-    // advance to the true method table or class.
-    BOOL            IsTransparentProxy()                        
-    { 
-        LIMITED_METHOD_CONTRACT;
-        return FALSE;
+#ifdef _DEBUG
+        if (!bAllowArray)
+        {
+            AssertNotArray();
+        }
+#endif // _DEBUG
     }
+#endif //!DACCESS_COMPILE
 
 #define MARKED_BIT 0x1
 
@@ -256,8 +210,6 @@ class Object
         return dac_cast<DPTR(PTR_MethodTable)>(PTR_HOST_MEMBER_TADDR(Object, this, m_pMethTab));
     }
 
-    MethodTable    *GetTrueMethodTable();
-    
     TypeHandle      GetTypeHandle();
     TypeHandle      GetTrueTypeHandle();
 
@@ -313,131 +265,6 @@ class Object
         return GetHeader()->GetSyncBlockIndex();
     }
 
-    ADIndex GetAppDomainIndex();
-
-    // Get app domain of object, or NULL if it is agile
-    AppDomain *GetAppDomain();
-
-#ifndef DACCESS_COMPILE
-    // Set app domain of object to current domain.
-    void SetAppDomain() { WRAPPER_NO_CONTRACT; SetAppDomain(::GetAppDomain()); }
-    BOOL SetAppDomainNoThrow();
-    
-#endif
-
-    // Set app domain of object to given domain - it can only be set once
-    void SetAppDomain(AppDomain *pDomain);
-
-#ifdef _DEBUG
-#ifndef DACCESS_COMPILE
-    // For SO-tolerance contract violation purposes, define these DEBUG_ versions to identify
-    // the codepaths to SetAppDomain that are called only from DEBUG code.
-    void DEBUG_SetAppDomain()
-    {
-        WRAPPER_NO_CONTRACT;
-
-        DEBUG_SetAppDomain(::GetAppDomain());
-    }
-#endif //!DACCESS_COMPILE
-
-    void DEBUG_SetAppDomain(AppDomain *pDomain);
-#endif //_DEBUG
-    
-#if CHECK_APP_DOMAIN_LEAKS
-
-    // Mark object as app domain agile
-    BOOL SetAppDomainAgile(BOOL raiseAssert=TRUE, SetAppDomainAgilePendingTable *pTable = NULL);
-    BOOL TrySetAppDomainAgile(BOOL raiseAssert=TRUE);
-
-    // Mark sync block as app domain agile
-    void SetSyncBlockAppDomainAgile();
-
-    // Check if object is app domain agile
-    BOOL IsAppDomainAgile();
-
-    // Check if object is app domain agile
-    BOOL IsAppDomainAgileRaw()
-    {
-        WRAPPER_NO_CONTRACT;
-
-        SyncBlock *psb = PassiveGetSyncBlock();
-
-        return (psb && psb->IsAppDomainAgile());
-    }
-
-    BOOL IsCheckedForAppDomainAgile()
-    {
-        WRAPPER_NO_CONTRACT;
-
-        SyncBlock *psb = PassiveGetSyncBlock();
-        return (psb && psb->IsCheckedForAppDomainAgile());
-    }
-
-    void SetIsCheckedForAppDomainAgile()
-    {
-        WRAPPER_NO_CONTRACT;
-
-        SyncBlock *psb = PassiveGetSyncBlock();
-        if (psb)
-            psb->SetIsCheckedForAppDomainAgile();
-    }
-
-    // Check object to see if it is usable in the current domain 
-    BOOL CheckAppDomain() { WRAPPER_NO_CONTRACT; return CheckAppDomain(::GetAppDomain()); }
-
-    //Check object to see if it is usable in the given domain 
-    BOOL CheckAppDomain(AppDomain *pDomain);
-
-    // Check if the object's type is app domain agile
-    BOOL IsTypeAppDomainAgile();
-
-    // Check if the object's type is conditionally app domain agile
-    BOOL IsTypeCheckAppDomainAgile();
-
-    // Check if the object's type is naturally app domain agile
-    BOOL IsTypeTypesafeAppDomainAgile();
-
-    // Check if the object's type is possibly app domain agile
-    BOOL IsTypeNeverAppDomainAgile();
-
-    // Validate object & fields to see that it's usable from the current app domain
-    BOOL ValidateAppDomain() { WRAPPER_NO_CONTRACT; return ValidateAppDomain(::GetAppDomain()); }
-
-    // Validate object & fields to see that it's usable from any app domain
-    BOOL ValidateAppDomainAgile() { WRAPPER_NO_CONTRACT; return ValidateAppDomain(NULL); }
-
-    // Validate object & fields to see that it's usable from the given app domain (or null for agile)
-    BOOL ValidateAppDomain(AppDomain *pAppDomain);
-
-    // Validate fields to see that they are usable from the object's app domain 
-    // (or from any domain if the object is agile)
-    BOOL ValidateAppDomainFields() { WRAPPER_NO_CONTRACT; return ValidateAppDomainFields(GetAppDomain()); }
-
-    // Validate fields to see that they are usable from the given app domain (or null for agile)
-    BOOL ValidateAppDomainFields(AppDomain *pAppDomain);
-
-    // Validate a value type's fields to see that it's usable from the current app domain
-    static BOOL ValidateValueTypeAppDomain(MethodTable *pMT, void *base, BOOL raiseAssert = TRUE) 
-      { WRAPPER_NO_CONTRACT; return ValidateValueTypeAppDomain(pMT, base, ::GetAppDomain(), raiseAssert); }
-
-    // Validate a value type's fields to see that it's usable from any app domain
-    static BOOL ValidateValueTypeAppDomainAgile(MethodTable *pMT, void *base, BOOL raiseAssert = TRUE) 
-      { WRAPPER_NO_CONTRACT; return ValidateValueTypeAppDomain(pMT, base, NULL, raiseAssert); }
-
-    // Validate a value type's fields to see that it's usable from the given app domain (or null for agile)
-    static BOOL ValidateValueTypeAppDomain(MethodTable *pMT, void *base, AppDomain *pAppDomain, BOOL raiseAssert = TRUE);
-
-    // Call when we are assigning this object to a dangerous field 
-    // in an object in a given app domain (or agile if null)
-    BOOL AssignAppDomain(AppDomain *pAppDomain, BOOL raiseAssert = TRUE);
-    BOOL TryAssignAppDomain(AppDomain *pAppDomain, BOOL raiseAssert = TRUE);
-
-    // Call when we are assigning to a dangerous value type field 
-    // in an object in a given app domain (or agile if null)
-    static BOOL AssignValueTypeAppDomain(MethodTable *pMT, void *base, AppDomain *pAppDomain, BOOL raiseAssert = TRUE);
-
-#endif // CHECK_APP_DOMAIN_LEAKS
-
     // DO NOT ADD ANY ASSERTS TO THIS METHOD.
     // DO NOT USE THIS METHOD.
     // Yes folks, for better or worse the debugger pokes supposed object addresses 
@@ -481,6 +308,8 @@ class Object
         WRAPPER_NO_CONTRACT;
         return GetHeader()->TryEnterObjMonitor(timeOut);
     }
+
+    bool TryEnterObjMonitorSpinHelper();
 
     FORCEINLINE AwareLock::EnterHelperResult EnterObjMonitorHelper(Thread* pCurThread)
     {
@@ -634,10 +463,10 @@ class Object
         LIMITED_METHOD_CONTRACT;
         SUPPORTS_DAC;
 
-        // lose GC marking bit and the pinning bit
+        // lose GC marking bit and the reserved bit
         // A method table pointer should always be aligned.  During GC we set the least 
-        // significant bit for marked objects and we set the second to least significant
-        // bit for pinned objects.  So if we want the actual MT pointer during a GC
+        // significant bit for marked objects, and the second to least significant
+        // bit is reserved.  So if we want the actual MT pointer during a GC
         // we must zero out the lowest 2 bits.
         return dac_cast<PTR_MethodTable>((dac_cast<TADDR>(m_pMethTab)) & ~((UINT_PTR)3));
     }
@@ -655,27 +484,20 @@ class Object
  private:
     VOID ValidateInner(BOOL bDeep, BOOL bVerifyNextHeader, BOOL bVerifySyncBlock);
 
-#if CHECK_APP_DOMAIN_LEAKS
-    friend class ObjHeader;
-    BOOL SetFieldsAgile(BOOL raiseAssert = TRUE, SetAppDomainAgilePendingTable *pTable = NULL);
-    static BOOL SetClassFieldsAgile(MethodTable *pMT, void *base, BOOL baseIsVT, BOOL raiseAssert = TRUE, SetAppDomainAgilePendingTable *pTable = NULL); 
-    static BOOL ValidateClassFields(MethodTable *pMT, void *base, BOOL baseIsVT, AppDomain *pAppDomain, BOOL raiseAssert = TRUE);
-    BOOL SetAppDomainAgileWorker(BOOL raiseAssert, SetAppDomainAgilePendingTable *pTable);
-    BOOL ShouldCheckAppDomainAgile(BOOL raiseAssert, BOOL *pfResult);
-#endif
-
+#ifdef _DEBUG
+    void AssertNotArray()
+    {
+        if (m_pMethTab->IsArray())
+        {
+            _ASSERTE(!"ArrayBase::SetArrayMethodTable/ArrayBase::SetArrayMethodTableForLargeObject should be used for arrays");
+        }
+    }
+#endif // _DEBUG
 };
 
 /*
  * Object ref setting routines.  You must use these to do 
- * proper write barrier support, as well as app domain 
- * leak checking.
- *
- * Note that the AppDomain parameter is the app domain affinity
- * of the object containing the field or value class.  It should
- * be NULL if the containing object is app domain agile. Note that
- * you typically get this value by calling obj->GetAppDomain() on 
- * the containing object.
+ * proper write barrier support.
  */
 
 // SetObjectReference sets an OBJECTREF field
@@ -707,23 +529,9 @@ inline void InitValueClass(void *dest, MethodTable *pMT)
 // Initialize value class argument
 void InitValueClassArg(ArgDestination *argDest, MethodTable *pMT);
 
-#if CHECK_APP_DOMAIN_LEAKS
-
-void SetObjectReferenceChecked(OBJECTREF *dst,OBJECTREF ref, AppDomain *pAppDomain);
-void CopyValueClassChecked(void* dest, void* src, MethodTable *pMT, AppDomain *pAppDomain);
-void CopyValueClassArgChecked(ArgDestination *argDest, void* src, MethodTable *pMT, AppDomain *pAppDomain, int destOffset);
-
-#define SetObjectReference(_d,_r,_a)        SetObjectReferenceChecked(_d, _r, _a)
-#define CopyValueClass(_d,_s,_m,_a)         CopyValueClassChecked(_d,_s,_m,_a)      
-#define CopyValueClassArg(_d,_s,_m,_a,_o)   CopyValueClassArgChecked(_d,_s,_m,_a,_o)      
-
-#else
-
-#define SetObjectReference(_d,_r,_a)        SetObjectReferenceUnchecked(_d, _r)
-#define CopyValueClass(_d,_s,_m,_a)         CopyValueClassUnchecked(_d,_s,_m)       
-#define CopyValueClassArg(_d,_s,_m,_a,_o)   CopyValueClassArgUnchecked(_d,_s,_m,_o)       
-
-#endif
+#define SetObjectReference(_d,_r)        SetObjectReferenceUnchecked(_d, _r)
+#define CopyValueClass(_d,_s,_m)         CopyValueClassUnchecked(_d,_s,_m)       
+#define CopyValueClassArg(_d,_s,_m,_o)   CopyValueClassArgUnchecked(_d,_s,_m,_o)       
 
 #include <pshpack4.h>
 
@@ -745,10 +553,10 @@ class ArrayBase : public Object
     friend class GCHeap;
     friend class CObjectHeader;
     friend class Object;
-    friend OBJECTREF AllocateArrayEx(TypeHandle arrayClass, INT32 *pArgs, DWORD dwNumArgs, BOOL bAllocateInLargeHeap DEBUG_ARG(BOOL bDontSetAppDomain)); 
-    friend OBJECTREF FastAllocatePrimitiveArray(MethodTable* arrayType, DWORD cElements, BOOL bAllocateInLargeHeap);
-    friend FCDECL2(Object*, JIT_NewArr1VC_MP_FastPortable, CORINFO_CLASS_HANDLE typeHnd_, INT_PTR size);
-    friend FCDECL2(Object*, JIT_NewArr1OBJ_MP_FastPortable, CORINFO_CLASS_HANDLE typeHnd_, INT_PTR size);
+    friend OBJECTREF AllocateSzArray(MethodTable *pArrayMT, INT32 length, GC_ALLOC_FLAGS flags, BOOL bAllocateInLargeHeap);
+    friend OBJECTREF AllocateArrayEx(MethodTable *pArrayMT, INT32 *pArgs, DWORD dwNumArgs, GC_ALLOC_FLAGS flags, BOOL bAllocateInLargeHeap); 
+    friend FCDECL2(Object*, JIT_NewArr1VC_MP_FastPortable, CORINFO_CLASS_HANDLE arrayMT, INT_PTR size);
+    friend FCDECL2(Object*, JIT_NewArr1OBJ_MP_FastPortable, CORINFO_CLASS_HANDLE arrayMT, INT_PTR size);
     friend class JIT_TrialAlloc;
     friend class CheckAsmOffsets;
     friend struct _DacGlobals;
@@ -758,9 +566,9 @@ private:
     // Object::GetSize() looks at m_NumComponents even though it may not be an array (the
     // values is shifted out if not an array, so it's ok). 
     DWORD       m_NumComponents;
-#ifdef _WIN64
+#ifdef _TARGET_64BIT_
     DWORD       pad;
-#endif // _WIN64
+#endif // _TARGET_64BIT_
 
     SVAL_DECL(INT32, s_arrayBoundsZero); // = 0
 
@@ -790,6 +598,11 @@ public:
         // Total element count for the array
     inline DWORD GetNumComponents() const;
 
+#ifndef DACCESS_COMPILE
+    inline void SetArrayMethodTable(MethodTable *pArrayMT);
+    inline void SetArrayMethodTableForLargeObject(MethodTable *pArrayMT);
+#endif // !DACCESS_COMPILE
+
         // Get pointer to elements, handles any number of dimensions
     PTR_BYTE GetDataPtr(BOOL inGC = FALSE) const {
         LIMITED_METHOD_CONTRACT;
@@ -809,11 +622,7 @@ public:
     SIZE_T GetComponentSize() const {
         WRAPPER_NO_CONTRACT;
         MethodTable * pMT;
-#if CHECK_APP_DOMAIN_LEAKS
-        pMT = GetGCSafeMethodTable();
-#else
         pMT = GetMethodTable();
-#endif //CHECK_APP_DOMAIN_LEAKS
         _ASSERTE(pMT->HasComponentSize());
         return pMT->RawGetComponentSize();
     }
@@ -865,6 +674,13 @@ public:
 
     inline static unsigned GetBoundsOffset(MethodTable* pMT);
     inline static unsigned GetLowerBoundsOffset(MethodTable* pMT);
+
+private:
+#ifndef DACCESS_COMPILE
+#ifdef _DEBUG
+    void AssertArrayTypeDescLoaded();
+#endif // _DEBUG
+#endif // !DACCESS_COMPILE
 };
 
 //
@@ -905,7 +721,7 @@ class PtrArray : public ArrayBase
 {
     friend class GCHeap;
     friend class ClrDataAccess;
-    friend OBJECTREF AllocateArrayEx(TypeHandle arrayClass, INT32 *pArgs, DWORD dwNumArgs, BOOL bAllocateInLargeHeap); 
+    friend OBJECTREF AllocateArrayEx(MethodTable *pArrayMT, INT32 *pArgs, DWORD dwNumArgs, DWORD flags, BOOL bAllocateInLargeHeap); 
     friend class JIT_TrialAlloc;
     friend class CheckAsmOffsets;
 
@@ -914,6 +730,13 @@ public:
     {
         LIMITED_METHOD_CONTRACT;
         return GetMethodTable()->GetApproxArrayElementTypeHandle();
+    }
+
+    PTR_OBJECTREF GetDataPtr()
+    {
+        LIMITED_METHOD_CONTRACT;
+        SUPPORTS_DAC;
+        return dac_cast<PTR_OBJECTREF>(dac_cast<PTR_BYTE>(this) + GetDataOffset());
     }
 
     static SIZE_T GetDataOffset()
@@ -928,12 +751,11 @@ public:
         {
             NOTHROW;
             GC_NOTRIGGER;
-            SO_TOLERANT;
             MODE_COOPERATIVE;
         }
         CONTRACTL_END;
         _ASSERTE(i < GetNumComponents());
-        SetObjectReference(m_Array + i, ref, GetAppDomain());
+        SetObjectReference(m_Array + i, ref);
     }
 
     void ClearAt(SIZE_T i)
@@ -968,6 +790,8 @@ public:
     OBJECTREF    m_Array[1];
 };
 
+#define OFFSETOF__PtrArray__m_Array_              ARRAYBASE_SIZE
+
 /* a TypedByRef is a structure that is used to implement VB's BYREF variants.  
    it is basically a tuple of an address of some data along with a TypeHandle
    that indicates the type of the address */
@@ -993,6 +817,7 @@ typedef Array<U2>   U2Array;
 typedef Array<WCHAR>   CHARArray;
 typedef Array<U4>   U4Array;
 typedef Array<U8>   U8Array;
+typedef Array<UPTR> UPTRArray;
 typedef PtrArray    PTRArray;  
 
 typedef DPTR(I1Array)   PTR_I1Array;
@@ -1007,9 +832,13 @@ typedef DPTR(U2Array)   PTR_U2Array;
 typedef DPTR(CHARArray) PTR_CHARArray;
 typedef DPTR(U4Array)   PTR_U4Array;
 typedef DPTR(U8Array)   PTR_U8Array;
+typedef DPTR(UPTRArray) PTR_UPTRArray;
 typedef DPTR(PTRArray)  PTR_PTRArray;
 
 class StringObject;
+#ifdef FEATURE_UTF8STRING
+class Utf8StringObject;
+#endif // FEATURE_UTF8STRING
 
 #ifdef USE_CHECKED_OBJECTREFS
 typedef REF<ArrayBase>  BASEARRAYREF;
@@ -1024,9 +853,13 @@ typedef REF<BOOLArray>  BOOLARRAYREF;
 typedef REF<U2Array>    U2ARRAYREF;
 typedef REF<U4Array>    U4ARRAYREF;
 typedef REF<U8Array>    U8ARRAYREF;
+typedef REF<UPTRArray>  UPTRARRAYREF;
 typedef REF<CHARArray>  CHARARRAYREF;
 typedef REF<PTRArray>   PTRARRAYREF;  // Warning: Use PtrArray only for single dimensional arrays, not multidim arrays.
 typedef REF<StringObject> STRINGREF;
+#ifdef FEATURE_UTF8STRING
+typedef REF<Utf8StringObject> UTF8STRINGREF;
+#endif // FEATURE_UTF8STRING
 
 #else   // USE_CHECKED_OBJECTREFS
 
@@ -1042,9 +875,13 @@ typedef PTR_BOOLArray   BOOLARRAYREF;
 typedef PTR_U2Array     U2ARRAYREF;
 typedef PTR_U4Array     U4ARRAYREF;
 typedef PTR_U8Array     U8ARRAYREF;
+typedef PTR_UPTRArray   UPTRARRAYREF;
 typedef PTR_CHARArray   CHARARRAYREF;
 typedef PTR_PTRArray    PTRARRAYREF;  // Warning: Use PtrArray only for single dimensional arrays, not multidim arrays.
 typedef PTR_StringObject STRINGREF;
+#ifdef FEATURE_UTF8STRING
+typedef PTR_Utf8StringObject UTF8STRINGREF;
+#endif // FEATURE_UTF8STRING
 
 #endif // USE_CHECKED_OBJECTREFS
 
@@ -1058,27 +895,11 @@ typedef PTR_StringObject STRINGREF;
  * Special String implementation for performance.   
  *
  *   m_StringLength - Length of string in number of WCHARs
- *   m_Characters   - The string buffer
+ *   m_FirstChar    - The string buffer
  *
  */
 
 
-/**
- *  The high bit state can be one of three value: 
- * STRING_STATE_HIGH_CHARS: We've examined the string and determined that it definitely has values greater than 0x80
- * STRING_STATE_FAST_OPS: We've examined the string and determined that it definitely has no chars greater than 0x80
- * STRING_STATE_UNDETERMINED: We've never examined this string.
- * We've also reserved another bit for future use.
- */
-
-#define STRING_STATE_UNDETERMINED     0x00000000
-#define STRING_STATE_HIGH_CHARS       0x40000000
-#define STRING_STATE_FAST_OPS         0x80000000
-#define STRING_STATE_SPECIAL_SORT     0xC0000000
-
-#ifdef _MSC_VER
-#pragma warning(disable : 4200)     // disable zero-sized array warning
-#endif
 class StringObject : public Object
 {
 #ifdef DACCESS_COMPILE
@@ -1091,11 +912,7 @@ class StringObject : public Object
 
   private:
     DWORD   m_StringLength;
-    WCHAR   m_Characters[0];
-    // GC will see a StringObject like this:
-    //   DWORD m_StringLength
-    //   WCHAR m_Characters[0]
-    //   DWORD m_OptionalPadding (this is an optional field and will appear based on need)
+    WCHAR   m_FirstChar;
 
   public:
     VOID    SetStringLength(DWORD len)                   { LIMITED_METHOD_CONTRACT; _ASSERTE(len >= 0); m_StringLength = len; }
@@ -1105,38 +922,16 @@ class StringObject : public Object
    ~StringObject() {LIMITED_METHOD_CONTRACT; }
    
   public:
+    static DWORD GetBaseSize();
     static SIZE_T GetSize(DWORD stringLength);
 
     DWORD   GetStringLength()                           { LIMITED_METHOD_DAC_CONTRACT; return( m_StringLength );}
-    WCHAR*  GetBuffer()                                 { LIMITED_METHOD_CONTRACT; _ASSERTE(this != nullptr); return (WCHAR*)( dac_cast<TADDR>(this) + offsetof(StringObject, m_Characters) );  }
-    WCHAR*  GetBuffer(DWORD *pdwSize)                   { LIMITED_METHOD_CONTRACT; _ASSERTE((this != nullptr) && pdwSize); *pdwSize = GetStringLength(); return GetBuffer();  }
-    WCHAR*  GetBufferNullable()                         { LIMITED_METHOD_CONTRACT; return( (this == nullptr) ? nullptr : (WCHAR*)( dac_cast<TADDR>(this) + offsetof(StringObject, m_Characters) ) );  }
-
-    DWORD GetHighCharState() {
-        WRAPPER_NO_CONTRACT;
-        DWORD ret = GetHeader()->GetBits() & (BIT_SBLK_STRING_HIGH_CHAR_MASK);
-        return ret;
-    }
-
-    VOID SetHighCharState(DWORD value) {
-        WRAPPER_NO_CONTRACT;
-        _ASSERTE(value==STRING_STATE_HIGH_CHARS || value==STRING_STATE_FAST_OPS 
-                 || value==STRING_STATE_UNDETERMINED || value==STRING_STATE_SPECIAL_SORT);
-
-        // you need to clear the present state before going to a new state, but we'll allow multiple threads to set it to the same thing.
-        _ASSERTE((GetHighCharState() == STRING_STATE_UNDETERMINED) || (GetHighCharState()==value));    
-
-        static_assert_no_msg(BIT_SBLK_STRING_HAS_NO_HIGH_CHARS == STRING_STATE_FAST_OPS && 
-                 STRING_STATE_HIGH_CHARS == BIT_SBLK_STRING_HIGH_CHARS_KNOWN &&
-                 STRING_STATE_SPECIAL_SORT == BIT_SBLK_STRING_HAS_SPECIAL_SORT);
-
-        GetHeader()->SetBit(value);
-    }
+    WCHAR*  GetBuffer()                                 { LIMITED_METHOD_CONTRACT; _ASSERTE(this != nullptr); return (WCHAR*)( dac_cast<TADDR>(this) + offsetof(StringObject, m_FirstChar) );  }
 
     static UINT GetBufferOffset()
     {
         LIMITED_METHOD_DAC_CONTRACT;
-        return (UINT)(offsetof(StringObject, m_Characters));
+        return (UINT)(offsetof(StringObject, m_FirstChar));
     }
     static UINT GetStringLengthOffset()
     {
@@ -1166,18 +961,10 @@ class StringObject : public Object
 
     static STRINGREF* InitEmptyStringRefPtr();
 
-    static STRINGREF __stdcall StringInitCharHelper(LPCSTR pszSource, int length);
-    DWORD InternalCheckHighChars();
-
     BOOL HasTrailByte();
     BOOL GetTrailByte(BYTE *bTrailByte);
     BOOL SetTrailByte(BYTE bTrailByte);
     static BOOL CaseInsensitiveCompHelper(__in_ecount(aLength) WCHAR * strA, __in_z INT8 * strB, int aLength, int bLength, int *result);
-
-#ifdef VERIFY_HEAP
-    //has to use raw object to avoid recursive validation
-    BOOL ValidateHighChars ();
-#endif //VERIFY_HEAP
 
     /*=================RefInterpretGetStringValuesDangerousForGC======================
     **N.B.: This perfoms no range checking and relies on the caller to have done this.
@@ -1203,23 +990,8 @@ class StringObject : public Object
 
 
 private:
-    static INT32 FastCompareStringHelper(DWORD* strAChars, INT32 countA, DWORD* strBChars, INT32 countB);
-
     static STRINGREF* EmptyStringRefPtr;
 };
-
-//The first two macros are essentially the same.  I just define both because
-//having both can make the code more readable.
-#define IS_FAST_SORT(state) (((state) == STRING_STATE_FAST_OPS))
-#define IS_SLOW_SORT(state) (((state) != STRING_STATE_FAST_OPS))
-
-//This macro should be used to determine things like indexing, casing, and encoding.
-#define IS_FAST_OPS_EXCEPT_SORT(state) (((state)==STRING_STATE_SPECIAL_SORT) || ((state)==STRING_STATE_FAST_OPS))
-#define IS_ASCII(state) (((state)==STRING_STATE_SPECIAL_SORT) || ((state)==STRING_STATE_FAST_OPS))
-#define IS_FAST_CASING(state) IS_ASCII(state)
-#define IS_FAST_INDEX(state)  IS_ASCII(state)
-#define IS_STRING_STATE_UNDETERMINED(state) ((state)==STRING_STATE_UNDETERMINED)
-#define HAS_HIGH_CHARS(state) ((state)==STRING_STATE_HIGH_CHARS)
 
 /*================================GetEmptyString================================
 **Get a reference to the empty string.  If we haven't already gotten one, we
@@ -1284,9 +1056,6 @@ protected:
     OBJECTREF           m_keepalive;
     OBJECTREF           m_cache;
     TypeHandle          m_typeHandle;
-#ifdef FEATURE_APPX
-    UINT32              m_invocationFlags;
-#endif
 
 #ifdef _DEBUG
     void TypeCheck()
@@ -1296,7 +1065,6 @@ protected:
             NOTHROW;
             MODE_COOPERATIVE;
             GC_NOTRIGGER;
-            SO_TOLERANT;
         }
         CONTRACTL_END;
 
@@ -1316,7 +1084,6 @@ public:
             NOTHROW;
             MODE_COOPERATIVE;
             GC_NOTRIGGER;
-            SO_TOLERANT;
         }
         CONTRACTL_END;
 
@@ -1331,12 +1098,11 @@ public:
             NOTHROW;
             MODE_COOPERATIVE;
             GC_NOTRIGGER;
-            SO_TOLERANT;
         }
         CONTRACTL_END;
 
         INDEBUG(TypeCheck());
-        SetObjectReference(&m_keepalive, keepalive, GetAppDomain());
+        SetObjectReference(&m_keepalive, keepalive);
     }
 
     TypeHandle GetType() {
@@ -1345,7 +1111,6 @@ public:
             NOTHROW;
             MODE_COOPERATIVE;
             GC_NOTRIGGER;
-            SO_TOLERANT;
         }
         CONTRACTL_END;
 
@@ -1354,6 +1119,56 @@ public:
     }
 
 };
+
+#ifdef FEATURE_UTF8STRING
+class Utf8StringObject : public Object
+{
+#ifdef DACCESS_COMPILE
+    friend class ClrDataAccess;
+#endif
+
+private:
+    DWORD   m_StringLength;
+    BYTE    m_FirstChar;
+
+public:
+    VOID    SetLength(DWORD len) { LIMITED_METHOD_CONTRACT; _ASSERTE(len >= 0); m_StringLength = len; }
+
+protected:
+    Utf8StringObject() { LIMITED_METHOD_CONTRACT; }
+    ~Utf8StringObject() { LIMITED_METHOD_CONTRACT; }
+
+public:
+
+    /*=================RefInterpretGetStringValuesDangerousForGC======================
+    **N.B.: This perfoms no range checking and relies on the caller to have done this.
+    **Args: (IN)ref -- the Utf8String to be interpretted.
+    **      (OUT)chars -- a pointer to the characters in the buffer.
+    **      (OUT)length -- a pointer to the length of the buffer.
+    **Returns: void.
+    **Exceptions: None.
+    ==============================================================================*/
+    // !!!! If you use this function, you have to be careful because chars is a pointer
+    // !!!! to the data buffer of ref.  If GC happens after this call, you need to make
+    // !!!! sure that you have a pin handle on ref, or use GCPROTECT_BEGINPINNING on ref.
+    void RefInterpretGetStringValuesDangerousForGC(__deref_out_ecount(*length + 1) CHAR **chars, int *length) {
+        WRAPPER_NO_CONTRACT;
+    
+        _ASSERTE(GetGCSafeMethodTable() == g_pUtf8StringClass);
+        *length = GetStringLength();
+        *chars  = GetBuffer();
+#ifdef _DEBUG
+        EnableStressHeapHelper();
+#endif
+    }
+
+    DWORD   GetStringLength()                           { LIMITED_METHOD_DAC_CONTRACT; return( m_StringLength );}
+    CHAR*   GetBuffer()                                 { LIMITED_METHOD_CONTRACT; _ASSERTE(this != nullptr); return (CHAR*)( dac_cast<TADDR>(this) + offsetof(Utf8StringObject, m_FirstChar) );  }
+
+    static DWORD GetBaseSize();
+    static SIZE_T GetSize(DWORD stringLength);
+};
+#endif // FEATURE_UTF8STRING
 
 // This is the Method version of the Reflection object.
 //  A Method has adddition information.
@@ -1388,7 +1203,7 @@ public:
     void SetKeepAlive(OBJECTREF keepalive)
     {
         WRAPPER_NO_CONTRACT;
-        SetObjectReference(&m_object, keepalive, GetAppDomain());
+        SetObjectReference(&m_object, keepalive);
     }
 
     MethodDesc *GetMethod() {
@@ -1428,7 +1243,7 @@ public:
     void SetKeepAlive(OBJECTREF keepalive)
     {
         WRAPPER_NO_CONTRACT;
-        SetObjectReference(&m_object, keepalive, GetAppDomain());
+        SetObjectReference(&m_object, keepalive);
     }
 
     FieldDesc *GetField() {
@@ -1475,7 +1290,7 @@ class ReflectModuleBaseObject : public Object
     void SetAssembly(OBJECTREF assembly)
     {
         WRAPPER_NO_CONTRACT;
-        SetObjectReference(&m_runtimeAssembly, assembly, GetAppDomain());
+        SetObjectReference(&m_runtimeAssembly, assembly);
     }
 };
 
@@ -1492,32 +1307,8 @@ typedef SafeHandle * SAFEHANDLE;
 typedef SafeHandle * SAFEHANDLEREF;
 #endif // USE_CHECKED_OBJECTREFS
 
-class PermissionListSetObject: public Object
-{
-    friend class MscorlibBinder;
 
-private:
-    OBJECTREF _firstPermSetTriple;
-    OBJECTREF _permSetTriples;
 
-public:
-    BOOL IsEmpty() 
-    {
-        LIMITED_METHOD_CONTRACT;
-        return (_firstPermSetTriple == NULL &&
-                _permSetTriples == NULL
-                );
-    }
-};
-
-#ifdef USE_CHECKED_OBJECTREFS
-typedef REF<PermissionListSetObject> PERMISSIONLISTSETREF;
-#else
-typedef PermissionListSetObject*     PERMISSIONLISTSETREF;
-#endif
-    
-
-#define SYNCCTXPROPS_REQUIRESWAITNOTIFICATION 0x1 // Keep in sync with SynchronizationContext.cs SynchronizationContextFlags
 class ThreadBaseObject;
 class SynchronizationContextObject: public Object
 {
@@ -1527,14 +1318,12 @@ private:
     // add or change these field you must also change the managed code so that
     // it matches these.  This is necessary so that the object is the proper
     // size. 
-    INT32 _props;
+    CLR_BOOL _requireWaitNotification;
 public:
-    BOOL IsWaitNotificationRequired()
+    BOOL IsWaitNotificationRequired() const
     {
         LIMITED_METHOD_CONTRACT;
-        if ((_props & SYNCCTXPROPS_REQUIRESWAITNOTIFICATION) != 0)
-            return TRUE;
-        return FALSE;
+        return _requireWaitNotification;
     }
 };
 
@@ -1575,183 +1364,35 @@ class CultureInfoBaseObject : public Object
     friend class MscorlibBinder;
 
 private:
-    OBJECTREF compareInfo;
-    OBJECTREF textInfo;
-    OBJECTREF numInfo;
-    OBJECTREF dateTimeInfo;
-    OBJECTREF calendar;
-    OBJECTREF m_cultureData;
-    OBJECTREF m_consoleFallbackCulture;
-    STRINGREF m_name;                       // "real" name - en-US, de-DE_phoneb or fj-FJ
-    STRINGREF m_nonSortName;                // name w/o sort info (de-DE for de-DE_phoneb)
-    STRINGREF m_sortName;                   // Sort only name (de-DE_phoneb, en-us for fj-fj (w/us sort)
-    CULTUREINFOBASEREF m_parent;
-#ifndef FEATURE_COREFX_GLOBALIZATION
-    INT32    iDataItem;                     // NEVER USED, DO NOT USE THIS! (Serialized in Whidbey/Everett)
-    INT32    iCultureID;                    // NEVER USED, DO NOT USE THIS! (Serialized in Whidbey/Everett)
-#endif // !FEATURE_COREFX_GLOBALIZATION
-    CLR_BOOL m_isReadOnly;
-    CLR_BOOL m_isInherited;
-    CLR_BOOL m_useUserOverride;
+    OBJECTREF _compareInfo;
+    OBJECTREF _textInfo;
+    OBJECTREF _numInfo;
+    OBJECTREF _dateTimeInfo;
+    OBJECTREF _calendar;
+    OBJECTREF _cultureData;
+    OBJECTREF _consoleFallbackCulture;
+    STRINGREF _name;                       // "real" name - en-US, de-DE_phoneb or fj-FJ
+    STRINGREF _nonSortName;                // name w/o sort info (de-DE for de-DE_phoneb)
+    STRINGREF _sortName;                   // Sort only name (de-DE_phoneb, en-us for fj-fj (w/us sort)
+    CULTUREINFOBASEREF _parent;
+    CLR_BOOL _isReadOnly;
+    CLR_BOOL _isInherited;
 
 public:
     CULTUREINFOBASEREF GetParent()
     {
         LIMITED_METHOD_CONTRACT;
-        return m_parent;
+        return _parent;
     }// GetParent
 
 
     STRINGREF GetName()
     {
         LIMITED_METHOD_CONTRACT;
-        return m_name;
+        return _name;
     }// GetName
 
-
 }; // class CultureInfoBaseObject
-
-
-#ifndef FEATURE_COREFX_GLOBALIZATION
-typedef DPTR(class CultureDataBaseObject) PTR_CultureDataBaseObject;
-class CultureDataBaseObject : public Object
-{
-public:
-        // offsets are for Silverlight
-        /* 0x000 */ STRINGREF sRealName                ; // Name you passed in (ie: en-US, en, or de-DE_phoneb)
-        /* 0x008 */ STRINGREF sWindowsName             ; // Name OS thinks the object is (ie: de-DE_phoneb, or en-US (even if en was passed in))       
-        /* 0x010 */ STRINGREF sName                    ; // locale name (ie: en-us, NO sort info, but could be neutral)
-        /* 0x012 */ STRINGREF sParent                  ; // Parent name (which may be a custom locale/culture)        
-        /* 0x020 */ STRINGREF sLocalizedDisplayName    ; // Localized pretty name for this locale
-        /* 0x028 */ STRINGREF sEnglishDisplayName      ; // English pretty name for this locale
-        /* 0x030 */ STRINGREF sNativeDisplayName       ; // Native pretty name for this locale        
-        /* 0x038 */ STRINGREF sSpecificCulture         ; // The culture name to be used in CultureInfo.CreateSpecificCulture(), en-US form if neutral, sort name if sort
-        /* 0x040 */ STRINGREF sISO639Language          ; // ISO 639 Language Name
-        /* 0x048 */ STRINGREF sLocalizedLanguage       ; // Localized name for this language
-        /* 0x050 */ STRINGREF sEnglishLanguage         ; // English name for this language
-        /* 0x058 */ STRINGREF sNativeLanguage          ; // Native name of this language
-        /* 0x060 */ STRINGREF sRegionName              ; // (RegionInfo)        
-        /* 0x068 */ STRINGREF sLocalizedCountry        ; // localized country name
-        /* 0x070 */ STRINGREF sEnglishCountry          ; // english country name (RegionInfo)
-        /* 0x078 */ STRINGREF sNativeCountry           ; // native country name
-        /* 0x080 */ STRINGREF sISO3166CountryName      ; // (RegionInfo), ie: US
-        /* 0x088 */ STRINGREF sPositiveSign            ; // (user can override) positive sign
-        /* 0x090 */ STRINGREF sNegativeSign            ; // (user can override) negative sign
-
-        /* 0x098 */ PTRARRAYREF saNativeDigits         ; // (user can override) native characters for digits 0-9
-        /* 0x0a0 */ I4ARRAYREF  waGrouping             ; // (user can override) grouping of digits
-
-        /* 0x0a8 */ STRINGREF sDecimalSeparator        ; // (user can override) decimal separator
-        /* 0x0b0 */ STRINGREF sThousandSeparator       ; // (user can override) thousands separator
-        /* 0x0b8 */ STRINGREF sNaN                     ; // Not a Number
-        /* 0x0c0 */ STRINGREF sPositiveInfinity        ; // + Infinity
-        /* 0x0c8 */ STRINGREF sNegativeInfinity        ; // - Infinity
-        /* 0x0d0 */ STRINGREF sPercent                 ; // Percent (%) symbol
-        /* 0x0d8 */ STRINGREF sPerMille                ; // PerMille (U+2030) symbol
-        /* 0x0e0 */ STRINGREF sCurrency                ; // (user can override) local monetary symbol
-        /* 0x0e8 */ STRINGREF sIntlMonetarySymbol      ; // international monetary symbol (RegionInfo)
-        /* 0x0f0 */ STRINGREF sEnglishCurrency         ; // English name for this currency
-        /* 0x0f8 */ STRINGREF sNativeCurrency          ; // Native name for this currency
-
-        /* 0x100 */ I4ARRAYREF  waMonetaryGrouping     ; // (user can override) monetary grouping of digits
-
-        /* 0x108 */ STRINGREF sMonetaryDecimal         ; // (user can override) monetary decimal separator
-        /* 0x110 */ STRINGREF sMonetaryThousand        ; // (user can override) monetary thousands separator
-        /* 0x118 */ STRINGREF sListSeparator           ; // (user can override) list separator       
-        /* 0x120 */ STRINGREF sAM1159                  ; // (user can override) AM designator
-        /* 0x128 */ STRINGREF sPM2359                  ; // (user can override) PM designator
-                    STRINGREF sTimeSeparator           ; // Time Separator
-
-        /* 0x130 */ PTRARRAYREF saLongTimes            ; // (user can override) time format
-        /* 0x138 */ PTRARRAYREF saShortTimes           ; // short time format
-        /* 0x140 */ PTRARRAYREF saDurationFormats      ; // time duration format 
-
-        /* 0x148 */ I4ARRAYREF  waCalendars            ; // all available calendar type(s).  The first one is the default calendar
-
-        /* 0x150 */ PTRARRAYREF calendars              ; // Store for specific calendar data
-
-        /* 0x158 */ STRINGREF sTextInfo                ; // Text info name to use for custom
-        /* 0x160 */ STRINGREF sCompareInfo             ; // Compare info name (including sorting key) to use if custom
-        /* 0x168 */ STRINGREF sScripts                 ; // Typical Scripts for this locale (latn;cyrl; etc)
-
-        // these are ordered correctly
-        /* ????? */ STRINGREF sAbbrevLang              ; // abbreviated language name (Windows Language Name) ex: ENU
-        /* ????? */ STRINGREF sAbbrevCountry           ; // abbreviated country name (RegionInfo) (Windows Region Name) ex: USA
-        /* ????? */ STRINGREF sISO639Language2         ; // 3 char ISO 639 lang name 2 ex: eng
-        /* ????? */ STRINGREF sISO3166CountryName2     ; // 3 char ISO 639 country name 2 2(RegionInfo) ex: USA (ISO)
-        /* ????? */ STRINGREF sConsoleFallbackName     ; // The culture name for the console fallback UI culture
-        /* ????? */ STRINGREF sKeyboardsToInstall      ; // Keyboard installation string.
-        /* ????? */ STRINGREF fontSignature            ; // Font signature (16 WORDS)
-
-// Unused for now:        /* ????? */ INT32    iCountry                  ; // (user can override) country code (RegionInfo)
-        /* 0x170 */ INT32    iGeoId                    ; // GeoId
-        /* 0x174 */ INT32    iDigitSubstitution        ; // (user can override) Digit substitution 0=context, 1=none/arabic, 2=Native/national (2 seems to be unused)
-        /* 0x178 */ INT32    iLeadingZeros             ; // (user can override) leading zeros 0 = no leading zeros, 1 = leading zeros
-        /* 0x17c */ INT32    iDigits                   ; // (user can override) number of fractional digits
-        /* 0x180 */ INT32    iNegativeNumber           ; // (user can override) negative number format
-        /* 0x184 */ INT32    iNegativePercent          ; // Negative Percent (0-3)
-        /* 0x188 */ INT32    iPositivePercent          ; // Positive Percent (0-11)
-        /* 0x18c */ INT32    iCurrencyDigits           ; // (user can override) # local monetary fractional digits
-        /* 0x190 */ INT32    iCurrency                 ; // (user can override) positive currency format
-        /* 0x194 */ INT32    iNegativeCurrency         ; // (user can override) negative currency format       
-        /* 0x198 */ INT32    iMeasure                  ; // (user can override) system of measurement 0=metric, 1=US (RegionInfo)
-// Unused for now        /* ????? */ INT32    iPaperSize                ; // default paper size (RegionInfo)
-        /* 0x19c */ INT32    iFirstDayOfWeek           ; // (user can override) first day of week (gregorian really)
-        /* 0x1a0 */ INT32    iFirstWeekOfYear          ; // (user can override) first week of year (gregorian really)
-
-        /* ????? */ INT32    iReadingLayout; // Reading Layout Data (0-3)
-
-        // these are ordered correctly
-        /* ????? */ INT32    iDefaultAnsiCodePage      ; // default ansi code page ID (ACP)
-        /* ????? */ INT32    iDefaultOemCodePage       ; // default oem code page ID (OCP or OEM)
-        /* ????? */ INT32    iDefaultMacCodePage       ; // default macintosh code page
-        /* ????? */ INT32    iDefaultEbcdicCodePage    ; // default EBCDIC code page
-        /* ????? */ INT32    iLanguage                 ; // locale ID (0409) - NO sort information
-        /* ????? */ INT32    iInputLanguageHandle      ; // input language handle
-        /* 0x1a4 */ CLR_BOOL bUseOverrides             ; // use user overrides?
-        /* 0x1a5 */ CLR_BOOL bNeutral                  ; // Flags for the culture (ie: neutral or not right now)        
-        /* ????? */ CLR_BOOL bWin32Installed           ; // Flags indicate if the culture is Win32 installed       
-        /* ????? */ CLR_BOOL bFramework                ; // Flags for indicate if the culture is one of Whidbey cultures 
-
-}; // class CultureDataBaseObject
-
-
-
-typedef DPTR(class CalendarDataBaseObject) PTR_CalendarDataBaseObject;
-class CalendarDataBaseObject : public Object
-{
-public:   
-    /* 0x000 */ STRINGREF   sNativeName                 ; // Calendar Name for the locale
-    
-    // Formats
-    
-    /* 0x008 */ PTRARRAYREF saShortDates                ; // Short Data format, default first
-    /* 0x010 */ PTRARRAYREF saYearMonths                ; // Year/Month Data format, default first
-    /* 0x018 */ PTRARRAYREF saLongDates                 ; // Long Data format, default first
-    /* 0x020 */ STRINGREF   sMonthDay                   ; // Month/Day format
-
-    // Calendar Parts Names
-    /* 0x028 */ PTRARRAYREF saEraNames                  ; // Names of Eras
-    /* 0x030 */ PTRARRAYREF saAbbrevEraNames            ; // Abbreviated Era Names
-    /* 0x038 */ PTRARRAYREF saAbbrevEnglishEraNames     ; // Abbreviated Era Names in English
-    /* 0x040 */ PTRARRAYREF saDayNames                  ; // Day Names, null to use locale data, starts on Sunday
-    /* 0x048 */ PTRARRAYREF saAbbrevDayNames            ; // Abbrev Day Names, null to use locale data, starts on Sunday
-    /* 0x050 */ PTRARRAYREF saSuperShortDayNames        ; // Super short Day of week names
-    /* 0x058 */ PTRARRAYREF saMonthNames                ; // Month Names (13)
-    /* 0x060 */ PTRARRAYREF saAbbrevMonthNames          ; // Abbrev Month Names (13)
-    /* 0x068 */ PTRARRAYREF saMonthGenitiveNames        ; // Genitive Month Names (13)
-    /* 0x070 */ PTRARRAYREF saAbbrevMonthGenitiveNames  ; // Genitive Abbrev Month Names (13)
-    /* 0x078 */ PTRARRAYREF saLeapYearMonthNames        ; // Multiple strings for the month names in a leap year.
-
-    // Integers at end to make marshaller happier
-    /* 0x080 */ INT32       iTwoDigitYearMax            ; // Max 2 digit year (for Y2K bug data entry)
-    /* 0x084 */ INT32       iCurrentEra                 ; // current era # (usually 1)
-
-    // Use overrides?
-    /* 0x088 */ CLR_BOOL    bUseUserOverrides           ; // True if we want user overrides.
-}; // class CalendarDataBaseObject
-#endif
-
 
 typedef DPTR(class ThreadBaseObject) PTR_ThreadBaseObject;
 class ThreadBaseObject : public Object
@@ -1771,11 +1412,8 @@ private:
     //  at run time, not compile time.
     OBJECTREF     m_ExecutionContext;
     OBJECTREF     m_SynchronizationContext;
-    OBJECTREF     m_Name;
+    STRINGREF     m_Name;
     OBJECTREF     m_Delegate;
-#ifdef IO_CANCELLATION_ENABLED
-    OBJECTREF     m_CancellationSignals;
-#endif
     OBJECTREF     m_ThreadStartArg;
 
     // The next field (m_InternalThread) is declared as IntPtr in the managed
@@ -1788,11 +1426,6 @@ private:
 
     //We need to cache the thread id in managed code for perf reasons.
     INT32         m_ManagedThreadId;
-
-    CLR_BOOL      m_ExecutionContextBelongsToCurrentScope;
-#ifdef _DEBUG
-    CLR_BOOL      m_ForbidExecutionContextMutation;
-#endif
 
 protected:
     // the ctor and dtor can do no useful work.
@@ -1829,21 +1462,16 @@ public:
         _ASSERTE(newThreadStartArg == NULL);
         // Note: this is an unchecked assignment.  We are cleaning out the ThreadStartArg field when 
         // a thread starts so that ADU does not cause problems
-        SetObjectReferenceUnchecked( (OBJECTREF *)&m_ThreadStartArg, newThreadStartArg);
+        SetObjectReference( (OBJECTREF *)&m_ThreadStartArg, newThreadStartArg);
     
     }
 
+    STRINGREF GetName() {
+        LIMITED_METHOD_CONTRACT;
+        return m_Name;
+    }
     OBJECTREF GetDelegate()                   { LIMITED_METHOD_CONTRACT; return m_Delegate; }
     void      SetDelegate(OBJECTREF delegate);
-
-    CULTUREINFOBASEREF GetCurrentUserCulture();
-    CULTUREINFOBASEREF GetCurrentUICulture();
-    OBJECTREF GetManagedThreadCulture(BOOL bUICulture);
-    void ResetManagedThreadCulture(BOOL bUICulture);
-    void ResetCurrentUserCulture();
-    void ResetCurrentUICulture();
-
-
 
     OBJECTREF GetSynchronizationContext()
     {
@@ -1855,13 +1483,6 @@ public:
     // created first.  InitExisting is our "constructor" for the pathway where an
     // existing physical thread is later exposed.
     void      InitExisting();
-
-    void ResetCulture()
-    {
-        LIMITED_METHOD_CONTRACT;
-        ResetCurrentUserCulture();
-        ResetCurrentUICulture();
-    }
 
     void ResetName()
     {
@@ -1889,222 +1510,6 @@ class MarshalByRefObjectBaseObject : public Object
 {
 };
 
-
-// ContextBaseObject 
-// This class is the base class for Contexts
-//  
-class ContextBaseObject : public Object
-{
-    friend class Context;
-    friend class MscorlibBinder;
-
-  private:
-    // READ ME:
-    // Modifying the order or fields of this object may require other changes to the
-    //  classlib class definition of this object.
-
-    OBJECTREF m_ctxProps;   // array of name-value pairs of properties
-    OBJECTREF m_dphCtx;     // dynamic property holder
-    OBJECTREF m_localDataStore; // context local store
-    OBJECTREF m_serverContextChain; // server context sink chain
-    OBJECTREF m_clientContextChain; // client context sink chain
-    OBJECTREF m_exposedAppDomain;       //appDomain ??
-    PTRARRAYREF m_ctxStatics; // holder for context relative statics
-    
-    Context*  m_internalContext;            // Pointer to the VM context
-
-    INT32 _ctxID;
-    INT32 _ctxFlags;
-    INT32 _numCtxProps;     // current count of properties
-
-    INT32 _ctxStaticsCurrentBucket;
-    INT32 _ctxStaticsFreeIndex;
-
-  protected:
-    ContextBaseObject() { LIMITED_METHOD_CONTRACT; }
-   ~ContextBaseObject() { LIMITED_METHOD_CONTRACT; }
-   
-  public:
-
-    void SetInternalContext(Context* pCtx) 
-    {
-        LIMITED_METHOD_CONTRACT;
-        // either transitioning from NULL to non-NULL or vice versa.  
-        // But not setting NULL to NULL or non-NULL to non-NULL.
-        _ASSERTE((m_internalContext == NULL) != (pCtx == NULL));
-        m_internalContext = pCtx;
-    }
-    
-    Context* GetInternalContext() 
-    {
-        LIMITED_METHOD_CONTRACT;
-        return m_internalContext;
-    }
-
-    OBJECTREF GetExposedDomain() { return m_exposedAppDomain; }
-    OBJECTREF SetExposedDomain(OBJECTREF newDomain) 
-    {
-        LIMITED_METHOD_CONTRACT;
-        OBJECTREF oldDomain = m_exposedAppDomain;
-        SetObjectReference( (OBJECTREF *)&m_exposedAppDomain, newDomain, GetAppDomain() );
-        return oldDomain;
-    }
-
-    PTRARRAYREF GetContextStaticsHolder() 
-    { 
-        LIMITED_METHOD_CONTRACT;
-        SUPPORTS_DAC;
-        // The code that needs this should have faulted it in by now!
-        _ASSERTE(m_ctxStatics != NULL); 
-
-        return m_ctxStatics; 
-    }
-};
-
-typedef DPTR(ContextBaseObject) PTR_ContextBaseObject;
-
-// AppDomainBaseObject 
-// This class is the base class for application domains
-//  
-class AppDomainBaseObject : public MarshalByRefObjectBaseObject
-{
-    friend class AppDomain;
-    friend class MscorlibBinder;
-
-  protected:
-    // READ ME:
-    // Modifying the order or fields of this object may require other changes to the
-    //  classlib class definition of this object.
-    OBJECTREF    m_pDomainManager;     // AppDomainManager for host settings.
-    OBJECTREF    m_LocalStore;
-    OBJECTREF    m_FusionTable;
-    OBJECTREF    m_pSecurityIdentity;  // Evidence associated with this domain
-    OBJECTREF    m_pPolicies;          // Array of context policies associated with this domain
-    OBJECTREF    m_pAssemblyEventHandler; // Delegate for 'loading assembly' event
-    OBJECTREF    m_pTypeEventHandler;     // Delegate for 'resolve type' event
-    OBJECTREF    m_pResourceEventHandler; // Delegate for 'resolve resource' event
-    OBJECTREF    m_pAsmResolveEventHandler; // Delegate for 'resolve assembly' event
-    OBJECTREF    m_pApplicationTrust;    // App ApplicationTrust.
-    OBJECTREF    m_pProcessExitEventHandler; // Delegate for 'process exit' event.  Only used in Default appdomain.
-    OBJECTREF    m_pDomainUnloadEventHandler; // Delegate for 'about to unload domain' event
-    OBJECTREF    m_pUnhandledExceptionEventHandler; // Delegate for 'unhandled exception' event
-
-    OBJECTREF    m_compatFlags;
-
-    OBJECTREF    m_pFirstChanceExceptionHandler; // Delegate for 'FirstChance Exception' event
-
-    AppDomain*   m_pDomain;            // Pointer to the BaseDomain Structure
-    CLR_BOOL     m_bHasSetPolicy;               // SetDomainPolicy has been called for this domain
-    CLR_BOOL     m_bIsFastFullTrustDomain;      // We know for sure that this is a homogeneous full trust domain.  
-    CLR_BOOL     m_compatFlagsInitialized;
-
-  protected:
-    AppDomainBaseObject() { LIMITED_METHOD_CONTRACT; }
-   ~AppDomainBaseObject() { LIMITED_METHOD_CONTRACT; }
-   
-  public:
-
-    void SetDomain(AppDomain* p) 
-    {
-        LIMITED_METHOD_CONTRACT;
-        m_pDomain = p;
-    }
-    AppDomain* GetDomain() 
-    {
-        LIMITED_METHOD_CONTRACT;
-        return m_pDomain;
-    }
-
-    OBJECTREF GetSecurityIdentity()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return m_pSecurityIdentity;
-    }
-
-    OBJECTREF GetAppDomainManager()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return m_pDomainManager;
-    }
-
-    OBJECTREF GetApplicationTrust()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return m_pApplicationTrust;
-    }
-
-    BOOL GetIsFastFullTrustDomain()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return !!m_bIsFastFullTrustDomain;
-    }
-
-
-    // Ref needs to be a PTRARRAYREF
-    void SetPolicies(OBJECTREF ref)
-    {
-        WRAPPER_NO_CONTRACT;
-        SetObjectReference(&m_pPolicies, ref, m_pDomain );
-    }
-    BOOL HasSetPolicy()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return m_bHasSetPolicy;
-    }
-
-
-    // Returns the reference to the delegate of the first chance exception notification handler
-    OBJECTREF GetFirstChanceExceptionNotificationHandler()
-    {
-        LIMITED_METHOD_CONTRACT;
-
-        return m_pFirstChanceExceptionHandler;
-    }
-};
-
-
-// The managed definition of AppDomainSetup is in BCL\System\AppDomainSetup.cs
-class AppDomainSetupObject : public Object
-{
-    friend class MscorlibBinder;
-
-  protected:
-    PTRARRAYREF m_Entries;
-    STRINGREF m_AppBase;
-    OBJECTREF m_AppDomainInitializer;
-    PTRARRAYREF m_AppDomainInitializerArguments;
-    STRINGREF m_ApplicationTrust;
-    I1ARRAYREF m_ConfigurationBytes;
-    STRINGREF m_AppDomainManagerAssembly;
-    STRINGREF m_AppDomainManagerType;
-    OBJECTREF m_CompatFlags;
-    STRINGREF m_TargetFrameworkName;
-    INT32 m_LoaderOptimization;
-#ifdef FEATURE_COMINTEROP
-    CLR_BOOL m_DisableInterfaceCache;
-#endif // FEATURE_COMINTEROP
-    CLR_BOOL m_CheckedForTargetFrameworkName;
-#ifdef FEATURE_RANDOMIZED_STRING_HASHING
-    CLR_BOOL m_UseRandomizedStringHashing;
-#endif
-
-
-  protected:
-    AppDomainSetupObject() { LIMITED_METHOD_CONTRACT; }
-   ~AppDomainSetupObject() { LIMITED_METHOD_CONTRACT; }
-
-  public:
-#ifdef FEATURE_RANDOMIZED_STRING_HASHING
-    BOOL UseRandomizedStringHashing() { LIMITED_METHOD_CONTRACT; return (BOOL) m_UseRandomizedStringHashing; }
-#endif // FEATURE_RANDOMIZED_STRING_HASHING
-};
-typedef DPTR(AppDomainSetupObject) PTR_AppDomainSetupObject;
-#ifdef USE_CHECKED_OBJECTREFS
-typedef REF<AppDomainSetupObject> APPDOMAINSETUPREF;
-#else
-typedef AppDomainSetupObject*     APPDOMAINSETUPREF;
-#endif
-
 // AssemblyBaseObject 
 // This class is the base class for assemblies
 //  
@@ -2121,9 +1526,6 @@ class AssemblyBaseObject : public Object
     STRINGREF     m_fullname;              // Slot for storing assemblies fullname
     OBJECTREF     m_pSyncRoot;             // Pointer to loader allocator to keep collectible types alive, and to serve as the syncroot for assembly building in ref.emit
     DomainAssembly* m_pAssembly;           // Pointer to the Assembly Structure
-#ifdef FEATURE_APPX
-    UINT32        m_flags;
-#endif
 
   protected:
     AssemblyBaseObject() { LIMITED_METHOD_CONTRACT; }
@@ -2148,11 +1550,58 @@ class AssemblyBaseObject : public Object
     void SetSyncRoot(OBJECTREF pSyncRoot)
     {
         WRAPPER_NO_CONTRACT;
-        SetObjectReferenceUnchecked(&m_pSyncRoot, pSyncRoot);
+        SetObjectReference(&m_pSyncRoot, pSyncRoot);
     }
 };
 NOINLINE AssemblyBaseObject* GetRuntimeAssemblyHelper(LPVOID __me, DomainAssembly *pAssembly, OBJECTREF keepAlive);
 #define FC_RETURN_ASSEMBLY_OBJECT(pAssembly, refKeepAlive) FC_INNER_RETURN(AssemblyBaseObject*, GetRuntimeAssemblyHelper(__me, pAssembly, refKeepAlive))
+
+// AssemblyLoadContextBaseObject
+// This class is the base class for AssemblyLoadContext
+//
+#if defined(_TARGET_X86_) && !defined(FEATURE_PAL)
+#include "pshpack4.h"
+#endif // defined(_TARGET_X86_) && !defined(FEATURE_PAL)
+class AssemblyLoadContextBaseObject : public Object
+{
+    friend class MscorlibBinder;
+
+  protected:
+    // READ ME:
+    // Modifying the order or fields of this object may require other changes to the
+    //  classlib class definition of this object.
+#ifdef _TARGET_64BIT_
+    OBJECTREF     _unloadLock;
+    OBJECTREF     _resovlingUnmanagedDll;
+    OBJECTREF     _resolving;
+    OBJECTREF     _unloading;
+    OBJECTREF     _name;
+    INT_PTR       _nativeAssemblyLoadContext;
+    int64_t       _id; // On 64-bit platforms this is a value type so it is placed after references and pointers
+    DWORD         _state;
+    CLR_BOOL      _isCollectible;
+#else // _TARGET_64BIT_
+    int64_t       _id; // On 32-bit platforms this 64-bit value type is larger than a pointer so JIT places it first
+    OBJECTREF     _unloadLock;
+    OBJECTREF     _resovlingUnmanagedDll;
+    OBJECTREF     _resolving;
+    OBJECTREF     _unloading;
+    OBJECTREF     _name;
+    INT_PTR       _nativeAssemblyLoadContext;
+    DWORD         _state;
+    CLR_BOOL      _isCollectible;
+#endif // _TARGET_64BIT_
+
+  protected:
+    AssemblyLoadContextBaseObject() { LIMITED_METHOD_CONTRACT; }
+   ~AssemblyLoadContextBaseObject() { LIMITED_METHOD_CONTRACT; }
+
+  public:
+    INT_PTR GetNativeAssemblyLoadContext() { LIMITED_METHOD_CONTRACT; return _nativeAssemblyLoadContext; }
+};
+#if defined(_TARGET_X86_) && !defined(FEATURE_PAL)
+#include "poppack.h"
+#endif // defined(_TARGET_X86_) && !defined(FEATURE_PAL)
 
 // AssemblyNameBaseObject 
 // This class is the base class for assembly names
@@ -2168,36 +1617,31 @@ class AssemblyNameBaseObject : public Object
     // Modifying the order or fields of this object may require other changes to the
     //  classlib class definition of this object.
 
-    OBJECTREF     m_pSimpleName; 
-    U1ARRAYREF    m_pPublicKey;
-    U1ARRAYREF    m_pPublicKeyToken;
-    OBJECTREF     m_pCultureInfo;
-    OBJECTREF     m_pCodeBase;
-    OBJECTREF     m_pVersion;
-    OBJECTREF     m_StrongNameKeyPair;
-    OBJECTREF     m_siInfo;
-    U1ARRAYREF    m_HashForControl;
-    DWORD         m_HashAlgorithm;
-    DWORD         m_HashAlgorithmForControl;
-    DWORD         m_VersionCompatibility;
-    DWORD         m_Flags;
+    OBJECTREF     _name; 
+    U1ARRAYREF    _publicKey;
+    U1ARRAYREF    _publicKeyToken;
+    OBJECTREF     _cultureInfo;
+    OBJECTREF     _codeBase;
+    OBJECTREF     _version;
+    OBJECTREF     _strongNameKeyPair;
+    DWORD         _hashAlgorithm;
+    DWORD         _versionCompatibility;
+    DWORD         _flags;
 
   protected:
     AssemblyNameBaseObject() { LIMITED_METHOD_CONTRACT; }
    ~AssemblyNameBaseObject() { LIMITED_METHOD_CONTRACT; }
    
   public:
-    OBJECTREF GetSimpleName() { LIMITED_METHOD_CONTRACT; return m_pSimpleName; }
-    U1ARRAYREF GetPublicKey() { LIMITED_METHOD_CONTRACT; return m_pPublicKey; }
-    U1ARRAYREF GetPublicKeyToken() { LIMITED_METHOD_CONTRACT; return m_pPublicKeyToken; }
-    OBJECTREF GetStrongNameKeyPair() { LIMITED_METHOD_CONTRACT; return m_StrongNameKeyPair; }
-    OBJECTREF GetCultureInfo() { LIMITED_METHOD_CONTRACT; return m_pCultureInfo; }
-    OBJECTREF GetAssemblyCodeBase() { LIMITED_METHOD_CONTRACT; return m_pCodeBase; }
-    OBJECTREF GetVersion() { LIMITED_METHOD_CONTRACT; return m_pVersion; }
-    DWORD GetAssemblyHashAlgorithm() { LIMITED_METHOD_CONTRACT; return m_HashAlgorithm; }
-    DWORD GetFlags() { LIMITED_METHOD_CONTRACT; return m_Flags; }
-    U1ARRAYREF GetHashForControl() { LIMITED_METHOD_CONTRACT; return m_HashForControl;}
-    DWORD GetHashAlgorithmForControl() { LIMITED_METHOD_CONTRACT; return m_HashAlgorithmForControl; }
+    OBJECTREF GetSimpleName() { LIMITED_METHOD_CONTRACT; return _name; }
+    U1ARRAYREF GetPublicKey() { LIMITED_METHOD_CONTRACT; return _publicKey; }
+    U1ARRAYREF GetPublicKeyToken() { LIMITED_METHOD_CONTRACT; return _publicKeyToken; }
+    OBJECTREF GetStrongNameKeyPair() { LIMITED_METHOD_CONTRACT; return _strongNameKeyPair; }
+    OBJECTREF GetCultureInfo() { LIMITED_METHOD_CONTRACT; return _cultureInfo; }
+    OBJECTREF GetAssemblyCodeBase() { LIMITED_METHOD_CONTRACT; return _codeBase; }
+    OBJECTREF GetVersion() { LIMITED_METHOD_CONTRACT; return _version; }
+    DWORD GetAssemblyHashAlgorithm() { LIMITED_METHOD_CONTRACT; return _hashAlgorithm; }
+    DWORD GetFlags() { LIMITED_METHOD_CONTRACT; return _flags; }
 };
 
 // VersionBaseObject
@@ -2227,161 +1671,6 @@ class VersionBaseObject : public Object
     int GetRevision() { LIMITED_METHOD_CONTRACT; return m_Revision; }
 };
 
-// FrameSecurityDescriptorBaseObject 
-// This class is the base class for the frame security descriptor
-//  
-
-class FrameSecurityDescriptorBaseObject : public Object
-{
-    friend class MscorlibBinder;
-
-  protected:
-    // READ ME:
-    // Modifying the order or fields of this object may require other changes to the
-    //  classlib class definition of this object.
-
-    OBJECTREF       m_assertions;    // imperative
-    OBJECTREF       m_denials;      // imperative
-    OBJECTREF       m_restriction;  //  imperative
-    OBJECTREF       m_DeclarativeAssertions;
-    OBJECTREF       m_DeclarativeDenials;
-    OBJECTREF       m_DeclarativeRestrictions;
-    CLR_BOOL        m_assertFT;
-    CLR_BOOL        m_assertAllPossible;
-    CLR_BOOL        m_declSecComputed;
-    
-
-
-  protected:
-    FrameSecurityDescriptorBaseObject() {LIMITED_METHOD_CONTRACT;}
-   ~FrameSecurityDescriptorBaseObject() {LIMITED_METHOD_CONTRACT;}
-   
-  public:
-
-    INT32 GetOverridesCount()
-    {
-        LIMITED_METHOD_CONTRACT;
-        INT32 ret =0;
-        if (m_restriction != NULL)
-            ret++;
-        if (m_denials != NULL)
-            ret++;        
-        if (m_DeclarativeDenials != NULL)
-            ret++;
-        if (m_DeclarativeRestrictions != NULL)
-            ret++;
-        return ret;
-    }
-
-    INT32 GetAssertCount()
-    {
-        LIMITED_METHOD_CONTRACT;
-        INT32 ret =0;
-        if (m_assertions != NULL || m_DeclarativeAssertions != NULL || HasAssertAllPossible())
-            ret++;
-        return ret;
-    }  
-
-    BOOL HasAssertFT()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return m_assertFT;
-    }
-
-    BOOL IsDeclSecComputed()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return m_declSecComputed;
-    }
-
-    BOOL HasAssertAllPossible()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return m_assertAllPossible;
-    }
-
-    OBJECTREF GetImperativeAssertions()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return m_assertions;
-    }
-   OBJECTREF GetDeclarativeAssertions()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return m_DeclarativeAssertions;
-    }
-    OBJECTREF GetImperativeDenials()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return m_denials;
-    }
-    OBJECTREF GetDeclarativeDenials()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return m_DeclarativeDenials;
-    }
-    OBJECTREF GetImperativeRestrictions()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return m_restriction;
-    }
-   OBJECTREF GetDeclarativeRestrictions()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return m_DeclarativeRestrictions;
-    }
-    void SetImperativeAssertions(OBJECTREF assertRef)
-    {
-        LIMITED_METHOD_CONTRACT;
-        SetObjectReference(&m_assertions, assertRef, this->GetAppDomain());
-    }
-    void SetDeclarativeAssertions(OBJECTREF assertRef)
-    {
-        LIMITED_METHOD_CONTRACT;
-        SetObjectReference(&m_DeclarativeAssertions, assertRef, this->GetAppDomain());
-    }
-    void SetImperativeDenials(OBJECTREF denialRef)
-    {
-        LIMITED_METHOD_CONTRACT;
-        SetObjectReference(&m_denials, denialRef, this->GetAppDomain()); 
-    }
-
-    void SetDeclarativeDenials(OBJECTREF denialRef)
-    {
-        LIMITED_METHOD_CONTRACT;
-        SetObjectReference(&m_DeclarativeDenials, denialRef, this->GetAppDomain()); 
-    }
-
-    void SetImperativeRestrictions(OBJECTREF restrictRef)
-    {
-        LIMITED_METHOD_CONTRACT;
-        SetObjectReference(&m_restriction, restrictRef, this->GetAppDomain());
-    }
-
-    void SetDeclarativeRestrictions(OBJECTREF restrictRef)
-    {
-        LIMITED_METHOD_CONTRACT;
-        SetObjectReference(&m_DeclarativeRestrictions, restrictRef, this->GetAppDomain());
-    }
-    void SetAssertAllPossible(BOOL assertAllPossible)
-    {
-        LIMITED_METHOD_CONTRACT;
-        m_assertAllPossible = !!assertAllPossible;
-    }
-    
-    void SetAssertFT(BOOL assertFT)
-    {
-        LIMITED_METHOD_CONTRACT;
-        m_assertFT = !!assertFT;
-    }
-    void SetDeclSecComputed(BOOL declSec)
-    {
-        LIMITED_METHOD_CONTRACT;
-        m_declSecComputed = !!declSec;
-    }
-};
-
-
 class WeakReferenceObject : public Object
 {
 public:
@@ -2400,19 +1689,15 @@ typedef REF<ReflectFieldObject> REFLECTFIELDREF;
 
 typedef REF<ThreadBaseObject> THREADBASEREF;
 
-typedef REF<AppDomainBaseObject> APPDOMAINREF;
-
 typedef REF<MarshalByRefObjectBaseObject> MARSHALBYREFOBJECTBASEREF;
 
-typedef REF<ContextBaseObject> CONTEXTBASEREF;
-
 typedef REF<AssemblyBaseObject> ASSEMBLYREF;
+
+typedef REF<AssemblyLoadContextBaseObject> ASSEMBLYLOADCONTEXTREF;
 
 typedef REF<AssemblyNameBaseObject> ASSEMBLYNAMEREF;
 
 typedef REF<VersionBaseObject> VERSIONREF;
-
-typedef REF<FrameSecurityDescriptorBaseObject> FRAMESECDESCREF;
 
 
 typedef REF<WeakReferenceObject> WEAKREFERENCEREF;
@@ -2456,17 +1741,13 @@ typedef PTR_ReflectClassBaseObject REFLECTCLASSBASEREF;
 typedef PTR_ReflectMethodObject REFLECTMETHODREF;
 typedef PTR_ReflectFieldObject REFLECTFIELDREF;
 typedef PTR_ThreadBaseObject THREADBASEREF;
-typedef PTR_AppDomainBaseObject APPDOMAINREF;
 typedef PTR_AssemblyBaseObject ASSEMBLYREF;
+typedef PTR_AssemblyLoadContextBaseObject ASSEMBLYLOADCONTEXTREF;
 typedef PTR_AssemblyNameBaseObject ASSEMBLYNAMEREF;
-typedef PTR_ContextBaseObject CONTEXTBASEREF;
 
 #ifndef DACCESS_COMPILE
 typedef MarshalByRefObjectBaseObject* MARSHALBYREFOBJECTBASEREF;
 typedef VersionBaseObject* VERSIONREF;
-typedef FrameSecurityDescriptorBaseObject* FRAMESECDESCREF;
-
-
 typedef WeakReferenceObject* WEAKREFERENCEREF;
 #endif // #ifndef DACCESS_COMPILE
 
@@ -2486,151 +1767,6 @@ typedef WeakReferenceObject* WEAKREFERENCEREF;
 
 STRINGREF AllocateString(SString sstr);
 CHARARRAYREF AllocateCharArray(DWORD dwArrayLength);
-
-
-class TransparentProxyObject : public Object
-{
-    friend class MscorlibBinder;
-    friend class CheckAsmOffsets;
-
-public:
-    MethodTable * GetMethodTableBeingProxied()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return _pMT;
-    }
-    void SetMethodTableBeingProxied(MethodTable * pMT)
-    {
-        LIMITED_METHOD_CONTRACT;
-        _pMT = pMT;
-    }
-
-    MethodTable * GetInterfaceMethodTable()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return _pInterfaceMT;
-    }
-    void SetInterfaceMethodTable(MethodTable * pInterfaceMT)
-    {
-        LIMITED_METHOD_CONTRACT;
-        _pInterfaceMT = pInterfaceMT;
-    }
-
-    void * GetStub()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return _stub;
-    }
-    void SetStub(void * pStub)
-    {
-        LIMITED_METHOD_CONTRACT;
-        _stub = pStub;
-    }
-
-    OBJECTREF GetStubData()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return _stubData;
-    }
-    void SetStubData(OBJECTREF stubData)
-    {
-        LIMITED_METHOD_CONTRACT;
-        SetObjectReference(&_stubData, stubData, GetAppDomain());
-    }
-
-    OBJECTREF GetRealProxy()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return _rp;
-    }
-    void SetRealProxy(OBJECTREF realProxy)
-    {
-        LIMITED_METHOD_CONTRACT;
-        SetObjectReference(&_rp, realProxy, GetAppDomain());
-    }
-
-    static int GetOffsetOfRP() { LIMITED_METHOD_CONTRACT; return offsetof(TransparentProxyObject, _rp); }
-    
-protected:
-    TransparentProxyObject()
-    {LIMITED_METHOD_CONTRACT;}; // don't instantiate this class directly
-    ~TransparentProxyObject(){LIMITED_METHOD_CONTRACT;};
-
-private:
-    OBJECTREF       _rp;
-    OBJECTREF       _stubData;
-    MethodTable*    _pMT;
-    MethodTable*    _pInterfaceMT;
-    void*           _stub;
-};
-
-#ifdef USE_CHECKED_OBJECTREFS
-typedef REF<TransparentProxyObject> TRANSPARENTPROXYREF;
-#else
-typedef TransparentProxyObject*     TRANSPARENTPROXYREF;
-#endif
-
-
-class RealProxyObject : public Object
-{
-    friend class MscorlibBinder;
-
-public:
-    DWORD GetOptFlags()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return _optFlags;
-    }
-    VOID SetOptFlags(DWORD flags)
-    {
-        LIMITED_METHOD_CONTRACT;
-        _optFlags = flags;
-    }
-
-    DWORD GetDomainID()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return _domainID;
-    }
-
-    TRANSPARENTPROXYREF GetTransparentProxy()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return (TRANSPARENTPROXYREF&)_tp;
-    }
-    void SetTransparentProxy(TRANSPARENTPROXYREF tp)
-    {
-        LIMITED_METHOD_CONTRACT;
-        SetObjectReference(&_tp, (OBJECTREF)tp, GetAppDomain());
-    }
-
-    static int GetOffsetOfIdentity() { LIMITED_METHOD_CONTRACT; return offsetof(RealProxyObject, _identity); }
-    static int GetOffsetOfServerObject() { LIMITED_METHOD_CONTRACT; return offsetof(RealProxyObject, _serverObject); }
-    static int GetOffsetOfServerIdentity() { LIMITED_METHOD_CONTRACT; return offsetof(RealProxyObject, _srvIdentity); }
-
-protected:
-    RealProxyObject()
-    {
-        LIMITED_METHOD_CONTRACT;
-    }; // don't instantiate this class directly
-    ~RealProxyObject(){ LIMITED_METHOD_CONTRACT; };
-
-private:
-    OBJECTREF       _tp;
-    OBJECTREF       _identity;
-    OBJECTREF       _serverObject;
-    DWORD           _flags;
-    DWORD           _optFlags;
-    DWORD           _domainID;
-    OBJECTHANDLE    _srvIdentity;
-};
-
-#ifdef USE_CHECKED_OBJECTREFS
-typedef REF<RealProxyObject> REALPROXYREF;
-#else
-typedef RealProxyObject*     REALPROXYREF;
-#endif
-
 
 #ifdef FEATURE_COMINTEROP
 
@@ -2926,137 +2062,6 @@ typedef BStrWrapper*     BSTRWRAPPEROBJECTREF;
 
 #endif // FEATURE_COMINTEROP
 
-class StringBufferObject;
-#ifdef USE_CHECKED_OBJECTREFS
-typedef REF<StringBufferObject> STRINGBUFFERREF;
-#else   // USE_CHECKED_OBJECTREFS
-typedef StringBufferObject * STRINGBUFFERREF;
-#endif  // USE_CHECKED_OBJECTREFS
-
-//
-// StringBufferObject
-//
-// Note that the "copy on write" bit is buried within the implementation
-// of the object in order to make the implementation smaller.
-//
-
-
-class StringBufferObject : public Object
-{
-    friend class MscorlibBinder;
-
-  private:
-    CHARARRAYREF m_ChunkChars;
-    StringBufferObject *m_ChunkPrevious;
-    UINT32 m_ChunkLength;
-    UINT32 m_ChunkOffset;
-    INT32 m_MaxCapacity;
-
-    WCHAR* GetBuffer()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return (WCHAR *)m_ChunkChars->GetDirectPointerToNonObjectElements();
-    }
-        
-    // This function assumes that requiredLength will be less 
-    // than the max capacity of the StringBufferObject   
-    DWORD GetAllocationLength(DWORD dwRequiredLength)
-    {
-        LIMITED_METHOD_CONTRACT;
-        _ASSERTE((INT32)dwRequiredLength <= m_MaxCapacity);
-        DWORD dwCurrentLength = GetArrayLength();
-
-        // round the current length to the nearest multiple of 2
-        // that is >= the required length
-        if(dwCurrentLength < dwRequiredLength)
-        {
-            dwCurrentLength = (dwRequiredLength + 1) & ~1;        
-        }
-        return dwCurrentLength;
-    }
-
-  protected:
-   StringBufferObject() { LIMITED_METHOD_CONTRACT; };
-   ~StringBufferObject() { LIMITED_METHOD_CONTRACT; };
-
-  public:
-    INT32 GetMaxCapacity()
-    {
-        return m_MaxCapacity;
-    }
-
-    DWORD GetArrayLength() 
-    {
-        LIMITED_METHOD_CONTRACT;
-        _ASSERTE(m_ChunkChars);
-        return m_ChunkOffset + m_ChunkChars->GetNumComponents();
-    }
-
-    // Given an ANSI string, use it to replace the StringBufferObject's internal buffer
-    VOID ReplaceBufferWithAnsi(CHARARRAYREF *newArrayRef, __in CHAR *newChars, DWORD dwNewCapacity)
-    {
-#ifndef DACCESS_COMPILE
-        SetObjectReference((OBJECTREF *)&m_ChunkChars, (OBJECTREF)(*newArrayRef), GetAppDomain());
-#endif //!DACCESS_COMPILE
-        WCHAR *thisChars = GetBuffer();
-        // NOTE: This call to MultiByte also writes out the null terminator
-        // which is currently part of the String representation.
-        INT32 ncWritten = MultiByteToWideChar(CP_ACP,
-                                              MB_PRECOMPOSED,
-                                              newChars,
-                                              -1,
-                                              (LPWSTR)thisChars,
-                                              dwNewCapacity+1);
-
-        if (ncWritten == 0)
-        {
-            // Normally, we'd throw an exception if the string couldn't be converted.
-            // In this particular case, we paper over it instead. The reason is
-            // that most likely reason a P/Invoke-called api returned a
-            // poison string is that the api failed for some reason, and hence
-            // exercised its right to leave the buffer in a poison state.
-            // Because P/Invoke cannot discover if an api failed, it cannot
-            // know to ignore the buffer on the out marshaling path.
-            // Because normal P/Invoke procedure is for the caller to check error
-            // codes manually, we don't want to throw an exception on him.
-            // We certainly don't want to randomly throw or not throw based on the
-            // nondeterministic contents of a buffer passed to a failing api.
-            *thisChars = W('\0');
-            ncWritten++;
-        }
-
-        m_ChunkOffset = 0;
-        m_ChunkLength = ncWritten-1;
-        m_ChunkPrevious = NULL;
-    }
-
-    // Given a Unicode string, use it to replace the StringBufferObject's internal buffer
-    VOID ReplaceBuffer(CHARARRAYREF *newArrayRef, __in_ecount(dwNewCapacity) WCHAR *newChars, DWORD dwNewCapacity)
-    {
-        CONTRACTL
-        {
-            NOTHROW;
-            GC_NOTRIGGER;
-            SO_TOLERANT;
-            MODE_COOPERATIVE;
-        }
-        CONTRACTL_END;
-#ifndef DACCESS_COMPILE
-        SetObjectReference((OBJECTREF *)&m_ChunkChars, (OBJECTREF)(*newArrayRef), GetAppDomain());
-#endif //!DACCESS_COMPILE
-        WCHAR *thisChars = GetBuffer();
-        memcpyNoGCRefs(thisChars, newChars, sizeof(WCHAR)*dwNewCapacity);
-        thisChars[dwNewCapacity] = W('\0');
-        m_ChunkLength = dwNewCapacity;
-        m_ChunkPrevious = NULL;
-        m_ChunkOffset = 0; 
-    }
-
-    static void ReplaceBuffer(STRINGBUFFERREF *thisRef, __in_ecount(newLength) WCHAR *newBuffer, INT32 newLength);
-    static void ReplaceBufferAnsi(STRINGBUFFERREF *thisRef, __in_ecount(newCapacity) CHAR *newBuffer, INT32 newCapacity);    
-    static INT32 LocalIndexOfString(__in_ecount(strLength) WCHAR *base, __in_ecount(patternLength) WCHAR *search, int strLength, int patternLength, int startPos);
-};
-
 class SafeHandle : public Object
 {
     friend class MscorlibBinder;
@@ -3066,9 +2071,6 @@ class SafeHandle : public Object
     //   Modifying the order or fields of this object may require
     //   other changes to the classlib class definition of this
     //   object or special handling when loading this system class.
-#ifdef _DEBUG
-    STRINGREF m_debugStackTrace;   // Where we allocated this SafeHandle
-#endif
     Volatile<LPVOID> m_handle;
     Volatile<INT32> m_state;        // Combined ref count and closed/disposed state (for atomicity)
     Volatile<CLR_BOOL> m_ownsHandle;
@@ -3100,27 +2102,10 @@ class SafeHandle : public Object
         return m_handle;
     }
 
-    BOOL OwnsHandle() const
-    {
-        LIMITED_METHOD_CONTRACT;
-        return m_ownsHandle;
-    }
-
-    static size_t GetHandleOffset() { LIMITED_METHOD_CONTRACT; return offsetof(SafeHandle, m_handle); }
-
     void AddRef();
     void Release(bool fDispose = false);
-    void Dispose();
     void SetHandle(LPVOID handle);
-
-    static FCDECL1(void, DisposeNative, SafeHandle* refThisUNSAFE);
-    static FCDECL1(void, Finalize, SafeHandle* refThisUNSAFE);
-    static FCDECL1(void, SetHandleAsInvalid, SafeHandle* refThisUNSAFE);
-    static FCDECL2(void, DangerousAddRef, SafeHandle* refThisUNSAFE, CLR_BOOL *pfSuccess);
-    static FCDECL1(void, DangerousRelease, SafeHandle* refThisUNSAFE);
 };
-
-// SAFEHANDLEREF defined above because CompressedStackObject needs it
 
 void AcquireSafeHandle(SAFEHANDLEREF* s);
 void ReleaseSafeHandle(SAFEHANDLEREF* s);
@@ -3136,9 +2121,6 @@ class CriticalHandle : public Object
     //   Modifying the order or fields of this object may require
     //   other changes to the classlib class definition of this
     //   object or special handling when loading this system class.
-#ifdef _DEBUG
-    STRINGREF m_debugStackTrace;   // Where we allocated this CriticalHandle
-#endif
     Volatile<LPVOID> m_handle;
     Volatile<CLR_BOOL> m_isClosed;
 
@@ -3152,20 +2134,6 @@ class CriticalHandle : public Object
 };
 
 
-class ReflectClassBaseObject;
-
-class SafeBuffer : SafeHandle
-{
-  private:
-    size_t m_numBytes;
-
-  public:
-    static FCDECL1(UINT, SizeOfType, ReflectClassBaseObject* typeUNSAFE);
-    static FCDECL1(UINT, AlignedSizeOfType, ReflectClassBaseObject* typeUNSAFE);
-    static FCDECL3(void, PtrToStructure, BYTE* ptr, FC_TypedByRef structure, UINT32 sizeofT);
-    static FCDECL3(void, StructureToPtr, FC_TypedByRef structure, BYTE* ptr, UINT32 sizeofT);
-};
-
 #ifdef USE_CHECKED_OBJECTREFS
 typedef REF<CriticalHandle> CRITICALHANDLE;
 typedef REF<CriticalHandle> CRITICALHANDLEREF;
@@ -3178,61 +2146,24 @@ typedef CriticalHandle * CRITICALHANDLEREF;
 // Base class for WaitHandle 
 class WaitHandleBase :public MarshalByRefObjectBaseObject
 {
-    friend class WaitHandleNative;
     friend class MscorlibBinder;
 
 public:
-    __inline LPVOID GetWaitHandle() {LIMITED_METHOD_CONTRACT; return m_handle;}
-    __inline SAFEHANDLEREF GetSafeHandle() {LIMITED_METHOD_CONTRACT; return m_safeHandle;}
+    __inline LPVOID GetWaitHandle() {
+        LIMITED_METHOD_CONTRACT;
+        SAFEHANDLEREF safeHandle = (SAFEHANDLEREF)m_safeHandle.LoadWithoutBarrier();
+        return safeHandle != NULL ? safeHandle->GetHandle() : INVALID_HANDLE_VALUE;
+    }
+    __inline SAFEHANDLEREF GetSafeHandle() {LIMITED_METHOD_CONTRACT; return (SAFEHANDLEREF)m_safeHandle.LoadWithoutBarrier();}
 
 private:
-    SAFEHANDLEREF   m_safeHandle;
-    LPVOID          m_handle;
-    CLR_BOOL        m_hasThreadAffinity;
+    Volatile<SafeHandle*> m_safeHandle;
 };
 
 #ifdef USE_CHECKED_OBJECTREFS
 typedef REF<WaitHandleBase> WAITHANDLEREF;
 #else // USE_CHECKED_OBJECTREFS
 typedef WaitHandleBase* WAITHANDLEREF;
-#endif // USE_CHECKED_OBJECTREFS
-
-// This class corresponds to FileStreamAsyncResult on the managed side.
-class AsyncResultBase :public Object
-{
-    friend class MscorlibBinder;
-
-public: 
-    WAITHANDLEREF GetWaitHandle() { LIMITED_METHOD_CONTRACT; return _waitHandle;}
-    void SetErrorCode(int errcode) { LIMITED_METHOD_CONTRACT; _errorCode = errcode;}
-    void SetNumBytes(int numBytes) { LIMITED_METHOD_CONTRACT; _numBytes = numBytes;}
-    void SetIsComplete() { LIMITED_METHOD_CONTRACT; _isComplete = TRUE; }
-    void SetCompletedAsynchronously() { LIMITED_METHOD_CONTRACT; _completedSynchronously = FALSE; }
-
-    // README:
-    // If you modify the order of these fields, make sure to update the definition in 
-    // BCL for this object.
-private:
-    OBJECTREF _userCallback;
-    OBJECTREF _userStateObject;
-
-    WAITHANDLEREF _waitHandle;
-    SAFEHANDLEREF _fileHandle;     // For cancellation.
-    LPOVERLAPPED  _overlapped;
-    int _EndXxxCalled;             // Whether we've called EndXxx already.
-    int _numBytes;                 // number of bytes read OR written
-    int _errorCode;
-    int _numBufferedBytes;
-
-    CLR_BOOL _isWrite;                 // Whether this is a read or a write
-    CLR_BOOL _isComplete;
-    CLR_BOOL _completedSynchronously;  // Which thread called callback
-};
-
-#ifdef USE_CHECKED_OBJECTREFS
-typedef REF<AsyncResultBase> ASYNCRESULTREF;
-#else // USE_CHECKED_OBJECTREFS
-typedef AsyncResultBase* ASYNCRESULTREF;
 #endif // USE_CHECKED_OBJECTREFS
 
 // This class corresponds to System.MulticastDelegate on the managed side.
@@ -3245,7 +2176,7 @@ public:
     BOOL IsWrapperDelegate() { LIMITED_METHOD_CONTRACT; return _methodPtrAux == NULL; }
     
     OBJECTREF GetTarget() { LIMITED_METHOD_CONTRACT; return _target; }
-    void SetTarget(OBJECTREF target) { WRAPPER_NO_CONTRACT; SetObjectReference(&_target, target, GetAppDomain()); }
+    void SetTarget(OBJECTREF target) { WRAPPER_NO_CONTRACT; SetObjectReference(&_target, target); }
     static int GetOffsetOfTarget() { LIMITED_METHOD_CONTRACT; return offsetof(DelegateObject, _target); }
 
     PCODE GetMethodPtr() { LIMITED_METHOD_CONTRACT; return _methodPtr; }
@@ -3257,14 +2188,14 @@ public:
     static int GetOffsetOfMethodPtrAux() { LIMITED_METHOD_CONTRACT; return offsetof(DelegateObject, _methodPtrAux); }
 
     OBJECTREF GetInvocationList() { LIMITED_METHOD_CONTRACT; return _invocationList; }
-    void SetInvocationList(OBJECTREF invocationList) { WRAPPER_NO_CONTRACT; SetObjectReference(&_invocationList, invocationList, GetAppDomain()); }
+    void SetInvocationList(OBJECTREF invocationList) { WRAPPER_NO_CONTRACT; SetObjectReference(&_invocationList, invocationList); }
     static int GetOffsetOfInvocationList() { LIMITED_METHOD_CONTRACT; return offsetof(DelegateObject, _invocationList); }
 
     INT_PTR GetInvocationCount() { LIMITED_METHOD_CONTRACT; return _invocationCount; }
     void SetInvocationCount(INT_PTR invocationCount) { LIMITED_METHOD_CONTRACT; _invocationCount = invocationCount; }
     static int GetOffsetOfInvocationCount() { LIMITED_METHOD_CONTRACT; return offsetof(DelegateObject, _invocationCount); }
 
-    void SetMethodBase(OBJECTREF newMethodBase) { LIMITED_METHOD_CONTRACT; SetObjectReference((OBJECTREF*)&_methodBase, newMethodBase, GetAppDomain()); }
+    void SetMethodBase(OBJECTREF newMethodBase) { LIMITED_METHOD_CONTRACT; SetObjectReference((OBJECTREF*)&_methodBase, newMethodBase); }
 
     // README:
     // If you modify the order of these fields, make sure to update the definition in 
@@ -3279,6 +2210,10 @@ private:
     OBJECTREF   _invocationList;
     INT_PTR     _invocationCount;
 };
+
+#define OFFSETOF__DelegateObject__target          OBJECT_SIZE /* m_pMethTab */
+#define OFFSETOF__DelegateObject__methodPtr       (OFFSETOF__DelegateObject__target + TARGET_POINTER_SIZE /* _target */ + TARGET_POINTER_SIZE /* _methodBase */)
+#define OFFSETOF__DelegateObject__methodPtrAux    (OFFSETOF__DelegateObject__methodPtr + TARGET_POINTER_SIZE /* _methodPtr */)
 
 #ifdef USE_CHECKED_OBJECTREFS
 typedef REF<DelegateObject> DELEGATEREF;
@@ -3322,7 +2257,6 @@ public:
         {
             NOTHROW;
             GC_NOTRIGGER;
-            SO_TOLERANT;
             MODE_COOPERATIVE;
         }
         CONTRACTL_END;
@@ -3345,7 +2279,6 @@ public:
     StackTraceElement & operator[](size_t index);
 
     void Append(StackTraceElement const * begin, StackTraceElement const * end);
-    void AppendSkipLast(StackTraceElement const * begin, StackTraceElement const * end);
 
     I1ARRAYREF Get() const
     {
@@ -3357,15 +2290,9 @@ public:
     void CopyFrom(StackTraceArray const & src);
     
 private:
-    StackTraceArray(StackTraceArray const & rhs);
+    StackTraceArray(StackTraceArray const & rhs) = delete;
 
-    StackTraceArray & operator=(StackTraceArray const & rhs)
-    {
-        WRAPPER_NO_CONTRACT;
-        StackTraceArray copy(rhs);
-        this->Swap(copy);
-        return *this;
-    }
+    StackTraceArray & operator=(StackTraceArray const & rhs) = delete;
 
     void Grow(size_t size);
     void EnsureThreadAffinity();
@@ -3490,7 +2417,7 @@ public:
     void SetHandleTable(PTRARRAYREF handleTable)
     {
         LIMITED_METHOD_CONTRACT;
-        SetObjectReferenceUnchecked(&m_pSlots, (OBJECTREF)handleTable);
+        SetObjectReference(&m_pSlots, (OBJECTREF)handleTable);
     }
 
     INT32 GetSlotsUsed()
@@ -3579,23 +2506,20 @@ public:
         return _xptrs;
     }
 
-    void SetStackTrace(StackTraceArray const & stackTrace, PTRARRAYREF dynamicMethodArray);
-    void SetNullStackTrace();
+    void SetStackTrace(I1ARRAYREF stackTrace, PTRARRAYREF dynamicMethodArray);
 
     void GetStackTrace(StackTraceArray & stackTrace, PTRARRAYREF * outDynamicMethodArray = NULL) const;
 
-#ifdef DACCESS_COMPILE
     I1ARRAYREF GetStackTraceArrayObject() const
     {
         LIMITED_METHOD_DAC_CONTRACT;
         return _stackTrace;
     }
-#endif // DACCESS_COMPILE
 
     void SetInnerException(OBJECTREF innerException)
     {
         WRAPPER_NO_CONTRACT;
-        SetObjectReference((OBJECTREF*)&_innerException, (OBJECTREF)innerException, GetAppDomain());
+        SetObjectReference((OBJECTREF*)&_innerException, (OBJECTREF)innerException);
     }
 
     OBJECTREF GetInnerException()
@@ -3628,7 +2552,7 @@ public:
     void SetMessage(STRINGREF message)
     {
         WRAPPER_NO_CONTRACT;
-        SetObjectReference((OBJECTREF*)&_message, (OBJECTREF)message, GetAppDomain());
+        SetObjectReference((OBJECTREF*)&_message, (OBJECTREF)message);
     }
 
     STRINGREF GetMessage()
@@ -3640,7 +2564,7 @@ public:
     void SetStackTraceString(STRINGREF stackTraceString)
     {
         WRAPPER_NO_CONTRACT;
-        SetObjectReference((OBJECTREF*)&_stackTraceString, (OBJECTREF)stackTraceString, GetAppDomain());
+        SetObjectReference((OBJECTREF*)&_stackTraceString, (OBJECTREF)stackTraceString);
     }
 
     STRINGREF GetStackTraceString()
@@ -3658,28 +2582,28 @@ public:
     void SetHelpURL(STRINGREF helpURL)
     {
         WRAPPER_NO_CONTRACT;
-        SetObjectReference((OBJECTREF*)&_helpURL, (OBJECTREF)helpURL, GetAppDomain());
+        SetObjectReference((OBJECTREF*)&_helpURL, (OBJECTREF)helpURL);
     }
 
     void SetSource(STRINGREF source)
     {
         WRAPPER_NO_CONTRACT;
-        SetObjectReference((OBJECTREF*)&_source, (OBJECTREF)source, GetAppDomain());
+        SetObjectReference((OBJECTREF*)&_source, (OBJECTREF)source);
     }
 
     void ClearStackTraceForThrow()
     {
         WRAPPER_NO_CONTRACT;
-        SetObjectReferenceUnchecked((OBJECTREF*)&_remoteStackTraceString, NULL);
-        SetObjectReferenceUnchecked((OBJECTREF*)&_stackTrace, NULL);
-        SetObjectReferenceUnchecked((OBJECTREF*)&_stackTraceString, NULL);
+        SetObjectReference((OBJECTREF*)&_remoteStackTraceString, NULL);
+        SetObjectReference((OBJECTREF*)&_stackTrace, NULL);
+        SetObjectReference((OBJECTREF*)&_stackTraceString, NULL);
     }
 
     void ClearStackTracePreservingRemoteStackTrace()
     {
         WRAPPER_NO_CONTRACT;
-        SetObjectReferenceUnchecked((OBJECTREF*)&_stackTrace, NULL);
-        SetObjectReferenceUnchecked((OBJECTREF*)&_stackTraceString, NULL);
+        SetObjectReference((OBJECTREF*)&_stackTrace, NULL);
+        SetObjectReference((OBJECTREF*)&_stackTraceString, NULL);
     }
 
     // This method will set the reference to the array
@@ -3687,7 +2611,7 @@ public:
     void SetWatsonBucketReference(OBJECTREF oWatsonBucketArray)
     {
         WRAPPER_NO_CONTRACT;
-        SetObjectReference((OBJECTREF*)&_watsonBuckets, (OBJECTREF)oWatsonBucketArray, GetAppDomain());
+        SetObjectReference((OBJECTREF*)&_watsonBuckets, (OBJECTREF)oWatsonBucketArray);
     }
 
     // This method will return the reference to the array
@@ -3735,9 +2659,7 @@ public:
     // If you modify the order of these fields, make sure to update the definition in 
     // BCL for this object.
 private:
-    STRINGREF   _className;  //Needed for serialization.
     OBJECTREF   _exceptionMethod;  //Needed for serialization.
-    STRINGREF   _exceptionMethodString; //Needed for serialization.
     STRINGREF   _message;
     OBJECTREF   _data;
     OBJECTREF   _innerException;
@@ -3749,13 +2671,10 @@ private:
     PTRARRAYREF _dynamicMethods;
     STRINGREF   _source;         // Mainly used by VB.
 
-    IN_WIN64(void* _xptrs;)
-    IN_WIN64(UINT_PTR    _ipForWatsonBuckets;) // Contains the IP of exception for watson bucketing
-    INT32       _remoteStackIndex;
-    INT32       _HResult;
-    IN_WIN32(void* _xptrs;)
+    UINT_PTR    _ipForWatsonBuckets; // Contains the IP of exception for watson bucketing
+    void*       _xptrs;
     INT32       _xcode;
-    IN_WIN32(UINT_PTR    _ipForWatsonBuckets;) // Contains the IP of exception for watson bucketing
+    INT32       _HResult;
 };
 
 // Defined in Contracts.cs
@@ -3784,10 +2703,9 @@ public:
 
 private:
     // keep these in sync with ndp/clr/src/bcl/system/diagnostics/contracts/contractsbcl.cs
-    IN_WIN64(INT32 _Kind;)
     STRINGREF _UserMessage;
     STRINGREF _Condition;
-    IN_WIN32(INT32 _Kind;)
+    INT32 _Kind;
 };
 #include "poppack.h"
 
@@ -3796,62 +2714,6 @@ typedef REF<ContractExceptionObject> CONTRACTEXCEPTIONREF;
 #else // USE_CHECKED_OBJECTREFS
 typedef PTR_ContractExceptionObject CONTRACTEXCEPTIONREF;
 #endif // USE_CHECKED_OBJECTREFS
-
-class NumberFormatInfo: public Object
-{
-public:
-    // C++ data members                 // Corresponding data member in NumberFormatInfo.cs
-                                        // Also update mscorlib.h when you add/remove fields
-
-    I4ARRAYREF cNumberGroup;        // numberGroupSize
-    I4ARRAYREF cCurrencyGroup;      // currencyGroupSize
-    I4ARRAYREF cPercentGroup;       // percentGroupSize
-    
-    STRINGREF sPositive;            // positiveSign
-    STRINGREF sNegative;            // negativeSign
-    STRINGREF sNumberDecimal;       // numberDecimalSeparator
-    STRINGREF sNumberGroup;         // numberGroupSeparator
-    STRINGREF sCurrencyGroup;       // currencyDecimalSeparator
-    STRINGREF sCurrencyDecimal;     // currencyGroupSeparator
-    STRINGREF sCurrency;            // currencySymbol
-#ifndef FEATURE_COREFX_GLOBALIZATION
-    STRINGREF sAnsiCurrency;        // ansiCurrencySymbol
-#endif
-    STRINGREF sNaN;                 // nanSymbol
-    STRINGREF sPositiveInfinity;    // positiveInfinitySymbol
-    STRINGREF sNegativeInfinity;    // negativeInfinitySymbol
-    STRINGREF sPercentDecimal;      // percentDecimalSeparator
-    STRINGREF sPercentGroup;        // percentGroupSeparator
-    STRINGREF sPercent;             // percentSymbol
-    STRINGREF sPerMille;            // perMilleSymbol
-
-    PTRARRAYREF sNativeDigits;      // nativeDigits (a string array)
-
-#ifndef FEATURE_COREFX_GLOBALIZATION    
-    INT32 iDataItem;                // Index into the CultureInfo Table.  Only used from managed code.
-#endif
-    INT32 cNumberDecimals;          // numberDecimalDigits
-    INT32 cCurrencyDecimals;        // currencyDecimalDigits
-    INT32 cPosCurrencyFormat;       // positiveCurrencyFormat
-    INT32 cNegCurrencyFormat;       // negativeCurrencyFormat
-    INT32 cNegativeNumberFormat;    // negativeNumberFormat
-    INT32 cPositivePercentFormat;   // positivePercentFormat
-    INT32 cNegativePercentFormat;   // negativePercentFormat
-    INT32 cPercentDecimals;         // percentDecimalDigits
-    INT32 iDigitSubstitution;       // digitSubstitution
-
-    CLR_BOOL bIsReadOnly;              // Is this NumberFormatInfo ReadOnly?
-#ifndef FEATURE_COREFX_GLOBALIZATION
-    CLR_BOOL bUseUserOverride;         // Flag to use user override. Only used from managed code.
-#endif
-    CLR_BOOL bIsInvariant;             // Is this the NumberFormatInfo for the Invariant Culture?
-#ifndef FEATURE_COREFX_GLOBALIZATION
-    CLR_BOOL bvalidForParseAsNumber;   // NEVER USED, DO NOT USE THIS! (Serialized in Whidbey/Everett)
-    CLR_BOOL bvalidForParseAsCurrency; // NEVER USED, DO NOT USE THIS! (Serialized in Whidbey/Everett)
-#endif
-};
-
-typedef NumberFormatInfo * NUMFMTREF;
 
 //===============================================================================
 // #NullableFeature
@@ -3928,7 +2790,7 @@ public:
     static inline void *Value(void *src, MethodTable *nullableMT)
     {
         Nullable *nullable = (Nullable *)src;
-        return nullable->ValueAddr(nullableMT);        
+        return nullable->ValueAddr(nullableMT);
     }
     
 private:
@@ -3944,5 +2806,134 @@ typedef REF<ExceptionObject> EXCEPTIONREF;
 #else // USE_CHECKED_OBJECTREFS
 typedef PTR_ExceptionObject EXCEPTIONREF;
 #endif // USE_CHECKED_OBJECTREFS
+
+class GCHeapHashObject : public Object
+{
+#ifdef DACCESS_COMPILE
+    friend class ClrDataAccess;
+#endif
+    friend class GCHeap;
+    friend class JIT_TrialAlloc;
+    friend class CheckAsmOffsets;
+    friend class COMString;
+    friend class MscorlibBinder;
+
+    private:
+    BASEARRAYREF _data;
+    INT32 _count;
+    INT32 _deletedCount;
+
+    public:
+    INT32 GetCount() { LIMITED_METHOD_CONTRACT; return _count; }
+    void IncrementCount(bool replacingDeletedItem)
+    {
+        LIMITED_METHOD_CONTRACT; 
+        ++_count;
+        if (replacingDeletedItem)
+            --_deletedCount;
+    }
+
+    void DecrementCount(bool deletingItem)
+    {
+        LIMITED_METHOD_CONTRACT;
+        --_count;
+        if (deletingItem)
+            ++_deletedCount;
+    }
+    INT32 GetDeletedCount() { LIMITED_METHOD_CONTRACT; return _deletedCount; }
+    void SetDeletedCountToZero() { LIMITED_METHOD_CONTRACT; _deletedCount = 0; }
+    INT32 GetCapacity() { LIMITED_METHOD_CONTRACT; if (_data == NULL) return 0; else return (_data->GetNumComponents()); }
+    BASEARRAYREF GetData() { LIMITED_METHOD_CONTRACT; return _data; }
+
+    void SetTable(BASEARRAYREF data)
+    {
+        STATIC_CONTRACT_NOTHROW;
+        STATIC_CONTRACT_GC_NOTRIGGER;
+        STATIC_CONTRACT_MODE_COOPERATIVE;
+
+        SetObjectReference((OBJECTREF*)&_data, (OBJECTREF)data);
+    }
+
+    protected:
+    GCHeapHashObject() {LIMITED_METHOD_CONTRACT; }
+   ~GCHeapHashObject() {LIMITED_METHOD_CONTRACT; }
+};
+
+typedef DPTR(GCHeapHashObject)  PTR_GCHeapHashObject;
+
+#ifdef USE_CHECKED_OBJECTREFS
+typedef REF<GCHeapHashObject> GCHEAPHASHOBJECTREF;
+#else   // USE_CHECKED_OBJECTREFS
+typedef PTR_GCHeapHashObject GCHEAPHASHOBJECTREF;
+#endif // USE_CHECKED_OBJECTREFS
+
+class LAHashDependentHashTrackerObject : public Object
+{
+#ifdef DACCESS_COMPILE
+    friend class ClrDataAccess;
+#endif
+    friend class CheckAsmOffsets;
+    friend class MscorlibBinder;
+
+    private:
+    OBJECTHANDLE _dependentHandle;
+    LoaderAllocator* _loaderAllocator;
+
+    public:
+    bool IsLoaderAllocatorLive();
+    bool IsTrackerFor(LoaderAllocator *pLoaderAllocator)
+    {
+        if (pLoaderAllocator != _loaderAllocator)
+            return false;
+        
+        return IsLoaderAllocatorLive();
+    }
+
+    void GetDependentAndLoaderAllocator(OBJECTREF *pLoaderAllocatorRef, GCHEAPHASHOBJECTREF *pGCHeapHash);
+
+    // Be careful with this. This isn't safe to use unless something is keeping the LoaderAllocator live, or there is no intention to dereference this pointer
+    LoaderAllocator* GetLoaderAllocatorUnsafe()
+    {
+        return _loaderAllocator;
+    }
+
+    void Init(OBJECTHANDLE dependentHandle, LoaderAllocator* loaderAllocator)
+    {
+        LIMITED_METHOD_CONTRACT;
+        _dependentHandle = dependentHandle;
+        _loaderAllocator = loaderAllocator;
+    }
+};
+
+class LAHashKeyToTrackersObject : public Object
+{
+#ifdef DACCESS_COMPILE
+    friend class ClrDataAccess;
+#endif
+    friend class CheckAsmOffsets;
+    friend class MscorlibBinder;
+
+    public:
+    // _trackerOrTrackerSet is either a reference to a LAHashDependentHashTracker, or to a GCHeapHash of LAHashDependentHashTracker objects.
+    OBJECTREF _trackerOrTrackerSet;
+    // _laLocalKeyValueStore holds an object that represents a Key value (which must always be valid for the lifetime of the 
+    // CrossLoaderAllocatorHeapHash, and the values which must also be valid for that entire lifetime. When a value might
+    // have a shorter lifetime it is accessed through the _trackerOrTrackerSet variable, which allows access to hashtables which
+    // are associated with that remote loaderallocator through a dependent handle, so that lifetime can be managed.
+    OBJECTREF _laLocalKeyValueStore;
+};
+
+typedef DPTR(LAHashDependentHashTrackerObject)  PTR_LAHashDependentHashTrackerObject;
+typedef DPTR(LAHashKeyToTrackersObject) PTR_LAHashKeyToTrackersObject;
+
+
+#ifdef USE_CHECKED_OBJECTREFS
+typedef REF<LAHashDependentHashTrackerObject> LAHASHDEPENDENTHASHTRACKERREF;
+typedef REF<LAHashKeyToTrackersObject> LAHASHKEYTOTRACKERSREF;
+#else   // USE_CHECKED_OBJECTREFS
+typedef PTR_LAHashDependentHashTrackerObject LAHASHDEPENDENTHASHTRACKERREF;
+typedef PTR_LAHashKeyToTrackersObject LAHASHKEYTOTRACKERSREF;
+#endif // USE_CHECKED_OBJECTREFS
+
 
 #endif // _OBJECT_H_

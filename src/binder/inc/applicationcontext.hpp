@@ -38,7 +38,7 @@ namespace BINDER_SPACE
         typedef PCWSTR key_t;
         static const FileNameMapEntry Null() { FileNameMapEntry e; e.m_wszFileName = nullptr; return e; }
         static bool IsNull(const FileNameMapEntry & e) { return e.m_wszFileName == nullptr; }
-        static const key_t GetKey(const FileNameMapEntry & e)
+        static key_t GetKey(const FileNameMapEntry & e)
         {
             key_t key;
             key = e.m_wszFileName;
@@ -65,7 +65,7 @@ namespace BINDER_SPACE
         typedef PCWSTR key_t;
         static const SimpleNameToFileNameMapEntry Null() { SimpleNameToFileNameMapEntry e; e.m_wszSimpleName = nullptr; return e; }
         static bool IsNull(const SimpleNameToFileNameMapEntry & e) { return e.m_wszSimpleName == nullptr; }
-        static const key_t GetKey(const SimpleNameToFileNameMapEntry & e)
+        static key_t GetKey(const SimpleNameToFileNameMapEntry & e)
         {
             key_t key;
             key = e.m_wszSimpleName;
@@ -131,7 +131,6 @@ namespace BINDER_SPACE
 
         // Getters/Setter
         inline ExecutionContext *GetExecutionContext();
-        inline InspectionContext *GetInspectionContext();
         inline FailureCache *GetFailureCache();
         inline HRESULT AddToFailureCache(SString &assemblyNameOrPath,
                                          HRESULT  hrBindResult);
@@ -158,7 +157,6 @@ namespace BINDER_SPACE
         SString            m_applicationName;
         DWORD              m_dwAppDomainId;
         ExecutionContext  *m_pExecutionContext;
-        InspectionContext *m_pInspectionContext;
         FailureCache      *m_pFailureCache;
         CRITSEC_COOKIE     m_contextCS;
 #ifdef FEATURE_VERSIONING_LOG
@@ -173,19 +171,6 @@ namespace BINDER_SPACE
 
         SimpleNameToFileNameMap * m_pTrustedPlatformAssemblyMap;
         TpaFileNameHash    * m_pFileNameHash;
-        
-        bool m_fCanExplicitlyBindToNativeImages;
-public:        
-        inline void SetExplicitBindToNativeImages(bool fCanExplicitlyBindToNativeImages)
-        {
-            m_fCanExplicitlyBindToNativeImages = fCanExplicitlyBindToNativeImages;
-        }
-        
-        inline bool CanExplicitlyBindToNativeImages()
-        {
-            return m_fCanExplicitlyBindToNativeImages;
-        }
-protected:        
     };
 
 #include "applicationcontext.inl"

@@ -61,24 +61,6 @@ void SpinLock::Init(LOCK_TYPE type, bool RequireCoopGC)
     }
     CONTRACTL_END;
 
-    // Disallow creation of locks before EE starts.  But only complain if we end up
-    // being hosted, since such locks have escaped the hosting net and will cause
-    // AVs on next use.
-#ifdef _DEBUG
-    static bool fEarlyInit; // = false
-
-    if (!(g_fEEStarted || g_fEEInit))
-    {
-        if (!CLRSyncHosted())
-            fEarlyInit = true;
-    }
-
-    // If we are now hosted, we better not have *ever* created some locks that are
-    // not known to our host.
-    _ASSERTE(!fEarlyInit || !CLRSyncHosted());
-
-#endif
-
     if (m_Initialized == Initialized)
     {
         _ASSERTE (type == m_LockType);
@@ -134,30 +116,29 @@ BOOL SpinLock::OwnedByCurrentThread()
 }
 #endif
 
-DEBUG_NOINLINE void SpinLock::AcquireLock(SpinLock *s, Thread * pThread)
+DEBUG_NOINLINE void SpinLock::AcquireLock(SpinLock *s)
 {
     SCAN_SCOPE_BEGIN;
     STATIC_CONTRACT_GC_NOTRIGGER;
 
-    s->GetLock(pThread); 
+    s->GetLock(); 
 }
 
-DEBUG_NOINLINE void SpinLock::ReleaseLock(SpinLock *s, Thread * pThread) 
-{ 
+DEBUG_NOINLINE void SpinLock::ReleaseLock(SpinLock *s)
+{
     SCAN_SCOPE_END;
 
-    s->FreeLock(pThread); 
+    s->FreeLock(); 
 }
 
 
-void SpinLock::GetLock(Thread* pThread) 
+void SpinLock::GetLock()
 {
     CONTRACTL
     {
         DISABLED(THROWS);  // need to rewrite spin locks to no-throw.
         GC_NOTRIGGER;
         CAN_TAKE_LOCK;
-        SO_TOLERANT;
     }
     CONTRACTL_END;
 
@@ -177,7 +158,6 @@ void SpinLock::GetLock(Thread* pThread)
         }
     }
 
-    INCTHREADLOCKCOUNTTHREAD(pThread);
 #ifdef _DEBUG
     m_holdingThreadId.SetToCurrentThread();
     dbg_EnterLock();
@@ -195,7 +175,6 @@ BOOL SpinLock::GetLockNoWait()
         NOTHROW;
         GC_NOTRIGGER;
         CAN_TAKE_LOCK;
-        SO_TOLERANT;
     }
     CONTRACTL_END;
 
@@ -213,17 +192,16 @@ BOOL SpinLock::GetLockNoWait()
 // SpinLock::FreeLock   
 //  Release the spinlock
 //
-void SpinLock::FreeLock(Thread* pThread)
+void SpinLock::FreeLock()
 {
     CONTRACTL
     {
         NOTHROW;
         GC_NOTRIGGER;
-        SO_TOLERANT;
     }
     CONTRACTL_END;
 
-	_ASSERTE(m_Initialized == Initialized);
+    _ASSERTE(m_Initialized == Initialized);
 
 #ifdef _DEBUG
     _ASSERTE(OwnedByCurrentThread());
@@ -235,7 +213,6 @@ void SpinLock::FreeLock(Thread* pThread)
         VolatileStore(&m_lock, (LONG)0);
     }
 
-    DECTHREADLOCKCOUNTTHREAD(pThread);
     EE_LOCK_RELEASED(this);
 
 } // SpinLock::FreeLock ()
@@ -255,21 +232,21 @@ SpinLock::SpinToAcquire()
         NOTHROW;
         GC_NOTRIGGER;
         CAN_TAKE_LOCK;
-        SO_TOLERANT;
     }
     CONTRACTL_END;
 
-    _ASSERTE (!CLRSyncHosted());
-
     DWORD backoffs = 0;
     ULONG ulSpins = 0;
+    YieldProcessorNormalizationInfo normalizationInfo;
 
     while (true)
     {
-        for (unsigned i = ulSpins+10000;
+        for (ULONG i = ulSpins + 10000;
              ulSpins < i;
              ulSpins++)
         {
+            YieldProcessorNormalized(normalizationInfo); // indicate to the processor that we are spinning 
+
             // Note: Must use Volatile to ensure the lock is
             // refetched from memory.
             //
@@ -277,7 +254,6 @@ SpinLock::SpinToAcquire()
             {
                 break;
             }
-            YieldProcessor();			// indicate to the processor that we are spining 
         }
 
         // Try the inline atomic test again.

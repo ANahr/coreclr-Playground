@@ -121,18 +121,18 @@ LEAF_END HelperMethodFrameRestoreState, _TEXT
 // The call in ndirect import precode points to this function.
 NESTED_ENTRY NDirectImportThunk, _TEXT, NoHandler
 
-    PROLOG_SAVE_REG_PAIR_INDEXED fp, lr, -160
+    PROLOG_SAVE_REG_PAIR_INDEXED fp, lr, -224
     SAVE_ARGUMENT_REGISTERS sp, 16
-    SAVE_FLOAT_ARGUMENT_REGISTERS sp, 88
+    SAVE_FLOAT_ARGUMENT_REGISTERS sp, 96
 
     mov x0, x12
     bl NDirectImportWorker
     mov x12, x0
 
     // pop the stack and restore original register state
-    RESTORE_FLOAT_ARGUMENT_REGISTERS sp, 88
+    RESTORE_FLOAT_ARGUMENT_REGISTERS sp, 96
     RESTORE_ARGUMENT_REGISTERS sp, 16
-    EPILOG_RESTORE_REG_PAIR_INDEXED fp, lr, 160
+    EPILOG_RESTORE_REG_PAIR_INDEXED fp, lr, 224
 
     // If we got back from NDirectImportWorker, the MD has been successfully
     // linked. Proceed to execute the original DLL call.
@@ -207,6 +207,106 @@ LEAF_END ThePreStubPatch, _TEXT
     LEAF_END_MARKED \name, _TEXT
 .endmacro
 
+// ------------------------------------------------------------------
+// Start of the writeable code region
+LEAF_ENTRY JIT_PatchedCodeStart, _TEXT
+    ret  lr
+LEAF_END JIT_PatchedCodeStart, _TEXT
+
+// void JIT_UpdateWriteBarrierState(bool skipEphemeralCheck)
+//
+// Update shadow copies of the various state info required for barrier
+//
+// State info is contained in a literal pool at the end of the function
+// Placed in text section so that it is close enough to use ldr literal and still
+// be relocatable. Eliminates need for PREPARE_EXTERNAL_VAR in hot code.
+//
+// Align and group state info together so it fits in a single cache line
+// and each entry can be written atomically
+//
+WRITE_BARRIER_ENTRY JIT_UpdateWriteBarrierState
+    PROLOG_SAVE_REG_PAIR_INDEXED   fp, lr, -16
+
+    // x0-x7 will contain intended new state
+    // x8 will preserve skipEphemeralCheck
+    // x12 will be used for pointers
+
+    mov x8, x0
+
+    PREPARE_EXTERNAL_VAR g_card_table, x12
+    ldr  x0, [x12]
+
+#ifdef FEATURE_MANUALLY_MANAGED_CARD_BUNDLES
+    PREPARE_EXTERNAL_VAR g_card_bundle_table, x12
+    ldr  x1, [x12]
+#endif
+
+#ifdef WRITE_BARRIER_CHECK
+    PREPARE_EXTERNAL_VAR g_GCShadow, x12
+    ldr  x2, [x12]
+#endif
+
+#ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
+    PREPARE_EXTERNAL_VAR g_sw_ww_table, x12
+    ldr  x3, [x12]
+#endif
+
+    PREPARE_EXTERNAL_VAR g_ephemeral_low, x12
+    ldr  x4, [x12]
+
+    PREPARE_EXTERNAL_VAR g_ephemeral_high, x12
+    ldr  x5, [x12]
+
+    cbz  x8, LOCAL_LABEL(EphemeralCheckEnabled)
+    movz x4, #0
+    movn x5, #0
+LOCAL_LABEL(EphemeralCheckEnabled):
+
+    PREPARE_EXTERNAL_VAR g_lowest_address, x12
+    ldr  x6, [x12]
+
+    PREPARE_EXTERNAL_VAR g_highest_address, x12
+    ldr  x7, [x12]
+
+    // Update wbs state
+    adr  x12, LOCAL_LABEL(wbs_begin)
+
+    stp  x0, x1, [x12], 16
+    stp  x2, x3, [x12], 16
+    stp  x4, x5, [x12], 16
+    stp  x6, x7, [x12], 16
+
+    EPILOG_RESTORE_REG_PAIR_INDEXED fp, lr, 16
+    EPILOG_RETURN
+
+    // Begin patchable literal pool
+    .balign 64  // Align to power of two at least as big as patchable literal pool so that it fits optimally in cache line
+LOCAL_LABEL(wbs_begin):
+LOCAL_LABEL(wbs_card_table):
+    .quad 0
+LOCAL_LABEL(wbs_card_bundle_table):
+    .quad 0
+LOCAL_LABEL(wbs_GCShadow):
+    .quad 0
+LOCAL_LABEL(wbs_sw_ww_table):
+    .quad 0
+LOCAL_LABEL(wbs_ephemeral_low):
+    .quad 0
+LOCAL_LABEL(wbs_ephemeral_high):
+    .quad 0
+LOCAL_LABEL(wbs_lowest_address):
+    .quad 0
+LOCAL_LABEL(wbs_highest_address):
+    .quad 0
+WRITE_BARRIER_END JIT_UpdateWriteBarrierState
+
+
+// ------------------------------------------------------------------
+// End of the writeable code region
+LEAF_ENTRY JIT_PatchedCodeLast, _TEXT
+    ret  lr
+LEAF_END JIT_PatchedCodeLast, _TEXT
+
 // void JIT_ByRefWriteBarrier
 // On entry:
 //   x13  : the source address (points to object reference to write)
@@ -217,6 +317,7 @@ LEAF_END ThePreStubPatch, _TEXT
 //   x13  : incremented by 8
 //   x14  : incremented by 8
 //   x15  : trashed
+//   x17  : trashed (ip1) if FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
 //
 WRITE_BARRIER_ENTRY JIT_ByRefWriteBarrier
 
@@ -234,19 +335,23 @@ WRITE_BARRIER_END JIT_ByRefWriteBarrier
 //
 // On exit:
 //   x12  : trashed
-//   x14  : incremented by 8
+//   x14  : trashed (incremented by 8 to implement JIT_ByRefWriteBarrier contract)
 //   x15  : trashed
+//   x17  : trashed (ip1) if FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
 //
 WRITE_BARRIER_ENTRY JIT_CheckedWriteBarrier
-    PREPARE_EXTERNAL_VAR g_lowest_address, x12
-    ldr  x12,  [x12]
+    ldr  x12,  LOCAL_LABEL(wbs_lowest_address)
     cmp  x14,  x12
-    blt  LOCAL_LABEL(NotInHeap)
 
-    PREPARE_EXTERNAL_VAR g_highest_address, x12
-    ldr  x12, [x12] 
-    cmp  x14, x12
-    blt  C_FUNC(JIT_WriteBarrier)
+    ldr  x12, LOCAL_LABEL(wbs_highest_address)
+
+    // Compare against the upper bound if the previous comparison indicated
+    // that the destination address is greater than or equal to the lower
+    // bound. Otherwise, set the C flag (specified by the 0x2) so that the
+    // branch below is not taken.
+    ccmp x14, x12, #0x2, hs
+
+    blo  C_FUNC(JIT_WriteBarrier)
 
 LOCAL_LABEL(NotInHeap):
     str  x15, [x14], 8
@@ -260,72 +365,89 @@ WRITE_BARRIER_END JIT_CheckedWriteBarrier
 //
 // On exit:
 //   x12  : trashed
-//   x14  : incremented by 8
+//   x14  : trashed (incremented by 8 to implement JIT_ByRefWriteBarrier contract)
 //   x15  : trashed
+//   x17  : trashed (ip1) if FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
 //
 WRITE_BARRIER_ENTRY JIT_WriteBarrier
-    dmb  ST
-    str  x15, [x14]
+    stlr  x15, [x14]
 
 #ifdef WRITE_BARRIER_CHECK
     // Update GC Shadow Heap
 
-    // need temporary registers. Save them before using.
-    stp  x12, x13, [sp, #-16]!
+    // Do not perform the work if g_GCShadow is 0
+    ldr  x12, LOCAL_LABEL(wbs_GCShadow)
+    cbz  x12, LOCAL_LABEL(ShadowUpdateDisabled)
+
+    // need temporary register. Save before using.
+    str  x13, [sp, #-16]!
 
     // Compute address of shadow heap location:
     //   pShadow = g_GCShadow + (x14 - g_lowest_address)
-    PREPARE_EXTERNAL_VAR g_lowest_address, x12
-    ldr  x12, [x12]
-    sub  x12, x14, x12
-    PREPARE_EXTERNAL_VAR g_GCShadow, x13
-    ldr  x13, [x13]
+    ldr  x13, LOCAL_LABEL(wbs_lowest_address)
+    sub  x13, x14, x13
     add  x12, x13, x12
 
     // if (pShadow >= g_GCShadowEnd) goto end
     PREPARE_EXTERNAL_VAR g_GCShadowEnd, x13
     ldr  x13, [x13]
     cmp  x12, x13
-    bhs  LOCAL_LABEL(shadowupdateend)
+    bhs  LOCAL_LABEL(ShadowUpdateEnd)
 
     // *pShadow = x15
     str  x15, [x12]
 
     // Ensure that the write to the shadow heap occurs before the read from the GC heap so that race
     // conditions are caught by INVALIDGCVALUE.
-    dmb  sy
+    dmb  ish
 
     // if ([x14] == x15) goto end
     ldr  x13, [x14]
     cmp  x13, x15
-    beq LOCAL_LABEL(shadowupdateend)
+    beq LOCAL_LABEL(ShadowUpdateEnd)
 
     // *pShadow = INVALIDGCVALUE (0xcccccccd)
-    mov  x13, #0
-    movk x13, #0xcccd
+    movz x13, #0xcccd
     movk x13, #0xcccc, LSL #16
     str  x13, [x12]
 
-LOCAL_LABEL(shadowupdateend):
-    ldp  x12, x13, [sp],#16
+LOCAL_LABEL(ShadowUpdateEnd):
+    ldr  x13, [sp], #16
+LOCAL_LABEL(ShadowUpdateDisabled):
 #endif
 
+#ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
+    // Update the write watch table if necessary
+    ldr  x12, LOCAL_LABEL(wbs_sw_ww_table)
+    cbz  x12, LOCAL_LABEL(CheckCardTable)
+    add  x12, x12, x14, lsr #0xc  // SoftwareWriteWatch::AddressToTableByteIndexShift
+    ldrb w17, [x12]
+    cbnz x17, LOCAL_LABEL(CheckCardTable)
+    mov  w17, #0xFF
+    strb w17, [x12]
+#endif
+
+LOCAL_LABEL(CheckCardTable):
     // Branch to Exit if the reference is not in the Gen0 heap
     //
-    PREPARE_EXTERNAL_VAR g_ephemeral_low, x12
-    ldr  x12,  [x12]
+    ldr  x12, LOCAL_LABEL(wbs_ephemeral_low)
+    cbz  x12, LOCAL_LABEL(SkipEphemeralCheck)
     cmp  x15,  x12
-    blt  LOCAL_LABEL(Exit)
 
-    PREPARE_EXTERNAL_VAR g_ephemeral_high, x12
-    ldr  x12, [x12]
-    cmp  x15,  x12
-    bgt  LOCAL_LABEL(Exit)
+    ldr  x12, LOCAL_LABEL(wbs_ephemeral_high)
 
+    // Compare against the upper bound if the previous comparison indicated
+    // that the destination address is greater than or equal to the lower
+    // bound. Otherwise, set the C flag (specified by the 0x2) so that the
+    // branch to exit is taken.
+    ccmp x15, x12, #0x2, hs
+
+    bhi  LOCAL_LABEL(Exit)
+
+LOCAL_LABEL(SkipEphemeralCheck):
     // Check if we need to update the card table
-    PREPARE_EXTERNAL_VAR g_card_table, x12
-    ldr  x12, [x12]
-    add  x15,  x12, x14, lsr #11
+    ldr  x12, LOCAL_LABEL(wbs_card_table)
+    add  x15, x12, x14, lsr #11
     ldrb w12, [x15]
     cmp  x12, 0xFF
     beq  LOCAL_LABEL(Exit)
@@ -333,23 +455,26 @@ LOCAL_LABEL(shadowupdateend):
 LOCAL_LABEL(UpdateCardTable):
     mov  x12, 0xFF 
     strb w12, [x15]
+
+#ifdef FEATURE_MANUALLY_MANAGED_CARD_BUNDLES
+    // Check if we need to update the card bundle table
+    ldr  x12, LOCAL_LABEL(wbs_card_bundle_table)
+    add  x15, x12, x14, lsr #21
+    ldrb w12, [x15]
+    cmp  x12, 0xFF
+    beq  LOCAL_LABEL(Exit)
+
+LOCAL_LABEL(UpdateCardBundle):
+    mov  x12, 0xFF
+    strb w12, [x15]
+#endif
+
 LOCAL_LABEL(Exit):
     add  x14, x14, 8
     ret  lr  
 WRITE_BARRIER_END JIT_WriteBarrier
 
-// ------------------------------------------------------------------
-// Start of the writeable code region
-LEAF_ENTRY JIT_PatchedCodeStart, _TEXT
-    ret  lr
-LEAF_END JIT_PatchedCodeStart, _TEXT
-
-// ------------------------------------------------------------------
-// End of the writeable code region
-LEAF_ENTRY JIT_PatchedCodeLast, _TEXT
-    ret  lr
-LEAF_END JIT_PatchedCodeLast, _TEXT
-
+#ifdef FEATURE_PREJIT
 //------------------------------------------------
 // VirtualMethodFixupStub
 //
@@ -369,9 +494,9 @@ LEAF_END JIT_PatchedCodeLast, _TEXT
 NESTED_ENTRY VirtualMethodFixupStub, _TEXT, NoHandler
 
     // Save arguments and return address
-    PROLOG_SAVE_REG_PAIR_INDEXED fp, lr, -160
+    PROLOG_SAVE_REG_PAIR_INDEXED fp, lr, -224
     SAVE_ARGUMENT_REGISTERS sp, 16
-    SAVE_FLOAT_ARGUMENT_REGISTERS sp, 88
+    SAVE_FLOAT_ARGUMENT_REGISTERS sp, 96
 
     // Refer to ZapImportVirtualThunk::Save
     // for details on this.
@@ -388,15 +513,16 @@ NESTED_ENTRY VirtualMethodFixupStub, _TEXT, NoHandler
 
     // pop the stack and restore original register state
     RESTORE_ARGUMENT_REGISTERS sp, 16
-    RESTORE_FLOAT_ARGUMENT_REGISTERS sp, 88
-    EPILOG_RESTORE_REG_PAIR_INDEXED fp, lr, 160
+    RESTORE_FLOAT_ARGUMENT_REGISTERS sp, 96
+    EPILOG_RESTORE_REG_PAIR_INDEXED fp, lr, 224
 
     PATCH_LABEL VirtualMethodFixupPatchLabel
 
     // and tailcall to the actual method
     EPILOG_BRANCH_REG x12
 
-NESTED_END VirtualMEthodFixupStub, _TEXT
+NESTED_END VirtualMethodFixupStub, _TEXT
+#endif // FEATURE_PREJIT
 
 //------------------------------------------------
 // ExternalMethodFixupStub
@@ -450,7 +576,7 @@ LEAF_END SinglecastDelegateInvokeStub, _TEXT
 #ifdef FEATURE_COMINTEROP
 
 #define ComCallPreStub_FrameSize (SIZEOF__GSCookie + SIZEOF__ComMethodFrame)
-#define ComCallPreStub_FirstStackAdjust  (SIZEOF__ArgumentRegisters + 2 * 8) // reg args , fp & lr already pushed
+#define ComCallPreStub_FirstStackAdjust  (8 + SIZEOF__ArgumentRegisters + 2 * 8) // x8, reg args , fp & lr already pushed
 #define ComCallPreStub_StackAlloc0        (ComCallPreStub_FrameSize - ComCallPreStub_FirstStackAdjust)
 #define ComCallPreStub_StackAlloc1        (ComCallPreStub_StackAlloc0 + SIZEOF__FloatArgumentRegisters + 8)// 8 for ErrorReturn
 #define ComCallPreStub_StackAlloc    (ComCallPreStub_StackAlloc1 + (ComCallPreStub_StackAlloc1 & 8))
@@ -580,7 +706,7 @@ COMToCLRDispatchHelper_RegSetup
     ldp x2, x3, [x1, #(SIZEOF__ComMethodFrame - SIZEOF__ArgumentRegisters + 16)]
     ldp x4, x5, [x1, #(SIZEOF__ComMethodFrame - SIZEOF__ArgumentRegisters + 32)]
     ldp x6, x7, [x1, #(SIZEOF__ComMethodFrame - SIZEOF__ArgumentRegisters + 48)]
-    ldr x8, [x1, #(SIZEOF__ComMethodFrame - SIZEOF__ArgumentRegisters + 64)]
+    ldr x8, [x1, #(SIZEOF__ComMethodFrame - SIZEOF__ArgumentRegisters - 8)]
 
     ldr x1, [x1, #(SIZEOF__ComMethodFrame - SIZEOF__ArgumentRegisters + 8)]
 
@@ -599,9 +725,9 @@ COMToCLRDispatchHelper_RegSetup
 NESTED_ENTRY TheUMEntryPrestub, _TEXT, UnhandledExceptionHandlerUnix
 
     // Save arguments and return address
-    PROLOG_SAVE_REG_PAIR_INDEXED fp, lr, -160
+    PROLOG_SAVE_REG_PAIR_INDEXED fp, lr, -224
     SAVE_ARGUMENT_REGISTERS sp, 16
-    SAVE_FLOAT_ARGUMENT_REGISTERS sp, 88
+    SAVE_FLOAT_ARGUMENT_REGISTERS sp, 96
 
     mov x0, x12
     bl C_FUNC(TheUMEntryPrestubWorker)
@@ -611,8 +737,8 @@ NESTED_ENTRY TheUMEntryPrestub, _TEXT, UnhandledExceptionHandlerUnix
 
     // pop the stack and restore original register state
     RESTORE_ARGUMENT_REGISTERS sp, 16
-    RESTORE_FLOAT_ARGUMENT_REGISTERS sp, 88
-    EPILOG_RESTORE_REG_PAIR_INDEXED fp, lr, 160
+    RESTORE_FLOAT_ARGUMENT_REGISTERS sp, 96
+    EPILOG_RESTORE_REG_PAIR_INDEXED fp, lr, 224
 
     // and tailcall to the actual method
     EPILOG_BRANCH_REG x12
@@ -655,15 +781,6 @@ LOCAL_LABEL(UMThunkStub_HaveThread):
 
 LOCAL_LABEL(UMThunkStub_InCooperativeMode):
     ldr x12, [fp, #UMThunkStub_HiddenArg] // x12 = UMEntryThunk*
-
-    ldr x0, [x19, #Thread__m_pDomain]
-
-    // m_dwDomainId is 4 bytes so using 32-bit variant
-    ldr w1, [x12, #UMEntryThunk__m_dwDomainId]
-    ldr w0, [x0, #AppDomain__m_dwId]
-    cmp w0, w1
-    bne LOCAL_LABEL(UMThunkStub_WrongAppDomain)
-
     ldr x3, [x12, #UMEntryThunk__m_pUMThunkMarshInfo] // x3 = m_pUMThunkMarshInfo
 
     // m_cbActualArgSize is UINT32 and hence occupies 4 bytes
@@ -734,117 +851,13 @@ LOCAL_LABEL(UMThunkStub_DoTrapReturningThreads):
     add sp, sp, #SIZEOF__FloatArgumentRegisters
     b LOCAL_LABEL(UMThunkStub_InCooperativeMode)
 
-LOCAL_LABEL(UMThunkStub_WrongAppDomain):
-    // Saving FP Args as this is read by UM2MThunk_WrapperHelper
-    sub sp, sp, #SIZEOF__FloatArgumentRegisters
-    SAVE_FLOAT_ARGUMENT_REGISTERS sp, 0
-
-    // UMEntryThunk* pUMEntry
-    ldr x0, [fp, #UMThunkStub_HiddenArg]
-
-    // void * pArgs
-    add x2, fp, #16  
-
-    // remaining arguments are unused
-    bl C_FUNC(UM2MDoADCallBack)
-
-    // restore integral return value
-    ldp x0, x1, [fp, #16]
-
-    // restore FP or HFA return value
-    RESTORE_FLOAT_ARGUMENT_REGISTERS sp, 0
-
-    b LOCAL_LABEL(UMThunkStub_PostCall)
-
 NESTED_END UMThunkStub, _TEXT
-
-
-// UM2MThunk_WrapperHelper(void *pThunkArgs, // x0
-//                         int cbStackArgs,  // x1 (unused)
-//                         void *pAddr,  // x2 (unused)
-//                         UMEntryThunk *pEntryThunk,// x3
-//                         Thread *pThread)  // x4
-
-// pThunkArgs points to the argument registers pushed on the stack by UMThunkStub
-
-NESTED_ENTRY UM2MThunk_WrapperHelper, _TEXT, NoHandler
-
-    PROLOG_SAVE_REG_PAIR_INDEXED fp, lr, -32
-    PROLOG_SAVE_REG  x19, 16
-
-
-    // save pThunkArgs in non-volatile reg. It is required after return from call to ILStub
-    mov x19, x0  
-
-    // ARM64TODO - Is this required by ILStub
-    mov x12, x3  //// x12 = UMEntryThunk *
-
-    //
-    // Note that layout of the arguments is given by UMThunkStub frame
-    //
-    ldr x3, [x3, #UMEntryThunk__m_pUMThunkMarshInfo]
-
-    // m_cbActualArgSize is 4-byte field
-    ldr w2, [x3, #UMThunkMarshInfo__m_cbActualArgSize]
-    cbz w2, LOCAL_LABEL(UM2MThunk_WrapperHelper_RegArgumentsSetup)
-
-    // extend to 64- bits
-    uxtw x2, w2 
-
-    // Source pointer. Subtracting 16 bytes due to fp & lr
-    add x6, x0, #(UMThunkStub_StackArgs-16) 
-
-    // move source ptr to end of Stack Args
-    add x6, x6, x2 
-
-    // Count of stack slot pairs to copy (divide by 16)
-    lsr x1, x2, #4
-
-    // Is there an extra stack slot? (can happen when stack arg bytes not multiple of 16)
-    and x2, x2, #8
-
-    // If yes then start source pointer from 16 byte aligned stack slot
-    add x6, x6, x2
-
-    // increment stack slot pair count by 1 if x2 is not zero
-    add x1, x1, x2, LSR #3
-
-LOCAL_LABEL(UM2MThunk_WrapperHelper_StackLoop):
-    ldp x4, x5, [x6, #-16]!
-    stp x4, x5, [sp, #-16]!
-    subs x1, x1, #1
-    bne LOCAL_LABEL(UM2MThunk_WrapperHelper_StackLoop)
-
-LOCAL_LABEL(UM2MThunk_WrapperHelper_RegArgumentsSetup):
-    ldr x16, [x3, #(UMThunkMarshInfo__m_pILStub)]
-
-    // reload floating point registers
-    RESTORE_FLOAT_ARGUMENT_REGISTERS x0, -1 * (SIZEOF__FloatArgumentRegisters + 16)
-
-    // reload argument registers
-    RESTORE_ARGUMENT_REGISTERS x0, 0
-
-    blr x16
-
-    // save integral return value
-    stp x0, x1, [x19]
-
-    // save FP/HFA return values
-    SAVE_FLOAT_ARGUMENT_REGISTERS x19, -1 * (SIZEOF__FloatArgumentRegisters + 16)
-
-    EPILOG_STACK_RESTORE
-    EPILOG_RESTORE_REG  x19, 16
-    EPILOG_RESTORE_REG_PAIR_INDEXED fp, lr, 32
-    EPILOG_RETURN
-
-NESTED_END UM2MThunk_WrapperHelper, _TEXT
-
 
 #ifdef FEATURE_HIJACK
 // ------------------------------------------------------------------
 // Hijack function for functions which return a scalar type or a struct (value type)
 NESTED_ENTRY OnHijackTripThread, _TEXT, NoHandler
-    PROLOG_SAVE_REG_PAIR_INDEXED   fp, lr, -144
+    PROLOG_SAVE_REG_PAIR_INDEXED   fp, lr, -176
     // Spill callee saved registers
     PROLOG_SAVE_REG_PAIR   x19, x20, 16
     PROLOG_SAVE_REG_PAIR   x21, x22, 32
@@ -856,8 +869,8 @@ NESTED_ENTRY OnHijackTripThread, _TEXT, NoHandler
     stp x0, x1, [sp, #96]
 
     // save any FP/HFA return value(s)
-    stp d0, d1, [sp, #112]
-    stp d2, d3, [sp, #128]
+    stp q0, q1, [sp, #112]
+    stp q2, q3, [sp, #144]
 
     mov x0, sp
     bl OnHijackWorker
@@ -866,15 +879,15 @@ NESTED_ENTRY OnHijackTripThread, _TEXT, NoHandler
     ldp x0, x1, [sp, #96]
 
     // restore any FP/HFA return value(s)
-    ldp d0, d1, [sp, #112]
-    ldp d2, d3, [sp, #128]
+    ldp q0, q1, [sp, #112]
+    ldp q2, q3, [sp, #144]
 
     EPILOG_RESTORE_REG_PAIR   x19, x20, 16
     EPILOG_RESTORE_REG_PAIR   x21, x22, 32
     EPILOG_RESTORE_REG_PAIR   x23, x24, 48
     EPILOG_RESTORE_REG_PAIR   x25, x26, 64
     EPILOG_RESTORE_REG_PAIR   x27, x28, 80
-    EPILOG_RESTORE_REG_PAIR_INDEXED   fp, lr,   144
+    EPILOG_RESTORE_REG_PAIR_INDEXED   fp, lr,   176
     EPILOG_RETURN
 NESTED_END OnHijackTripThread, _TEXT
 
@@ -887,8 +900,6 @@ NESTED_END OnHijackTripThread, _TEXT
 //GenerateRedirectedHandledJITCaseStub DbgThreadControl
 // ------------------------------------------------------------------
 //GenerateRedirectedHandledJITCaseStub UserSuspend
-// ------------------------------------------------------------------
-//GenerateRedirectedHandledJITCaseStub YieldTask
 
 #ifdef _DEBUG
 // ------------------------------------------------------------------
@@ -909,7 +920,13 @@ NESTED_ENTRY CallEHFunclet, _TEXT, NoHandler
     // X3 = address of the location where the SP of funclet's caller (i.e. this helper) should be saved.
     //
 
-    PROLOG_SAVE_REG_PAIR_INDEXED   fp, lr, -96
+    // Using below prolog instead of PROLOG_SAVE_REG_PAIR_INDEXED fp,lr, -96
+    // is intentional. Above statement would also emit instruction to save
+    // sp in fp. If sp is saved in fp in prolog then it is not expected that fp can change in the body
+    // of method. However, this method needs to be able to change fp before calling funclet.
+    // This is required to access locals in funclet.
+    PROLOG_SAVE_REG_PAIR_INDEXED   x29, lr, -96
+
     // Spill callee saved registers
     PROLOG_SAVE_REG_PAIR   x19, x20, 16
     PROLOG_SAVE_REG_PAIR   x21, x22, 32
@@ -1074,6 +1091,7 @@ LOCAL_LABEL(Promote):
     mov     x16, #256
     str     x16, [x13]         // be quick to reset the counter so we don't get a bunch of contending threads
     orr     x11, x11, #PROMOTE_CHAIN_FLAG   // set PROMOTE_CHAIN_FLAG
+    mov     x12, x9           // We pass the ResolveCacheElem to ResolveWorkerAsmStub instead of the DispatchToken
 
 LOCAL_LABEL(Fail):
     b       ResolveWorkerAsmStub // call the ResolveWorkerAsmStub method to transition into the VM
@@ -1136,7 +1154,7 @@ DelayLoad_Helper\suffix:
     mov x4, \frameFlags
     bl DynamicHelperWorker
     cbnz x0, LOCAL_LABEL(FakeProlog\suffix\()_0)
-    ldr x0, [sp, #__PWTB_ArgumentRegisters]
+    ldr x0, [sp, #__PWTB_ArgumentRegister_FirstArg]
     EPILOG_WITH_TRANSITION_BLOCK_RETURN
 LOCAL_LABEL(FakeProlog\suffix\()_0):
     mov x12, x0
@@ -1153,7 +1171,7 @@ DynamicHelper DynamicHelperFrameFlags_ObjectArg | DynamicHelperFrameFlags_Object
 
 #ifdef FEATURE_PREJIT
 // ------------------------------------------------------------------
-// void StubDispatchFixupStub(args in regs x0-x7 & stack and possibly retbuff arg in x8, x11:IndirectionCellAndFlags, x12:DispatchToken)
+// void StubDispatchFixupStub(args in regs x0-x7 & stack and possibly retbuff arg in x8, x11:IndirectionCellAndFlags)
 //
 // The stub dispatch thunk which transfers control to StubDispatchFixupWorker.
 NESTED_ENTRY StubDispatchFixupStub, _TEXT, NoHandler
@@ -1165,11 +1183,11 @@ NESTED_ENTRY StubDispatchFixupStub, _TEXT, NoHandler
     mov x2, #0 // sectionIndex
     mov x3, #0 // pModule
     bl C_FUNC(StubDispatchFixupWorker)
-    mov x9, x0
+    mov x12, x0
 
     EPILOG_WITH_TRANSITION_BLOCK_TAILCALL
     PATCH_LABEL StubDispatchFixupPatchLabel
-    EPILOG_BRANCH_REG  x9
+    EPILOG_BRANCH_REG  x12
 
 NESTED_END StubDispatchFixupStub, _TEXT
 #endif
@@ -1186,9 +1204,9 @@ NESTED_END StubDispatchFixupStub, _TEXT
 // On exit:
 //   buffer pointed to by x1 on entry contains the float or double argument as appropriate
 //
-    LEAF_ENTRY getFPReturn
+LEAF_ENTRY getFPReturn, _TEXT
     str d0, [x1]
-    LEAF_END
+LEAF_END getFPReturn, _TEXT
 
 // ------------------------------------------------------------------
 // Function used by COM interop to set floating point return value (since it's not in the same
@@ -1202,7 +1220,215 @@ NESTED_END StubDispatchFixupStub, _TEXT
 //   s0          : float result if x0 == 4
 //   d0          : double result if x0 == 8
 //
-    LEAF_ENTRY setFPReturn
+LEAF_ENTRY setFPReturn, _TEXT
     fmov d0, x1
-    LEAF_END
+LEAF_END setFPReturn, _TEXT
+#endif
+
+//
+// JIT Static access helpers when coreclr host specifies single appdomain flag 
+//
+
+// ------------------------------------------------------------------
+// void* JIT_GetSharedNonGCStaticBase(SIZE_T moduleDomainID, DWORD dwClassDomainID)
+
+LEAF_ENTRY JIT_GetSharedNonGCStaticBase_SingleAppDomain, _TEXT
+    // If class is not initialized, bail to C++ helper
+    add x2, x0, #DomainLocalModule__m_pDataBlob
+    ldrb w2, [x2, w1, UXTW]
+    tst w2, #1
+    beq LOCAL_LABEL(JIT_GetSharedNonGCStaticBase_SingleAppDomain_CallHelper)
+
+    ret lr
+
+LOCAL_LABEL(JIT_GetSharedNonGCStaticBase_SingleAppDomain_CallHelper):
+    // Tail call JIT_GetSharedNonGCStaticBase_Helper
+    b C_FUNC(JIT_GetSharedNonGCStaticBase_Helper)
+LEAF_END JIT_GetSharedNonGCStaticBase_SingleAppDomain, _TEXT
+
+
+// ------------------------------------------------------------------
+// void* JIT_GetSharedNonGCStaticBaseNoCtor(SIZE_T moduleDomainID, DWORD dwClassDomainID)
+
+LEAF_ENTRY JIT_GetSharedNonGCStaticBaseNoCtor_SingleAppDomain, _TEXT
+    ret lr
+LEAF_END JIT_GetSharedNonGCStaticBaseNoCtor_SingleAppDomain, _TEXT
+
+
+// ------------------------------------------------------------------
+// void* JIT_GetSharedGCStaticBase(SIZE_T moduleDomainID, DWORD dwClassDomainID)
+
+LEAF_ENTRY JIT_GetSharedGCStaticBase_SingleAppDomain, _TEXT
+    // If class is not initialized, bail to C++ helper
+    add x2, x0, #DomainLocalModule__m_pDataBlob
+    ldrb w2, [x2, w1, UXTW]
+    tst w2, #1
+    beq LOCAL_LABEL(JIT_GetSharedGCStaticBase_SingleAppDomain_CallHelper)
+
+    ldr x0, [x0, #DomainLocalModule__m_pGCStatics]
+    ret lr
+
+LOCAL_LABEL(JIT_GetSharedGCStaticBase_SingleAppDomain_CallHelper):
+    // Tail call Jit_GetSharedGCStaticBase_Helper
+    b C_FUNC(JIT_GetSharedGCStaticBase_Helper)
+LEAF_END JIT_GetSharedGCStaticBase_SingleAppDomain, _TEXT
+
+
+// ------------------------------------------------------------------
+// void* JIT_GetSharedGCStaticBaseNoCtor(SIZE_T moduleDomainID, DWORD dwClassDomainID)
+
+LEAF_ENTRY JIT_GetSharedGCStaticBaseNoCtor_SingleAppDomain, _TEXT
+    ldr x0, [x0, #DomainLocalModule__m_pGCStatics]
+    ret lr
+LEAF_END JIT_GetSharedGCStaticBaseNoCtor_SingleAppDomain, _TEXT
+
+// ------------------------------------------------------------------
+// __declspec(naked) void F_CALL_CONV JIT_Stelem_Ref(PtrArray* array, unsigned idx, Object* val)
+LEAF_ENTRY JIT_Stelem_Ref, _TEXT
+    // We retain arguments as they were passed and use x0 == array x1 == idx x2 == val
+
+    // check for null array
+    cbz     x0, LOCAL_LABEL(ThrowNullReferenceException)
+
+    // idx bounds check
+    ldr     x3,[x0,#ArrayBase__m_NumComponents]
+    cmp     x3, x1
+    bls     LOCAL_LABEL(ThrowIndexOutOfRangeException)
+
+    // fast path to null assignment (doesn't need any write-barriers)
+    cbz     x2, LOCAL_LABEL(AssigningNull)
+
+    // Verify the array-type and val-type matches before writing
+    ldr     x12, [x0] // x12 = array MT
+    ldr     x3, [x2] // x3 = val->GetMethodTable()
+    ldr     x12, [x12, #MethodTable__m_ElementType] // array->GetArrayElementTypeHandle()
+    cmp     x3, x12
+    beq     C_FUNC(JIT_Stelem_DoWrite)
+
+    // Types didnt match but allow writing into an array of objects
+    PREPARE_EXTERNAL_VAR g_pObjectClass, x3
+    ldr     x3, [x3]  // x3 = *g_pObjectClass
+    cmp     x3, x12   // array type matches with Object*
+    beq     C_FUNC(JIT_Stelem_DoWrite)
+
+    // array type and val type do not exactly match. Raise frame and do detailed match
+    b       C_FUNC(JIT_Stelem_Ref_NotExactMatch)
+
+LOCAL_LABEL(AssigningNull):
+    // Assigning null doesn't need write barrier
+    add     x0, x0, x1, LSL #3           // x0 = x0 + (x1 x 8) = array->m_array[idx]
+    str     x2, [x0, #PtrArray__m_Array] // array->m_array[idx] = val
+    ret
+
+LOCAL_LABEL(ThrowNullReferenceException):
+    // Tail call JIT_InternalThrow(NullReferenceException)
+    ldr     x0, =CORINFO_NullReferenceException_ASM
+    b       C_FUNC(JIT_InternalThrow)
+
+LOCAL_LABEL(ThrowIndexOutOfRangeException):
+    // Tail call JIT_InternalThrow(NullReferenceException)
+    ldr     x0, =CORINFO_IndexOutOfRangeException_ASM
+    b       C_FUNC(JIT_InternalThrow)
+
+LEAF_END JIT_Stelem_Ref, _TEXT
+
+// ------------------------------------------------------------------
+// __declspec(naked) void F_CALL_CONV JIT_Stelem_Ref_NotExactMatch(PtrArray* array,
+//                                                       unsigned idx, Object* val)
+//   x12 = array->GetArrayElementTypeHandle()
+//
+NESTED_ENTRY JIT_Stelem_Ref_NotExactMatch, _TEXT, NoHandler
+    PROLOG_SAVE_REG_PAIR_INDEXED   fp, lr, -48
+    // Spill callee saved registers
+    PROLOG_SAVE_REG_PAIR   x0, x1, 16
+    PROLOG_SAVE_REG        x2, 32
+
+    // allow in case val can be casted to array element type
+    // call ObjIsInstanceOfNoGC(val, array->GetArrayElementTypeHandle())
+    mov     x1, x12 // array->GetArrayElementTypeHandle()
+    mov     x0, x2
+    bl      C_FUNC(ObjIsInstanceOfNoGC)
+    cmp     x0, TypeHandle_CanCast
+    beq     LOCAL_LABEL(DoWrite)             // ObjIsInstance returned TypeHandle::CanCast
+
+    // check via raising frame
+LOCAL_LABEL(NeedFrame):
+    add     x1, sp, #16             // x1 = &array
+    add     x0, sp, #32             // x0 = &val
+
+    bl      C_FUNC(ArrayStoreCheck) // ArrayStoreCheck(&val, &array)
+
+LOCAL_LABEL(DoWrite):
+    EPILOG_RESTORE_REG_PAIR           x0, x1, 16
+    EPILOG_RESTORE_REG                x2, 32
+    EPILOG_RESTORE_REG_PAIR_INDEXED   fp, lr,   48
+    b C_FUNC(JIT_Stelem_DoWrite)
+NESTED_END JIT_Stelem_Ref_NotExactMatch, _TEXT
+
+// ------------------------------------------------------------------
+// __declspec(naked) void F_CALL_CONV JIT_Stelem_DoWrite(PtrArray* array, unsigned idx, Object* val)
+LEAF_ENTRY  JIT_Stelem_DoWrite, _TEXT
+
+    // Setup args for JIT_WriteBarrier. x14 = &array->m_array[idx] x15 = val
+    add     x14, x0, #PtrArray__m_Array // x14 = &array->m_array
+    add     x14, x14, x1, LSL #3
+    mov     x15, x2                     // x15 = val
+
+    // Branch to the write barrier (which is already correctly overwritten with
+    // single or multi-proc code based on the current CPU
+    b       C_FUNC(JIT_WriteBarrier)
+LEAF_END JIT_Stelem_DoWrite, _TEXT
+
+#ifdef PROFILING_SUPPORTED
+
+// ------------------------------------------------------------------
+LEAF_ENTRY JIT_ProfilerEnterLeaveTailcallStub, _TEXT
+    ret     lr
+LEAF_END JIT_ProfilerEnterLeaveTailcallStub, _TEXT
+
+// ------------------------------------------------------------------
+#define PROFILE_ENTER    1
+#define PROFILE_LEAVE    2
+#define PROFILE_TAILCALL 4
+#define SIZEOF__PROFILE_PLATFORM_SPECIFIC_DATA 256
+
+// ------------------------------------------------------------------
+.macro GenerateProfileHelper helper, flags
+NESTED_ENTRY \helper\()Naked, _TEXT, NoHandler
+    // On entry:
+    //   x10 = functionIDOrClientID
+    //   x11 = profiledSp
+    //   x12 = throwable
+    //
+    // On exit:
+    //   Values of x0-x8, q0-q7, fp are preserved.
+    //   Values of other volatile registers are not preserved.
+
+    PROLOG_SAVE_REG_PAIR_INDEXED fp, lr, -SIZEOF__PROFILE_PLATFORM_SPECIFIC_DATA // Allocate space and save Fp, Pc.
+    SAVE_ARGUMENT_REGISTERS sp, 16          // Save x8 and argument registers (x0-x7).
+    str     xzr, [sp, 88]                   // Clear functionId.
+    SAVE_FLOAT_ARGUMENT_REGISTERS sp, 96    // Save floating-point/SIMD registers (q0-q7).
+    add     x12, fp, SIZEOF__PROFILE_PLATFORM_SPECIFIC_DATA // Compute probeSp - initial value of Sp on entry to the helper.
+    stp     x12, x11, [sp, 224]             // Save probeSp, profiledSp.
+    str     xzr, [sp, 240]                  // Clear hiddenArg.
+    mov     w12, \flags
+    stp     w12, wzr, [sp, 248]             // Save flags and clear unused field.
+
+    mov     x0, x10
+    mov     x1, sp
+    bl      \helper
+
+    RESTORE_ARGUMENT_REGISTERS sp, 16       // Restore x8 and argument registers.
+    RESTORE_FLOAT_ARGUMENT_REGISTERS sp, 96 // Restore floating-point/SIMD registers.
+
+    EPILOG_RESTORE_REG_PAIR_INDEXED fp, lr, SIZEOF__PROFILE_PLATFORM_SPECIFIC_DATA
+    EPILOG_RETURN
+
+NESTED_END \helper\()Naked, _TEXT
+.endmacro
+
+GenerateProfileHelper ProfileEnter, PROFILE_ENTER
+GenerateProfileHelper ProfileLeave, PROFILE_LEAVE
+GenerateProfileHelper ProfileTailcall, PROFILE_TAILCALL
+
 #endif

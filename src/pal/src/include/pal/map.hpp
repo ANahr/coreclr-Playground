@@ -94,6 +94,13 @@ extern "C"
         returns TRUE if successful, FALSE otherwise
     --*/
     BOOL MAPUnmapPEFile(LPCVOID lpAddress);
+
+    /*++
+    Function :
+        MAPMarkSectionAsNotNeeded - mark a section as NotNeeded
+        returns TRUE if successful, FALSE otherwise
+    --*/
+    BOOL MAPMarkSectionAsNotNeeded(LPCVOID lpAddress);
 }
 
 namespace CorUnix
@@ -144,7 +151,7 @@ namespace CorUnix
     class CFileMappingImmutableData
     {
     public:
-        CHAR szFileName[MAXPATHLEN];
+        CHAR *lpFileName;
         UINT MaxSize;               // The max size of the file mapping object
         DWORD flProtect;            // Protection desired for the file view
         BOOL bPALCreatedTempFile;   // TRUE if it's a PAL created file
@@ -174,15 +181,6 @@ namespace CorUnix
         DWORD flProtect,
         DWORD dwMaximumSizeHigh,
         DWORD dwMaximumSizeLow,
-        LPCWSTR lpName,
-        HANDLE *phMapping
-        );
-
-    PAL_ERROR
-    InternalOpenFileMapping(
-        CPalThread *pThread,
-        DWORD dwDesiredAccess,
-        BOOL bInheritHandle,
         LPCWSTR lpName,
         HANDLE *phMapping
         );

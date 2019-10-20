@@ -14,8 +14,9 @@
 #include "arraynative.h"
 #include "excep.h"
 #include "field.h"
-#include "security.h"
 #include "invokeutil.h"
+
+#include "arraynative.inl"
 
 FCIMPL1(INT32, ArrayNative::GetRank, ArrayBase* array)
 {
@@ -100,54 +101,17 @@ FCIMPL2(INT32, ArrayNative::GetLength, ArrayBase* array, unsigned int dimension)
 FCIMPLEND
 
 
-FCIMPL1(INT32, ArrayNative::GetLengthNoRank, ArrayBase* array)
+FCIMPL1(void*, ArrayNative::GetRawArrayData, ArrayBase* array)
 {
     FCALL_CONTRACT;
 
     VALIDATEOBJECT(array);
 
-    if (array==NULL)
-        FCThrow(kNullReferenceException);
+    _ASSERTE(array != NULL);
 
-    SIZE_T numComponents = array->GetNumComponents();
-    if (numComponents > INT32_MAX)
-        FCThrow(kOverflowException);
-
-    return (INT32)numComponents;
+    return array->GetDataPtr();
 }
 FCIMPLEND
-
-
-FCIMPL1(INT64, ArrayNative::GetLongLengthNoRank, ArrayBase* array)
-{
-    FCALL_CONTRACT;
-
-    VALIDATEOBJECT(array);
-
-    if (array==NULL)
-        FCThrow(kNullReferenceException);
-
-    return array->GetNumComponents();
-}
-FCIMPLEND
-
-
-FCIMPL1(INT32, ArrayNative::GetDataPtrOffsetInternal, ArrayBase* array)
-{
-    FCALL_CONTRACT;
-
-    VALIDATEOBJECT(array);
-
-    if (array == NULL)
-        FCThrow(kNullReferenceException);
-
-    return ArrayBase::GetDataPtrOffset(array->GetMethodTable());
-}
-FCIMPLEND
-
-
-
-
 
 
 // array is GC protected by caller
@@ -156,7 +120,6 @@ void ArrayInitializeWorker(ARRAYBASEREF * arrayRef,
                            MethodTable* pElemMT)
 {
     STATIC_CONTRACT_MODE_COOPERATIVE;
-    STATIC_CONTRACT_SO_INTOLERANT;
 
     // Ensure that the array element type is fully loaded before executing its code
     pElemMT->EnsureInstanceActive();
@@ -173,7 +136,7 @@ void ArrayInitializeWorker(ARRAYBASEREF * arrayRef,
 
     PCODE ctorFtn = pCanonMT->GetSlot(slot);
 
-#ifdef _X86_
+#if defined(_TARGET_X86_) && !defined(FEATURE_PAL)
     BEGIN_CALL_TO_MANAGED();
 
 
@@ -204,7 +167,7 @@ void ArrayInitializeWorker(ARRAYBASEREF * arrayRef,
     }
 
     END_CALL_TO_MANAGED();
-#else // _X86_
+#else // _TARGET_X86_ && !FEATURE_PAL
     //
     // This is quite a bit slower, but it is portable.
     //
@@ -228,7 +191,7 @@ void ArrayInitializeWorker(ARRAYBASEREF * arrayRef,
 
         offset += size;
     }
-#endif // _X86_
+#endif // !_TARGET_X86_ || FEATURE_PAL
 }
 
 
@@ -274,7 +237,6 @@ ArrayNative::AssignArrayEnum ArrayNative::CanAssignArrayTypeNoGC(const BASEARRAY
         NOTHROW;
         GC_NOTRIGGER;
         MODE_COOPERATIVE;
-        SO_TOLERANT;
         PRECONDITION(pSrc != NULL);
         PRECONDITION(pDest != NULL);
     }
@@ -317,14 +279,17 @@ ArrayNative::AssignArrayEnum ArrayNative::CanAssignArrayTypeNoGC(const BASEARRAY
             return AssignDontKnow;
     }
     
-    const CorElementType srcElType = srcTH.GetSignatureCorElementType();
-    const CorElementType destElType = destTH.GetSignatureCorElementType();
+    const CorElementType srcElType = srcTH.GetVerifierCorElementType();
+    const CorElementType destElType = destTH.GetVerifierCorElementType();
     _ASSERTE(srcElType < ELEMENT_TYPE_MAX);
     _ASSERTE(destElType < ELEMENT_TYPE_MAX);
 
     // Copying primitives from one type to another
     if (CorTypeInfo::IsPrimitiveType_NoThrow(srcElType) && CorTypeInfo::IsPrimitiveType_NoThrow(destElType))
     {
+        if (GetNormalizedIntegralArrayElementType(srcElType) == GetNormalizedIntegralArrayElementType(destElType))
+            return AssignWillWork;
+
         if (InvokeUtil::CanPrimitiveWiden(destElType, srcElType))
             return AssignPrimitiveWiden;
         else
@@ -347,10 +312,6 @@ ArrayNative::AssignArrayEnum ArrayNative::CanAssignArrayTypeNoGC(const BASEARRAY
     if (srcTH.IsInterface() && destElType != ELEMENT_TYPE_VALUETYPE)
         return AssignMustCast;
 
-    // Enum is stored as a primitive of type dest.
-    if (srcTH.IsEnum() && srcTH.GetInternalCorElementType() == destElType)
-        return AssignWillWork;
-    
     return AssignDontKnow;
 }
 
@@ -403,14 +364,16 @@ ArrayNative::AssignArrayEnum ArrayNative::CanAssignArrayType(const BASEARRAYREF 
             return AssignWrongType;
     }
     
-    const CorElementType srcElType = srcTH.GetSignatureCorElementType();
-    const CorElementType destElType = destTH.GetSignatureCorElementType();
+    const CorElementType srcElType = srcTH.GetVerifierCorElementType();
+    const CorElementType destElType = destTH.GetVerifierCorElementType();
     _ASSERTE(srcElType < ELEMENT_TYPE_MAX);
     _ASSERTE(destElType < ELEMENT_TYPE_MAX);
 
     // Copying primitives from one type to another
     if (CorTypeInfo::IsPrimitiveType_NoThrow(srcElType) && CorTypeInfo::IsPrimitiveType_NoThrow(destElType))
     {
+        if (srcElType == destElType)
+            return AssignWillWork;
         if (InvokeUtil::CanPrimitiveWiden(destElType, srcElType))
             return AssignPrimitiveWiden;
         else
@@ -433,10 +396,6 @@ ArrayNative::AssignArrayEnum ArrayNative::CanAssignArrayType(const BASEARRAYREF 
     if (srcTH.IsInterface() && destElType != ELEMENT_TYPE_VALUETYPE)
         return AssignMustCast;
 
-    // Enum is stored as a primitive of type dest.
-    if (srcTH.IsEnum() && srcTH.GetInternalCorElementType() == destElType)
-        return AssignWillWork;
-    
     return AssignWrongType;
 }
 
@@ -482,7 +441,7 @@ void ArrayNative::CastCheckEachElement(const BASEARRAYREF pSrcUnsafe, const unsi
             COMPlusThrow(kInvalidCastException, W("InvalidCast_DownCastArrayElement"));
 
         OBJECTREF * destData = (OBJECTREF*)(gc.pDest->GetDataPtr()) + i - srcIndex + destIndex;
-        SetObjectReference(destData, gc.obj, gc.pDest->GetAppDomain());
+        SetObjectReference(destData, gc.obj);
     }
 
     GCPROTECT_END();
@@ -555,7 +514,7 @@ void ArrayNative::BoxEachElement(BASEARRAYREF pSrc, unsigned int srcIndex, BASEA
         gc.obj = pSrcMT->FastBox(&srcPtr);
 
         OBJECTREF * destData = (OBJECTREF*)((gc.dest)->GetDataPtr()) + i;
-        SetObjectReference(destData, gc.obj, gc.dest->GetAppDomain());
+        SetObjectReference(destData, gc.obj);
     }
     GCPROTECT_END();
     GCPROTECT_END();
@@ -588,7 +547,7 @@ void ArrayNative::UnBoxEachElement(BASEARRAYREF pSrc, unsigned int srcIndex, BAS
     MethodTable * pDestMT = destTH.GetMethodTable();
     PREFIX_ASSUME(pDestMT != NULL);
 
-    const unsigned int destSize = pDestMT->GetNumInstanceFieldBytes();
+    SIZE_T destSize = pDest->GetComponentSize();
     BYTE* srcData = (BYTE*) pSrc->GetDataPtr() + srcIndex * sizeof(OBJECTREF);
     BYTE* data = (BYTE*) pDest->GetDataPtr() + destIndex * destSize;
 
@@ -629,8 +588,8 @@ void ArrayNative::PrimitiveWiden(BASEARRAYREF pSrc, unsigned int srcIndex, BASEA
     TypeHandle srcTH = pSrc->GetArrayElementTypeHandle();
     TypeHandle destTH = pDest->GetArrayElementTypeHandle();
 
-    const CorElementType srcElType = srcTH.GetSignatureCorElementType();
-    const CorElementType destElType = destTH.GetSignatureCorElementType();
+    const CorElementType srcElType = srcTH.GetVerifierCorElementType();
+    const CorElementType destElType = destTH.GetVerifierCorElementType();
     const unsigned int srcSize = GetSizeForCorElementType(srcElType);
     const unsigned int destSize = GetSizeForCorElementType(destElType);
 
@@ -883,85 +842,24 @@ void memmoveGCRefs(void *dest, const void *src, size_t len)
         NOTHROW;
         GC_NOTRIGGER;
         MODE_COOPERATIVE;
-        PRECONDITION(CheckPointer(dest));
-        PRECONDITION(CheckPointer(src));
-        PRECONDITION(len >= 0);
-        SO_TOLERANT;
     }
     CONTRACTL_END;
+
+    _ASSERTE(dest != nullptr);
+    _ASSERTE(src != nullptr);
 
     // Make sure everything is pointer aligned
     _ASSERTE(IS_ALIGNED(dest, sizeof(SIZE_T)));
     _ASSERTE(IS_ALIGNED(src, sizeof(SIZE_T)));
     _ASSERTE(IS_ALIGNED(len, sizeof(SIZE_T)));
 
-    size_t size = len;
-    BYTE * dmem = (BYTE *)dest;
-    BYTE * smem = (BYTE *)src;
+    _ASSERTE(CheckPointer(dest));
+    _ASSERTE(CheckPointer(src));
 
-    GCHeapMemoryBarrier();
-
-    if (dmem <= smem || smem + size <= dmem)
+    if (len != 0 && dest != src)
     {
-        // copy 16 bytes at a time
-        while (size >= 4 * sizeof(SIZE_T))
-        {
-            size -= 4 * sizeof(SIZE_T);
-            ((SIZE_T *)dmem)[0] = ((SIZE_T *)smem)[0];
-            ((SIZE_T *)dmem)[1] = ((SIZE_T *)smem)[1];
-            ((SIZE_T *)dmem)[2] = ((SIZE_T *)smem)[2];
-            ((SIZE_T *)dmem)[3] = ((SIZE_T *)smem)[3];
-            smem += 4 * sizeof(SIZE_T);
-            dmem += 4 * sizeof(SIZE_T);
-        }
-
-        if ((size & (2 * sizeof(SIZE_T))) != 0)
-        {
-            ((SIZE_T *)dmem)[0] = ((SIZE_T *)smem)[0];
-            ((SIZE_T *)dmem)[1] = ((SIZE_T *)smem)[1];
-            smem += 2 * sizeof(SIZE_T);
-            dmem += 2 * sizeof(SIZE_T);
-        }
-
-        if ((size & sizeof(SIZE_T)) != 0)
-        {
-            ((SIZE_T *)dmem)[0] = ((SIZE_T *)smem)[0];
-        }
+        InlinedMemmoveGCRefsHelper(dest, src, len);
     }
-    else
-    {
-        smem += size;
-        dmem += size;
-
-        // copy 16 bytes at a time
-        while (size >= 4 * sizeof(SIZE_T))
-        {
-            size -= 4 * sizeof(SIZE_T);
-            smem -= 4 * sizeof(SIZE_T);
-            dmem -= 4 * sizeof(SIZE_T);
-            ((SIZE_T *)dmem)[3] = ((SIZE_T *)smem)[3];
-            ((SIZE_T *)dmem)[2] = ((SIZE_T *)smem)[2];
-            ((SIZE_T *)dmem)[1] = ((SIZE_T *)smem)[1];
-            ((SIZE_T *)dmem)[0] = ((SIZE_T *)smem)[0];
-        }
-
-        if ((size & (2 * sizeof(SIZE_T))) != 0)
-        {
-            smem -= 2 * sizeof(SIZE_T);
-            dmem -= 2 * sizeof(SIZE_T);
-            ((SIZE_T *)dmem)[1] = ((SIZE_T *)smem)[1];
-            ((SIZE_T *)dmem)[0] = ((SIZE_T *)smem)[0];
-        }
-
-        if ((size & sizeof(SIZE_T)) != 0)
-        {
-            smem -= sizeof(SIZE_T);
-            dmem -= sizeof(SIZE_T);
-            ((SIZE_T *)dmem)[0] = ((SIZE_T *)smem)[0];
-        }
-    }
-
-    SetCardsAfterBulkCopy((Object**)dest, len);
 }
 
 void ArrayNative::ArrayCopyNoTypeCheck(BASEARRAYREF pSrc, unsigned int srcIndex, BASEARRAYREF pDest, unsigned int destIndex, unsigned int length)
@@ -971,7 +869,6 @@ void ArrayNative::ArrayCopyNoTypeCheck(BASEARRAYREF pSrc, unsigned int srcIndex,
         NOTHROW;
         GC_NOTRIGGER;
         MODE_COOPERATIVE;
-        SO_TOLERANT;
         PRECONDITION(pSrc != NULL);
         PRECONDITION(srcIndex >= 0);
         PRECONDITION(pDest != NULL);
@@ -999,10 +896,6 @@ void ArrayNative::ArrayCopyNoTypeCheck(BASEARRAYREF pSrc, unsigned int srcIndex,
 FCIMPL6(void, ArrayNative::ArrayCopy, ArrayBase* m_pSrc, INT32 m_iSrcIndex, ArrayBase* m_pDst, INT32 m_iDstIndex, INT32 m_iLength, CLR_BOOL reliable)
 {
     FCALL_CONTRACT;
-
-    BYTE *src;
-    BYTE *dst;
-    SIZE_T size;
     
     struct _gc
     {
@@ -1133,45 +1026,22 @@ FCIMPL6(void, ArrayNative::ArrayCopy, ArrayBase* m_pSrc, INT32 m_iSrcIndex, Arra
 FCIMPLEND
 
 
-FCIMPL3(void, ArrayNative::ArrayClear, ArrayBase* pArrayUNSAFE, INT32 iIndex, INT32 iLength)
+FCIMPL5(void*, ArrayNative::GetRawArrayGeometry, ArrayBase* pArray, UINT32* pNumComponents, UINT32* pElementSize, INT32* pLowerBound, CLR_BOOL* pContainsGCPointers)
 {
-    FCALL_CONTRACT;
+   VALIDATEOBJECT(pArray);
 
-    BASEARRAYREF pArray = (BASEARRAYREF)pArrayUNSAFE;
+   _ASSERTE(pArray != NULL);
 
-    HELPER_METHOD_FRAME_BEGIN_1(pArray);
+    MethodTable *pMT = pArray->GetMethodTable();
 
-    // cannot pass null for array
-    if (pArray == NULL)
-        COMPlusThrowArgumentNull(W("array"), W("ArgumentNull_Array"));
+    *pNumComponents = pArray->GetNumComponents();
+    *pElementSize = pMT->RawGetComponentSize();
+    *pLowerBound = pArray->GetLowerBoundsPtr()[0];
+    *pContainsGCPointers = !!pMT->ContainsPointers();
 
-    // array must be an array
-    _ASSERTE(pArray->GetMethodTable()->IsArray());
-
-    // array bounds checking
-    int lb = pArray->GetLowerBoundsPtr()[0];
-    if (iIndex < lb || (iIndex - lb) < 0 || iLength < 0)
-        COMPlusThrow(kIndexOutOfRangeException);
-
-    if ((iIndex - lb) > (int)pArray->GetNumComponents() - iLength)
-        COMPlusThrow(kIndexOutOfRangeException);
-
-    if (iLength > 0)
-    {
-        char* array = (char*)pArray->GetDataPtr();
-
-        SIZE_T size = pArray->GetComponentSize();
-        _ASSERTE(size >= 1);
-
-        ZeroMemoryInGCHeap(array + (iIndex - lb) * size, iLength * size);
-    }
-
-    HELPER_METHOD_FRAME_END();
+    return (BYTE*)pArray + ArrayBase::GetDataPtrOffset(pMT);
 }
 FCIMPLEND
-
-
-
 
 
 
@@ -1183,25 +1053,9 @@ void ArrayNative::CheckElementType(TypeHandle elementType)
     {
         MethodTable *pMT = elementType.AsMethodTable();
 
-        // TODO: We also should check for type/member visibility here. To do that we can replace
-        // the following chunk of code with a simple InvokeUtil::CanAccessClass call.
-        // But it's too late to make this change in Dev10 and we want SL4 to be compatible with Dev10.
-        if (Security::TypeRequiresTransparencyCheck(pMT))
-        {
-            // The AccessCheckOptions flag doesn't matter because we just need to get the caller.
-            RefSecContext sCtx(AccessCheckOptions::kMemberAccess);
-
-            AccessCheckOptions accessCheckOptions(InvokeUtil::GetInvocationAccessCheckType(),
-                                                  NULL /*pAccessContext*/,
-                                                  TRUE /*throwIfTargetIsInaccessible*/,
-                                                  pMT  /*pTargetMT*/);
-            
-            accessCheckOptions.DemandMemberAccessOrFail(&sCtx, pMT, FALSE /*visibilityCheck*/);
-        }        
-
         // Check for byref-like types.
         if (pMT->IsByRefLike())
-            COMPlusThrow(kNotSupportedException, W("NotSupported_ByRefLike[]"));
+            COMPlusThrow(kNotSupportedException, W("NotSupported_ByRefLikeArray"));
 
         // Check for open generic types.
         if (pMT->IsGenericTypeDefinition() || pMT->ContainsGenericVariables())
@@ -1209,7 +1063,7 @@ void ArrayNative::CheckElementType(TypeHandle elementType)
 
         // Check for Void.
         if (elementType.GetSignatureCorElementType() == ELEMENT_TYPE_VOID)
-            COMPlusThrow(kNotSupportedException, W("NotSupported_Void[]"));
+            COMPlusThrow(kNotSupportedException, W("NotSupported_VoidArray"));
 
         // That's all the dangerous simple types we know, it must be OK.
         return;
@@ -1230,7 +1084,6 @@ void ArrayNative::CheckElementType(TypeHandle elementType)
     CorElementType etType = elementType.GetSignatureCorElementType();
     if (etType == ELEMENT_TYPE_PTR || etType == ELEMENT_TYPE_FNPTR)
     {
-        Security::SpecialDemand(SSWT_LATEBOUND_LINKDEMAND, SECURITY_SKIP_VER);
         return;
     }
 
@@ -1426,7 +1279,7 @@ FCIMPL2(void, ArrayNative::SetValue, TypedByRef * target, Object* objUNSAFE)
     if (thTarget == TypeHandle(g_pObjectClass))
     {
         // Everything is compatible with Object
-        SetObjectReference((OBJECTREF*)target->data,(OBJECTREF)obj,GetAppDomain());
+        SetObjectReference((OBJECTREF*)target->data,(OBJECTREF)obj);
     }
     else
     if (!pTargetMT->IsValueType())
@@ -1442,7 +1295,7 @@ FCIMPL2(void, ArrayNative::SetValue, TypedByRef * target, Object* objUNSAFE)
             HELPER_METHOD_FRAME_END();
         }
 
-        SetObjectReference((OBJECTREF*)target->data,obj,GetAppDomain());
+        SetObjectReference((OBJECTREF*)target->data,obj);
     }
     else
     {

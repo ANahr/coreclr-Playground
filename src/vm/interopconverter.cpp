@@ -16,46 +16,9 @@
 #include "stdinterfaces.h"
 #include "runtimecallablewrapper.h"
 #include "cominterfacemarshaler.h"
-#include "mdaassistants.h"
 #include "binder.h"
 #include "winrttypenameconverter.h"
 #include "typestring.h"
-
-struct MshlPacket
-{
-    DWORD size;
-};
-
-// if the object we are creating is a proxy to another appdomain, want to create the wrapper for the
-// new object in the appdomain of the proxy target
-IUnknown* GetIUnknownForMarshalByRefInServerDomain(OBJECTREF* poref)
-{
-    CONTRACT (IUnknown*)
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_COOPERATIVE;
-        PRECONDITION(CheckPointer(poref));
-        PRECONDITION((*poref)->GetTrueMethodTable()->IsMarshaledByRef());
-        POSTCONDITION(CheckPointer(RETVAL));
-    }
-    CONTRACT_END;
-    
-    Context *pContext = NULL;
-
-
-    if (pContext == NULL)
-        pContext = GetCurrentContext();
-    
-    _ASSERTE(pContext->GetDomain() == GetCurrentContext()->GetDomain());
-
-    CCWHolder pWrap = ComCallWrapper::InlineGetWrapper(poref);      
-
-    IUnknown* pUnk = ComCallWrapper::GetComIPFromCCW(pWrap, IID_IUnknown, NULL);
-
-    RETURN pUnk;
-}
-
 
 //--------------------------------------------------------------------------------
 // IUnknown *GetComIPFromObjectRef(OBJECTREF *poref, MethodTable *pMT, ...)
@@ -243,7 +206,7 @@ IUnknown *GetComIPFromObjectRef(OBJECTREF *poref, ComIpType ReqIpType, ComIpType
                     // This is a redirected type - see if we need to manually marshal it                    
                     if (redirectedTypeIndex == WinMDAdapter::RedirectedTypeIndex_System_Uri)
                     {
-                        UriMarshalingInfo *pUriMarshalInfo = GetAppDomain()->GetMarshalingData()->GetUriMarshalingInfo();
+                        UriMarshalingInfo *pUriMarshalInfo = GetAppDomain()->GetLoaderAllocator()->GetMarshalingData()->GetUriMarshalingInfo();
                         struct
                         {
                             OBJECTREF ref;
@@ -277,7 +240,7 @@ IUnknown *GetComIPFromObjectRef(OBJECTREF *poref, ComIpType ReqIpType, ComIpType
                              redirectedTypeIndex == WinMDAdapter::RedirectedTypeIndex_System_ComponentModel_PropertyChangedEventArgs)
                     {
                         MethodDesc *pMD;
-                        EventArgsMarshalingInfo *pInfo = GetAppDomain()->GetMarshalingData()->GetEventArgsMarshalingInfo();
+                        EventArgsMarshalingInfo *pInfo = GetAppDomain()->GetLoaderAllocator()->GetMarshalingData()->GetEventArgsMarshalingInfo();
 
                         if (redirectedTypeIndex == WinMDAdapter::RedirectedTypeIndex_System_Collections_Specialized_NotifyCollectionChangedEventArgs)
                             pMD = pInfo->GetSystemNCCEventArgsToWinRTNCCEventArgsMD();
@@ -450,7 +413,7 @@ IUnknown *GetComIPFromObjectRef(OBJECTREF *poref, REFIID iid, bool throwIfNoComI
 // GetObjectRefFromComIP
 // pUnk : input IUnknown
 // pMTClass : specifies the type of instance to be returned
-// NOTE:**  As per COM Rules, the IUnknown passed is shouldn't be AddRef'ed
+// NOTE:**  As per COM Rules, the IUnknown passed in shouldn't be AddRef'ed
 //+----------------------------------------------------------------------------
 void GetObjectRefFromComIP(OBJECTREF* pObjOut, IUnknown **ppUnk, MethodTable *pMTClass, MethodTable *pItfMT, DWORD dwFlags)
 {
@@ -473,18 +436,6 @@ void GetObjectRefFromComIP(OBJECTREF* pObjOut, IUnknown **ppUnk, MethodTable *pM
     IUnknown *pUnk = *ppUnk;
     Thread * pThread = GetThread();
 
-#ifdef MDA_SUPPORTED
-    MdaInvalidIUnknown* mda = MDA_GET_ASSISTANT(InvalidIUnknown);
-    if (mda && pUnk)
-    {
-        // Test pUnk
-        SafeComHolder<IUnknown> pTemp;
-        HRESULT hr = SafeQueryInterface(pUnk, IID_IUnknown, &pTemp);
-        if (hr != S_OK)
-            mda->ReportViolation();
-    }
-#endif
-
     *pObjOut = NULL;
     IUnknown* pOuter = pUnk;
     SafeComHolder<IUnknown> pAutoOuterUnk = NULL;
@@ -492,26 +443,27 @@ void GetObjectRefFromComIP(OBJECTREF* pObjOut, IUnknown **ppUnk, MethodTable *pM
     if (pUnk != NULL)
     {
         // get CCW for IUnknown
-        ComCallWrapper* pWrap = GetCCWFromIUnknown(pUnk);
-        if (pWrap == NULL)
+        ComCallWrapper *ccw = GetCCWFromIUnknown(pUnk);
+        if (ccw == NULL)
         {
             // could be aggregated scenario
             HRESULT hr = SafeQueryInterface(pUnk, IID_IUnknown, &pOuter);
             LogInteropQI(pUnk, IID_IUnknown, hr, "GetObjectRefFromComIP: QI for Outer");
             IfFailThrow(hr);
-                
+
             // store the outer in the auto pointer
             pAutoOuterUnk = pOuter; 
-            pWrap = GetCCWFromIUnknown(pOuter);
+            ccw = GetCCWFromIUnknown(pOuter);
         }
 
-        if (pWrap != NULL)
-        {   // our tear-off
-            _ASSERTE(pWrap != NULL);
-            AppDomain* pCurrDomain = pThread->GetDomain();
-            ADID pObjDomain = pWrap->GetDomainID();
-            _ASSERTE(pObjDomain == pCurrDomain->GetId());
-            *pObjOut = pWrap->GetObjectRef();
+        // If the CCW was activated via COM, do not unwrap it.
+        // Unwrapping a CCW would deliver the underlying OBJECTREF,
+        // but when a managed class is activated via COM it should
+        // remain a COM object and adhere to COM rules.
+        if (ccw != NULL
+            && !ccw->IsComActivated())
+        {
+            *pObjOut = ccw->GetObjectRef();
         }
 
         if (*pObjOut != NULL)
@@ -574,7 +526,7 @@ void GetObjectRefFromComIP(OBJECTREF* pObjOut, IUnknown **ppUnk, MethodTable *pM
             }
             else
             {
-                *pObjOut = marshaler.FindOrCreateObjectRef(pUnk, pItfMT);            
+                *pObjOut = marshaler.FindOrCreateObjectRef(pUnk, pItfMT);
             }
         }
     }
@@ -595,7 +547,7 @@ void GetObjectRefFromComIP(OBJECTREF* pObjOut, IUnknown **ppUnk, MethodTable *pM
                 StackSString ssObjClsName;
                 StackSString ssDestClsName;
 
-                (*pObjOut)->GetTrueMethodTable()->_GetFullyQualifiedNameForClass(ssObjClsName);
+                (*pObjOut)->GetMethodTable()->_GetFullyQualifiedNameForClass(ssObjClsName);
                 pMTClass->_GetFullyQualifiedNameForClass(ssDestClsName);
 
                 COMPlusThrow(kInvalidCastException, IDS_EE_CANNOTCAST,

@@ -17,7 +17,6 @@
 
 #include <windef.h>
 
-#include <corpolicy.h>
 #include "sstring.h"
 #include "peimage.h"
 #include "metadata.h"
@@ -32,7 +31,6 @@
 #include "stackwalktypes.h"
 #include <specstrings.h>
 #include "slist.h"
-#include "corperm.h"
 #include "eventtrace.h"
 
 #include "clrprivbinderutil.h"
@@ -48,8 +46,6 @@ class PEFile;
 class PEModule;
 class PEAssembly;
 class SimpleRWLock;
-
-class CLRPrivBinderLoadFile;
 
 typedef VPTR(PEModule) PTR_PEModule;
 typedef VPTR(PEAssembly) PTR_PEAssembly;
@@ -130,26 +126,13 @@ private:
     friend class NativeImageDumper;
 #endif
 
-    // Load actually triggers loading side effects of the module.  This should ONLY
-    // be done after validation has been passed
-    BOOL CanLoadLibrary();
 public:
     void LoadLibrary(BOOL allowNativeSkip = TRUE);
 
 
 private:
-    void CheckForDisallowedInProcSxSLoadWorker();
-    void ValidateImagePlatformNeutrality();
-
     // For use inside LoadLibrary callback
-    friend HRESULT ExecuteDLLForAttach(HINSTANCE hInst,
-                                       DWORD dwReason,
-                                       LPVOID lpReserved,
-                                       BOOL fFromThunk);
     void SetLoadedHMODULE(HMODULE hMod);
-
-    BOOL HasSkipVerification();
-    void SetSkipVerification();
 
     // DO NOT USE !!! this is to be removed when we move to new fusion binding API
     friend class DomainAssembly;
@@ -198,10 +181,6 @@ public:
 
     // Full name is the most descriptive name available (path, codebase, or name as appropriate)
     void GetCodeBaseOrName(SString &result);
-    
-    // Returns security information for the assembly based on the codebase
-    void GetSecurityIdentity(SString &codebase, SecZone *pdwZone, DWORD dwFlags, BYTE *pbUniqueID, DWORD *pcbUniqueID);
-    void InitializeSecurityManager();
 
 #ifdef LOGGING
     // This is useful for log messages
@@ -230,21 +209,8 @@ public:
     BOOL IsDynamic() const;
     BOOL IsResource() const;
     BOOL IsIStream() const;
-    BOOL IsIntrospectionOnly() const;
     // Returns self (if assembly) or containing assembly (if module)
     PEAssembly *GetAssembly() const;
-
-    // ------------------------------------------------------------
-    // Hash support
-    // ------------------------------------------------------------
-
-#ifndef DACCESS_COMPILE
-    void GetImageBits(SBuffer &result);
-    void GetHash(ALG_ID algorithm, SBuffer &result);
-#endif // DACCESS_COMPILE
-
-    void GetSHA1Hash(SBuffer &result);
-    CHECK CheckHash(ALG_ID algorithm, const void *hash, COUNT_T size);
 
     // ------------------------------------------------------------
     // Metadata access
@@ -279,7 +245,6 @@ public:
     // PE file access
     // ------------------------------------------------------------
 
-    BOOL HasSecurityDirectory();
     BOOL IsIbcOptimized();
     BOOL IsILImageReadyToRun();
     WORD GetSubsystem();
@@ -297,11 +262,6 @@ public:
     CHECK CheckRvaField(RVA field);
     CHECK CheckRvaField(RVA field, COUNT_T size);
 
-    PCCOR_SIGNATURE GetSignature(RVA signature);
-    RVA GetSignatureRva(PCCOR_SIGNATURE signature);
-    CHECK CheckSignature(PCCOR_SIGNATURE signature);
-    CHECK CheckSignatureRva(RVA signature);
-
     BOOL HasTls();
     BOOL IsRvaFieldTls(RVA field);
     UINT32 GetFieldTlsOffset(RVA field);
@@ -316,7 +276,6 @@ public:
     BOOL GetResource(LPCSTR szName, DWORD *cbResource,
                      PBYTE *pbInMemoryResource, DomainAssembly** pAssemblyRef,
                      LPCSTR *szFileName, DWORD *dwLocation, 
-                     StackCrawlMark *pStackMark, BOOL fSkipSecurityCheck,
                      BOOL fSkipRaiseResolveEvent, DomainAssembly* pDomainAssembly,
                      AppDomain* pAppDomain);
 #ifndef DACCESS_COMPILE
@@ -353,11 +312,6 @@ public:
 #endif // DACCESS_COMPILE
 
     PTR_CVOID GetLoadedImageContents(COUNT_T *pSize = NULL);
-    
-    // SetInProcSxSLoadVerified can run concurrently as we don't hold locks during LoadLibrary but
-    // it is the only flag that can be set during this phase so no mutual exclusion is necessary.
-    void SetInProcSxSLoadVerified() { LIMITED_METHOD_CONTRACT; m_flags |= PEFILE_SXS_LOAD_VERIFIED; }
-    BOOL IsInProcSxSLoadVerified() { LIMITED_METHOD_CONTRACT; return m_flags & PEFILE_SXS_LOAD_VERIFIED; }
 
     // ------------------------------------------------------------
     // Native image access
@@ -366,18 +320,12 @@ public:
     // Does the loader support using a native image for this file?
     // Some implementation restrictions prevent native images from being used
     // in some cases.
-#ifdef FEATURE_PREJIT 
-    BOOL CanUseNativeImage() { LIMITED_METHOD_CONTRACT; return m_fCanUseNativeImage; }
-    void SetCannotUseNativeImage() { LIMITED_METHOD_CONTRACT; m_fCanUseNativeImage = FALSE; }
-    void SetNativeImageUsedExclusively() { LIMITED_METHOD_CONTRACT; m_flags|=PEFILE_NATIVE_IMAGE_USED_EXCLUSIVELY; }
-    BOOL IsNativeImageUsedExclusively() { LIMITED_METHOD_CONTRACT; return m_flags&PEFILE_NATIVE_IMAGE_USED_EXCLUSIVELY; }
-    void SetSafeToHardBindTo() { LIMITED_METHOD_CONTRACT; m_flags|=PEFILE_SAFE_TO_HARDBINDTO; }
-    BOOL IsSafeToHardBindTo() { LIMITED_METHOD_CONTRACT; return m_flags&PEFILE_SAFE_TO_HARDBINDTO; }
-
+#ifdef FEATURE_PREJIT
     BOOL IsNativeLoaded();
     PEImage *GetNativeImageWithRef();
     PEImage *GetPersistentNativeImage();
 #endif
+    BOOL HasNativeOrReadyToRunImage();
     BOOL HasNativeImage();
     PTR_PEImageLayout GetLoaded();
     PTR_PEImageLayout GetLoadedNative();
@@ -386,7 +334,6 @@ public:
     IStream * GetPdbStream();       
     void ClearPdbStream();
     BOOL IsLoaded(BOOL bAllowNativeSkip=TRUE) ;
-    BOOL PassiveDomainOnly();
     BOOL IsPtrInILImage(PTR_CVOID data);
 
 #ifdef DACCESS_COMPILE    
@@ -417,9 +364,7 @@ public:
     static void GetNGENDebugFlags(BOOL *fAllowOpt);
 #endif
 
-#ifdef FEATURE_TREAT_NI_AS_MSIL_DURING_DIAGNOSTICS
     static BOOL ShouldTreatNIAsMSIL();
-#endif // FEATURE_TREAT_NI_AS_MSIL_DURING_DIAGNOSTICS
             
 #endif  // FEATURE_PREJIT
 
@@ -462,16 +407,10 @@ protected:
         PEFILE_SYSTEM                 = 0x01,
         PEFILE_ASSEMBLY               = 0x02,
         PEFILE_MODULE                 = 0x04,
-        PEFILE_SKIP_VERIFICATION      = 0x08,
-        PEFILE_SKIP_MODULE_HASH_CHECKS= 0x10,
-        PEFILE_ISTREAM                = 0x100,
+
 #ifdef FEATURE_PREJIT        
         PEFILE_HAS_NATIVE_IMAGE_METADATA = 0x200,
-        PEFILE_NATIVE_IMAGE_USED_EXCLUSIVELY =0x1000,
-        PEFILE_SAFE_TO_HARDBINDTO     = 0x4000, // NGEN-only flag
-#endif        
-        PEFILE_INTROSPECTIONONLY      = 0x400,
-        PEFILE_SXS_LOAD_VERIFIED      = 0x2000
+#endif
     };
 
     // ------------------------------------------------------------
@@ -479,7 +418,7 @@ protected:
     // ------------------------------------------------------------
 
 #ifndef DACCESS_COMPILE
-    PEFile(PEImage *image, BOOL fCheckAuthenticodeSignature = TRUE);
+    PEFile(PEImage *image);
     virtual ~PEFile();
 
     virtual void ReleaseIL();
@@ -491,9 +430,7 @@ protected:
     void RestoreMDImport(IMDInternalImport* pImport);
     void OpenMDImport_Unsafe();
     void OpenImporter();
-    void OpenAssemblyImporter();
     void OpenEmitter();
-    void OpenAssemblyEmitter();
 
     void ConvertMDInternalToReadWrite();
     void ReleaseMetadataInterfaces(BOOL bDestructor, BOOL bKeepNativeData=FALSE);
@@ -530,8 +467,6 @@ protected:
 #ifdef FEATURE_PREJIT
     // Native image
     PTR_PEImage              m_nativeImage;
-
-    BOOL                     m_fCanUseNativeImage;
 #endif
     // This flag is not updated atomically with m_pMDImport. Its fine for debugger usage
     // but don't rely on it in the runtime. In runtime try QI'ing the m_pMDImport for 
@@ -548,9 +483,7 @@ protected:
     IMetaDataEmit           *m_pEmitter;
     SimpleRWLock            *m_pMetadataLock;
     Volatile<LONG>           m_refCount;
-    SBuffer                 *m_hash;                   // cached SHA1 hash value
     int                     m_flags;
-    BOOL                    m_fStrongNameVerified;
 
 #ifdef DEBUGGING_SUPPORTED
 #ifdef FEATURE_PREJIT
@@ -601,19 +534,6 @@ public:
         return HasOpenedILimage() &&  GetOpenedILimage()->HasLoadedLayout();
     }
 
-    BOOL IsDesignerBindingContext()
-    {
-        LIMITED_METHOD_CONTRACT;
-
-        DWORD binderFlags = BINDER_NONE;
-
-        HRESULT hr = E_FAIL;
-        if (HasHostAssembly())
-            hr = GetHostAssembly()->GetBinderFlags(&binderFlags);
-
-        return hr == S_OK ? binderFlags & BINDER_DESIGNER_BINDING_CONTEXT : FALSE;
-    }
-
     LPCWSTR GetPathForErrorMessages();
 
     static PEFile* Dummy();
@@ -630,7 +550,7 @@ protected:
     // To enable this, we maintain a concept of "Fallback LoadContext", which will be set to the Binder of the
     // assembly that created the dynamic assembly. If the creator assembly is dynamic itself, then its fallback
     // load context would be propagated to the assembly being dynamically generated.
-    ICLRPrivBinder *m_pFallbackLoadContextBinder;
+    PTR_ICLRPrivBinder m_pFallbackLoadContextBinder;
 
 protected:
 
@@ -656,13 +576,13 @@ public:
     bool CanUseWithBindingCache()
     { LIMITED_METHOD_CONTRACT; return !HasHostAssembly(); }
 
-    void SetFallbackLoadContextBinder(ICLRPrivBinder *pFallbackLoadContextBinder)
+    void SetFallbackLoadContextBinder(PTR_ICLRPrivBinder pFallbackLoadContextBinder)
     { 
         LIMITED_METHOD_CONTRACT; 
         m_pFallbackLoadContextBinder = pFallbackLoadContextBinder; 
     }
 
-    ICLRPrivBinder *GetFallbackLoadContextBinder()
+    PTR_ICLRPrivBinder GetFallbackLoadContextBinder()
     {
         LIMITED_METHOD_CONTRACT;
 
@@ -691,8 +611,7 @@ class PEAssembly : public PEFile
         PEAssembly *       pParent,
         PEImage *          pPEImageIL, 
         PEImage *          pPEImageNI, 
-        ICLRPrivAssembly * pHostAssembly, 
-        BOOL               fIsIntrospectionOnly = FALSE);
+        ICLRPrivAssembly * pHostAssembly);
 
     // This opens the canonical mscorlib.dll
     static PEAssembly *OpenSystem(IUnknown *pAppCtx);
@@ -702,27 +621,11 @@ class PEAssembly : public PEFile
 
     static PEAssembly *Open(
         CoreBindResult* pBindResult,
-        BOOL isSystem,
-        BOOL isIntrospectionOnly);
+        BOOL isSystem);
 
     static PEAssembly *Create(
         PEAssembly *pParentAssembly,
-        IMetaDataAssemblyEmit *pEmit,
-        BOOL isIntrospectionOnly);
-
-    static PEAssembly *OpenMemory(
-        PEAssembly *pParentAssembly,
-        const void *flat,
-        COUNT_T size, 
-        BOOL isIntrospectionOnly = FALSE,
-        CLRPrivBinderLoadFile* pBinderToUse = NULL);
-
-    static PEAssembly *DoOpenMemory(
-        PEAssembly *pParentAssembly,
-        const void *flat,
-        COUNT_T size,
-        BOOL isIntrospectionOnly,
-        CLRPrivBinderLoadFile* pBinderToUse);
+        IMetaDataAssemblyEmit *pEmit);
 
   private:
     // Private helpers for crufty exception handling reasons
@@ -734,26 +637,11 @@ class PEAssembly : public PEFile
     // binding & source
     // ------------------------------------------------------------
 
-    BOOL IsSourceGAC();
-    BOOL IsProfileAssembly();
-
     ULONG HashIdentity();
 
 #ifndef  DACCESS_COMPILE
     virtual void ReleaseIL();
 #endif
-
-    // ------------------------------------------------------------
-    // Hash support
-    // ------------------------------------------------------------
-
-    BOOL NeedsModuleHashChecks();
-
-    BOOL HasStrongNameSignature();
-    BOOL IsFullySigned();
-
-    void SetStrongNameBypassed();
-    void VerifyStrongName();
 
     // ------------------------------------------------------------
     // Descriptive strings
@@ -806,7 +694,6 @@ class PEAssembly : public PEFile
         IMetaDataEmit *pEmit,
         PEFile *creator, 
         BOOL system, 
-        BOOL introspectionOnly = FALSE,
         PEImage * pPEImageIL = NULL,
         PEImage * pPEImageNI = NULL,
         ICLRPrivAssembly * pHostAssembly = NULL
@@ -825,16 +712,7 @@ class PEAssembly : public PEFile
 
     BOOL CheckNativeImageVersion(PEImage *image);
 
-
-
 #endif  // FEATURE_PREJIT
-
-  private:
-    // Check both the StrongName and Authenticode signature of an assembly. If the application is using
-    // strong name bypass, then this call may not result in a strong name verificaiton. VerifyStrongName
-    // should be called if a strong name must be forced to verify.
-    void DoLoadSignatureChecks();
-
 
   private:
     // ------------------------------------------------------------
@@ -842,13 +720,10 @@ class PEAssembly : public PEFile
     // ------------------------------------------------------------
 
     PTR_PEFile               m_creator;
-    BOOL m_bIsFromGAC;
-    BOOL m_bIsOnTpaList;
     // Using a separate entry and not m_pHostAssembly because otherwise
     // HasHostAssembly becomes true that trips various other code paths resulting in bad
     // things
     SString                  m_sTextualIdentity;
-    int                      m_fProfileAssembly; // Tri-state cache
 
   public:
     PTR_PEFile GetCreator()
@@ -876,43 +751,9 @@ typedef ReleaseHolder<PEFile> PEFileHolder;
 
 typedef ReleaseHolder<PEAssembly> PEAssemblyHolder;
 
-
-
-// A small shim around PEAssemblies/IBindResult that allow us to write Fusion/CLR-agnostic
-// for logging native bind failures to the Fusion log/CLR log.
-//
-// These structures are stack-based, non-thread-safe and created for the duration of a single RuntimeVerify call.
-// The methods are expected to compute their data lazily as they are only used in bind failures or in checked builds.
-class LoggablePEAssembly : public LoggableAssembly
-{
-  public:
-    virtual SString DisplayString()
-    {
-        STANDARD_VM_CONTRACT;
-
-        return m_peAssembly->GetPath();
-    }
-
-
-    LoggablePEAssembly(PEAssembly *peAssembly)
-    {
-        LIMITED_METHOD_CONTRACT;
-
-        m_peAssembly = peAssembly;
-        peAssembly->AddRef();
-    }
-
-    ~LoggablePEAssembly()
-    {
-        LIMITED_METHOD_CONTRACT;
-
-        m_peAssembly->Release();
-    }
-
-  private:
-    PEAssembly  *m_peAssembly;
-};
-
+BOOL RuntimeVerifyNativeImageDependency(const CORCOMPILE_DEPENDENCY   *pExpected,
+    const CORCOMPILE_VERSION_INFO *pActual,
+    PEAssembly                    *pLogAsm);
 
 // ================================================================================
 // Inline definitions

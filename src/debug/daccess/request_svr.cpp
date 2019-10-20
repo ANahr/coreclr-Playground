@@ -22,6 +22,8 @@
 
 int GCHeapCount()
 {
+    if (g_gcDacGlobals->n_heaps == nullptr)
+        return 0;
     return *g_gcDacGlobals->n_heaps;
 }
 
@@ -206,17 +208,23 @@ void
 ClrDataAccess::EnumSvrGlobalMemoryRegions(CLRDataEnumMemoryFlags flags)
 {
     SUPPORTS_DAC;
-    g_gcDacGlobals->n_heaps.EnumMem();
-    DacEnumMemoryRegion(g_gcDacGlobals->g_heaps.GetAddr(),
-                    sizeof(TADDR) * *g_gcDacGlobals->n_heaps);
 
+    if (g_gcDacGlobals->n_heaps == nullptr || g_gcDacGlobals->g_heaps == nullptr)
+        return;
+    
+    g_gcDacGlobals->n_heaps.EnumMem();
+
+    int heaps = *g_gcDacGlobals->n_heaps;
+    DacEnumMemoryRegion(g_gcDacGlobals->g_heaps.GetAddr(), sizeof(TADDR) * heaps);
+
+    g_gcDacGlobals->gc_structures_invalid_cnt.EnumMem();
     g_gcDacGlobals->g_heaps.EnumMem();
     
-    for (int i=0; i < *g_gcDacGlobals->n_heaps; i++)
+    for (int i = 0; i < heaps; i++)
     {
         DPTR(dac_gc_heap) pHeap = HeapTableIndex(g_gcDacGlobals->g_heaps, i);
 
-        size_t gen_table_size = g_gcDacGlobals->generation_size * (*g_gcDacGlobals->max_gen + 1);
+        size_t gen_table_size = g_gcDacGlobals->generation_size * (*g_gcDacGlobals->max_gen + 2);
         DacEnumMemoryRegion(dac_cast<TADDR>(pHeap), sizeof(dac_gc_heap));
         DacEnumMemoryRegion(dac_cast<TADDR>(pHeap->finalize_queue), sizeof(dac_finalize_queue));
         DacEnumMemoryRegion(dac_cast<TADDR>(pHeap->generation_table), gen_table_size);
@@ -239,7 +247,7 @@ ClrDataAccess::EnumSvrGlobalMemoryRegions(CLRDataEnumMemoryFlags flags)
 
 DWORD DacGetNumHeaps()
 {
-    if (g_gcDacGlobals->gc_heap_type == IGCHeap::GC_HEAP_SVR)
+    if (g_heap_type == GC_HEAP_SVR)
         return (DWORD)*g_gcDacGlobals->n_heaps;
 
     // workstation gc
@@ -248,6 +256,9 @@ DWORD DacGetNumHeaps()
 
 HRESULT DacHeapWalker::InitHeapDataSvr(HeapData *&pHeaps, size_t &pCount)
 {
+    if (g_gcDacGlobals->n_heaps == nullptr || g_gcDacGlobals->g_heaps == nullptr)
+        return S_OK;
+
     // Scrape basic heap details
     int heaps = *g_gcDacGlobals->n_heaps;
     pCount = heaps;

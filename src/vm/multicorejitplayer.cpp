@@ -12,12 +12,10 @@
 
 #include "common.h"
 #include "vars.hpp"
-#include "security.h"
 #include "eeconfig.h"
 #include "dllimport.h"
 #include "comdelegate.h"
 #include "dbginterface.h"
-#include "listlock.inl"
 #include "stubgen.h"
 #include "eventtrace.h"
 #include "array.h"
@@ -103,7 +101,7 @@ void MulticoreJitCodeStorage::StoreMethodCode(MethodDesc * pMD, PCODE pCode)
 
 
 // Query from MakeJitWorker: Lookup stored JITted methods
-PCODE MulticoreJitCodeStorage::QueryMethodCode(MethodDesc * pMethod)
+PCODE MulticoreJitCodeStorage::QueryMethodCode(MethodDesc * pMethod, BOOL shouldRemoveCode)
 {
     STANDARD_VM_CONTRACT;
 
@@ -113,7 +111,7 @@ PCODE MulticoreJitCodeStorage::QueryMethodCode(MethodDesc * pMethod)
     {
         CrstHolder holder(& m_crstCodeMap);
     
-        if (m_nativeCodeMap.Lookup(pMethod, & code))
+        if (m_nativeCodeMap.Lookup(pMethod, & code) && shouldRemoveCode)
         {
             m_nReturned ++;
 
@@ -234,7 +232,7 @@ public:
     bool MatchWith(ModuleVersion & version, bool & gotVersion, Module * pModule, bool & shortAbort, bool fAppx);
 
 #ifdef MULTICOREJIT_LOGGING    
-    void Dump(const wchar_t * prefix, int index);
+    void Dump(const WCHAR * prefix, int index);
 #endif
 
 };
@@ -269,7 +267,7 @@ bool PlayerModuleInfo::MatchWith(ModuleVersion & version, bool & gotVersion, Mod
 
 #ifdef MULTICOREJIT_LOGGING
 
-void PlayerModuleInfo::Dump(const wchar_t * prefix, int index)
+void PlayerModuleInfo::Dump(const WCHAR * prefix, int index)
 {
     WRAPPER_NO_CONTRACT;
 
@@ -295,7 +293,7 @@ void PlayerModuleInfo::Dump(const wchar_t * prefix, int index)
 
     for (i = 0; i < m_pRecord->ModuleNameLen(); i ++)
     {
-        ssBuff.Append((wchar_t) m_pRecord->GetModuleName()[i]);
+        ssBuff.Append((WCHAR) m_pRecord->GetModuleName()[i]);
     }
 
     while (i < 32)
@@ -367,12 +365,11 @@ bool ModuleRecord::MatchWithModule(ModuleVersion & modVersion, bool & gotVersion
 }
 
 
-MulticoreJitProfilePlayer::MulticoreJitProfilePlayer(AppDomain * pDomain, ICLRPrivBinder * pBinderContext, LONG nSession, bool fAppxMode)
-    : m_stats(pDomain->GetMulticoreJitManager().GetStats()), m_appdomainSession(pDomain->GetMulticoreJitManager().GetProfileSession())
+MulticoreJitProfilePlayer::MulticoreJitProfilePlayer(ICLRPrivBinder * pBinderContext, LONG nSession, bool fAppxMode)
+    : m_stats(::GetAppDomain()->GetMulticoreJitManager().GetStats()), m_appdomainSession(::GetAppDomain()->GetMulticoreJitManager().GetProfileSession())
 {
     LIMITED_METHOD_CONTRACT;
 
-    m_DomainID           = pDomain->GetId();
     m_pBinderContext     = pBinderContext;
     m_nMySession         = nSession;
     m_moduleCount        = 0;
@@ -507,6 +504,23 @@ HRESULT MulticoreJitProfilePlayer::HandleModuleRecord(const ModuleRecord * pMod)
 }
 
 
+#ifndef DACCESS_COMPILE
+class MulticoreJitPrepareCodeConfig : public PrepareCodeConfig
+{
+public:
+    MulticoreJitPrepareCodeConfig(MethodDesc* pMethod) :
+        PrepareCodeConfig(NativeCodeVersion(pMethod), FALSE, FALSE)
+    {}
+    
+    virtual BOOL SetNativeCode(PCODE pCode, PCODE * ppAlternateCodeToUse)
+    {
+        MulticoreJitManager & mcJitManager = GetAppDomain()->GetMulticoreJitManager();
+        mcJitManager.GetMulticoreJitCodeStorage().StoreMethodCode(GetMethodDesc(), pCode);
+        return TRUE;
+    }
+};
+#endif
+
 // Call JIT to compile a method
 
 bool MulticoreJitProfilePlayer::CompileMethodDesc(Module * pModule, MethodDesc * pMD)
@@ -529,8 +543,9 @@ bool MulticoreJitProfilePlayer::CompileMethodDesc(Module * pModule, MethodDesc *
         // Reset the flag to allow managed code to be called in multicore JIT background thread from this routine
         ThreadStateNCStackHolder holder(-1, Thread::TSNC_CallingManagedCodeDisabled);
 
-        // MakeJitWorker calls back to MulticoreJitCodeStorage::StoreMethodCode under MethodDesc lock
-        pMD->MakeJitWorker(& header, CORJIT_FLAGS(CORJIT_FLAGS::CORJIT_FLAG_MCJIT_BACKGROUND));
+        // PrepareCode calls back to MulticoreJitCodeStorage::StoreMethodCode under MethodDesc lock
+        MulticoreJitPrepareCodeConfig config(pMD);
+        pMD->PrepareCode(&config);
 
         return true;
     }
@@ -547,7 +562,7 @@ void MulticoreJitProfilePlayer::JITMethod(Module * pModule, unsigned methodIndex
 	// Ensure non-null module
 	if (pModule == NULL)
 	{
-		if (ETW_TRACING_CATEGORY_ENABLED(MICROSOFT_WINDOWS_DOTNETRUNTIME_PRIVATE_PROVIDER_Context, TRACE_LEVEL_VERBOSE, CLR_PRIVATEMULTICOREJIT_KEYWORD))
+		if (ETW_TRACING_CATEGORY_ENABLED(MICROSOFT_WINDOWS_DOTNETRUNTIME_PRIVATE_PROVIDER_DOTNET_Context, TRACE_LEVEL_VERBOSE, CLR_PRIVATEMULTICOREJIT_KEYWORD))
 		{
 			_FireEtwMulticoreJitA(W("NULLMODULEPOINTER"), NULL, methodIndex, 0, 0);
 		}
@@ -604,7 +619,7 @@ BadMethod:
         
     MulticoreJitTrace(("Filtered out methods: pModule:[%s] token:[%x]", pModule->GetSimpleName(), token));
 
-    if (ETW_TRACING_CATEGORY_ENABLED(MICROSOFT_WINDOWS_DOTNETRUNTIME_PRIVATE_PROVIDER_Context, TRACE_LEVEL_VERBOSE, CLR_PRIVATEMULTICOREJIT_KEYWORD)) 
+    if (ETW_TRACING_CATEGORY_ENABLED(MICROSOFT_WINDOWS_DOTNETRUNTIME_PRIVATE_PROVIDER_DOTNET_Context, TRACE_LEVEL_VERBOSE, CLR_PRIVATEMULTICOREJIT_KEYWORD)) 
     {
         _FireEtwMulticoreJitA(W("FILTERMETHOD-GENERIC"), pModule->GetSimpleName(), token, 0, 0);
     }
@@ -729,7 +744,7 @@ HRESULT MulticoreJitProfilePlayer::UpdateModuleInfo()
                     info.Dump(W("    BlockingModule"), i);
     #endif
 
-                    if (ETW_TRACING_CATEGORY_ENABLED(MICROSOFT_WINDOWS_DOTNETRUNTIME_PRIVATE_PROVIDER_Context, TRACE_LEVEL_VERBOSE, CLR_PRIVATEMULTICOREJIT_KEYWORD)) 
+                    if (ETW_TRACING_CATEGORY_ENABLED(MICROSOFT_WINDOWS_DOTNETRUNTIME_PRIVATE_PROVIDER_DOTNET_Context, TRACE_LEVEL_VERBOSE, CLR_PRIVATEMULTICOREJIT_KEYWORD)) 
                     {
                         _FireEtwMulticoreJitA(W("BLOCKINGMODULE"), info.m_pRecord->GetModuleName(), i, info.m_curLevel, info.m_needLevel);
                     }
@@ -827,7 +842,7 @@ bool MulticoreJitProfilePlayer::GroupWaitForModuleLoad(int pos)
 
         MulticoreJitTrace(("Delay: %d ms", delay));
 
-        if (ETW_TRACING_CATEGORY_ENABLED(MICROSOFT_WINDOWS_DOTNETRUNTIME_PRIVATE_PROVIDER_Context, TRACE_LEVEL_VERBOSE, CLR_PRIVATEMULTICOREJIT_KEYWORD)) 
+        if (ETW_TRACING_CATEGORY_ENABLED(MICROSOFT_WINDOWS_DOTNETRUNTIME_PRIVATE_PROVIDER_DOTNET_Context, TRACE_LEVEL_VERBOSE, CLR_PRIVATEMULTICOREJIT_KEYWORD)) 
         {
             _FireEtwMulticoreJit(W("GROUPWAIT"), W("Delay"), delay, 0, 0);
         }
@@ -872,8 +887,6 @@ bool MulticoreJitProfilePlayer::HandleModuleDependency(unsigned jitInfo)
 
             if (!mod.m_pModule)
             {
-                HRESULT hr;
-
                 // Get the assembly name.
                 SString assemblyName;
                 assemblyName.SetASCII(mod.m_pRecord->GetAssemblyName(), mod.m_pRecord->AssemblyNameLen());
@@ -936,32 +949,10 @@ DomainAssembly * MulticoreJitProfilePlayer::LoadAssembly(SString & assemblyName)
         spec.SetBindingContext(m_pBinderContext);
     }
 
-    DomainAssembly *pDomainAssembly = NULL;
-
-    // Setup the AssemblyLoadSecurity to perform the assembly load
-    GCX_COOP();
-
-    PTR_AppDomain pCurDomain = GetAppDomain();
-    IApplicationSecurityDescriptor *pDomainSecDesc = pCurDomain->GetSecurityDescriptor();
-
-    OBJECTREF refGrantedPermissionSet = NULL;
-    AssemblyLoadSecurity loadSecurity;
-
-    GCPROTECT_BEGIN(refGrantedPermissionSet);
-
-    loadSecurity.m_dwSpecialFlags = pDomainSecDesc->GetSpecialFlags();
-    refGrantedPermissionSet = pDomainSecDesc->GetGrantedPermissionSet();
-    loadSecurity.m_pGrantSet = &refGrantedPermissionSet;
-
     // Bind and load the assembly.
-    pDomainAssembly = spec.LoadDomainAssembly(
+    return spec.LoadDomainAssembly(
         FILE_LOADED,
-        &loadSecurity,
         FALSE); // Don't throw on FileNotFound.
-
-    GCPROTECT_END();
-
-    return pDomainAssembly;
 }
 
 
@@ -1132,7 +1123,7 @@ void MulticoreJitProfilePlayer::TraceSummary()
 }
 
 
-HRESULT MulticoreJitProfilePlayer::ReadCheckFile(const wchar_t * pFileName)
+HRESULT MulticoreJitProfilePlayer::ReadCheckFile(const WCHAR * pFileName)
 {
     CONTRACTL
     {
@@ -1246,9 +1237,8 @@ HRESULT MulticoreJitProfilePlayer::PlayProfile()
 
     unsigned nSize = m_nFileSize;
 
-    MulticoreJitTrace(("PlayProfile %d bytes in (%d, %s)", 
+    MulticoreJitTrace(("PlayProfile %d bytes in (%s)", 
         nSize,
-        GetAppDomain()->GetId().m_dwId, 
         GetAppDomain()->GetFriendlyNameForLogging()));
 
     while ((SUCCEEDED(hr)) && (nSize > sizeof(unsigned)))
@@ -1329,14 +1319,12 @@ HRESULT MulticoreJitProfilePlayer::JITThreadProc(Thread * pThread)
 
     EX_TRY
     {
-        ENTER_DOMAIN_ID(m_DomainID);
         {
             // Go into preemptive mode
             GCX_PREEMP();
 
             m_stats.m_hr = PlayProfile();
         }
-        END_DOMAIN_TRANSITION;
     }
     EX_CATCH
     {
@@ -1408,7 +1396,7 @@ DWORD WINAPI MulticoreJitProfilePlayer::StaticJITThreadProc(void *args)
 }
 
 
-HRESULT MulticoreJitProfilePlayer::ProcessProfile(const wchar_t * pFileName)
+HRESULT MulticoreJitProfilePlayer::ProcessProfile(const WCHAR * pFileName)
 {
     STANDARD_VM_CONTRACT;
 

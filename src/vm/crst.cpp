@@ -33,25 +33,7 @@ VOID CrstBase::InitWorker(INDEBUG_COMMA(CrstType crstType) CrstFlags flags)
     CONTRACTL {
         THROWS;
         WRAPPER(GC_TRIGGERS);
-    } CONTRACTL_END;    
-
-    // Disallow creation of Crst before EE starts.  But only complain if we end up
-    // being hosted, since such Crsts have escaped the hosting net and will cause
-    // AVs on next use.
-#ifdef _DEBUG
-    static bool fEarlyInit; // = false
-
-    if (!g_fEEStarted)
-    {
-        if (!CLRSyncHosted())
-            fEarlyInit = true;
-    }
-
-    // If we are now hosted, we better not have *ever* created some Crsts that are
-    // not known to our host.
-    _ASSERTE(!fEarlyInit || !CLRSyncHosted());
-
-#endif
+    } CONTRACTL_END;
 
     _ASSERTE((flags & CRST_INITIALIZED) == 0);
     
@@ -60,7 +42,7 @@ VOID CrstBase::InitWorker(INDEBUG_COMMA(CrstType crstType) CrstFlags flags)
     }
 
     {
-        UnsafeInitializeCriticalSection(&m_criticalsection);
+        InitializeCriticalSection(&m_criticalsection);
     }
 
     SetFlags(flags);
@@ -95,7 +77,7 @@ void CrstBase::Destroy()
     GCPreemp __gcHolder((m_dwFlags & CRST_HOST_BREAKABLE) == CRST_HOST_BREAKABLE);
 
     {
-        UnsafeDeleteCriticalSection(&m_criticalsection);
+        DeleteCriticalSection(&m_criticalsection);
     }
 
     LOG((LF_SYNC, INFO3, "Deleting 0x%x\n", this));
@@ -328,16 +310,7 @@ void CrstBase::Enter(INDEBUG(NoLevelCheckFlag noLevelCheckFlag/* = CRST_LEVEL_CH
         }
     }
 
-    {
-        if (CLRTaskHosted()) 
-        {
-            Thread::BeginThreadAffinity();
-        }
-
-        UnsafeEnterCriticalSection(&m_criticalsection);
-
-    }
-
+    EnterCriticalSection(&m_criticalsection);
 
 #ifdef _DEBUG
     PostEnter();
@@ -370,14 +343,7 @@ void CrstBase::Leave()
     Thread * pThread = GetThread();
 #endif
 
-    {
-        UnsafeLeaveCriticalSection(&m_criticalsection);
-
-
-        if (CLRTaskHosted()) {
-            Thread::EndThreadAffinity();
-        }
-    }
+    LeaveCriticalSection(&m_criticalsection);
 
     // Check for both rare case using one if-check
     if (m_dwFlags & (CRST_TAKEN_DURING_SHUTDOWN | CRST_DEBUGGER_THREAD))

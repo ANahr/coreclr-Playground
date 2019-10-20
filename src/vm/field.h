@@ -10,7 +10,6 @@
 #ifndef _FIELD_H_
 #define _FIELD_H_
 
-#include "objecthandle.h"
 #include "excep.h"
 
 // Temporary values stored in FieldDesc m_dwOffset during loading
@@ -42,6 +41,8 @@ class FieldDesc
 
   protected:
     RelativePointer<PTR_MethodTable> m_pMTOfEnclosingClass;  // This is used to hold the log2 of the field size temporarily during class loading.  Yuck.
+
+    // See also: FieldDesc::InitializeFrom method
 
 #if defined(DACCESS_COMPILE)
     union { //create a union so I can get the correct offset for ClrDump.
@@ -79,16 +80,34 @@ class FieldDesc
 #endif
 
 #ifdef _DEBUG
-    struct {
-        unsigned m_isDangerousAppDomainAgileField : 1;
-    };
     LPUTF8 m_debugName;
 #endif
 
-    // Allocated by special heap means, don't construct me
-    FieldDesc() {};
-
 public:
+    // Allocated by special heap means, don't construct me
+    FieldDesc() =delete;
+
+#ifndef DACCESS_COMPILE
+    void InitializeFrom(const FieldDesc& sourceField, MethodTable *pMT)
+    {
+        m_pMTOfEnclosingClass.SetValue(pMT);
+
+        m_mb = sourceField.m_mb;
+        m_isStatic = sourceField.m_isStatic;
+        m_isThreadLocal = sourceField.m_isThreadLocal;
+        m_isRVA = sourceField.m_isRVA;
+        m_prot = sourceField.m_prot;
+        m_requiresFullMbValue = sourceField.m_requiresFullMbValue;
+
+        m_dwOffset = sourceField.m_dwOffset;
+        m_type = sourceField.m_type;
+
+#ifdef _DEBUG
+        m_debugName = sourceField.m_debugName;
+#endif // _DEBUG
+    }
+#endif // !DACCESS_COMPILE
+
 #ifdef _DEBUG
     inline LPUTF8 GetDebugName()
     {
@@ -114,7 +133,6 @@ public:
               BOOL fIsStatic, 
               BOOL fIsRVA, 
               BOOL fIsThreadLocal, 
-              BOOL fIsContextLocal, 
               LPCSTR pszFieldName);
 
     enum {
@@ -274,12 +292,6 @@ public:
                       : dwOffset;
     }
 
-    BOOL IsILOnlyRVAField()
-    {
-        WRAPPER_NO_CONTRACT;
-        return (IsRVA() && GetModule()->GetFile()->IsILOnly());
-    }
-
     DWORD   IsStatic() const
     {
         LIMITED_METHOD_DAC_CONTRACT;
@@ -295,22 +307,6 @@ public:
             );
     }
 
-#if defined(CHECK_APP_DOMAIN_LEAKS) || defined(_DEBUG)
-    BOOL   IsDangerousAppDomainAgileField()
-    {
-        LIMITED_METHOD_CONTRACT;
-
-        return m_isDangerousAppDomainAgileField;
-    }
-
-    void    SetDangerousAppDomainAgileField()
-    {
-        LIMITED_METHOD_CONTRACT;
-
-        m_isDangerousAppDomainAgileField = TRUE;
-    }
-#endif
-
     BOOL   IsRVA() const               // Has an explicit RVA associated with it
     { 
         LIMITED_METHOD_DAC_CONTRACT;
@@ -323,13 +319,6 @@ public:
         LIMITED_METHOD_DAC_CONTRACT;
 
         return m_isThreadLocal;
-    }
-
-    BOOL   IsContextStatic() const     // Static relative to a context
-    {
-        LIMITED_METHOD_DAC_CONTRACT;
-
-        return FALSE;
     }
 
     // Indicate that this field was added by EnC
@@ -462,42 +451,18 @@ public:
         }
     }
 
-#ifndef DACCESS_COMPILE
     PTR_BYTE GetBase()
     {
         CONTRACTL
         {
-          THROWS;
-          GC_TRIGGERS;
-          INJECT_FAULT(COMPlusThrowOM());
+          NOTHROW;
+          GC_NOTRIGGER;
         }
         CONTRACTL_END
 
         MethodTable *pMT = GetEnclosingMethodTable();
 
         return GetBaseInDomainLocalModule(pMT->GetDomainLocalModule());
-    }
-
-#endif //!DACCESS_COMPILE
-
-    PTR_BYTE GetBaseInDomain(AppDomain * appDomain)
-    {
-        CONTRACTL
-        {
-            NOTHROW;
-            GC_NOTRIGGER;
-        }
-        CONTRACTL_END;
-
-        Module *pModule = GetEnclosingMethodTable()->GetModuleForStatics();
-        if (pModule == NULL)
-            return NULL;
-
-        DomainLocalModule *pLocalModule = pModule->GetDomainLocalModule(appDomain);
-        if (pLocalModule == NULL)
-            return NULL;
-
-        return GetBaseInDomainLocalModule(pLocalModule);
     }
 
     // returns the address of the field
@@ -532,7 +497,7 @@ public:
 
         GCPROTECT_BEGIN(objRef);
         OBJECTREF *pObjRef = (OBJECTREF *)GetCurrentStaticAddress();
-        SetObjectReference(pObjRef, objRef, GetAppDomain());
+        SetObjectReference(pObjRef, objRef);
         GCPROTECT_END();
     }
 
@@ -667,7 +632,6 @@ public:
           NOTHROW;
           GC_NOTRIGGER;
           MODE_ANY;
-          SO_TOLERANT;
         }
         CONTRACTL_END
 
@@ -717,7 +681,6 @@ public:
           NOTHROW;
           GC_NOTRIGGER;
           MODE_ANY;
-          SO_TOLERANT;
         }
         CONTRACTL_END
         
@@ -735,7 +698,6 @@ public:
           NOTHROW;
           GC_NOTRIGGER;
           MODE_ANY;
-          SO_TOLERANT;
         }
         CONTRACTL_END
 
@@ -768,34 +730,6 @@ public:
         WRAPPER_NO_CONTRACT;
 
         return IsFdPrivate(GetFieldProtection());
-    }
-
-    BOOL IsNotSerialized()
-    {
-        CONTRACTL
-        {
-            NOTHROW;
-            GC_NOTRIGGER;
-            SO_TOLERANT;
-            MODE_ANY;
-        }
-        CONTRACTL_END;
-
-        MethodTable *pMT = GetApproxEnclosingMethodTable();
-        if (pMT->IsSerializable() && !IsStatic())
-            return pMT->IsFieldNotSerialized(pMT->GetIndexForFieldDesc(this));
-        return IsFdNotSerialized(GetAttributes());
-    }
-
-    // Only safe to call this for non-static fields on serializable types.
-    BOOL IsOptionallySerialized()
-    {
-        WRAPPER_NO_CONTRACT;
-
-        _ASSERTE(!IsStatic() && GetApproxEnclosingMethodTable()->IsSerializable());
-
-        MethodTable *pMT = GetApproxEnclosingMethodTable();
-        return pMT->IsFieldOptionallySerialized(pMT->GetIndexForFieldDesc(this));
     }
 
     IMDInternalImport *GetMDImport()

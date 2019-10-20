@@ -52,8 +52,8 @@ public:
     {
     private:
         const_iterator(Node* ptr);
-        const_iterator();
     public:
+        const_iterator();
         const_iterator(const const_iterator& it);
         const_iterator(const typename list<T, Allocator>::iterator& it);
 
@@ -177,6 +177,8 @@ public:
 
     reference back();
     const_reference back() const;
+    iterator backPosition();
+    const_iterator backPosition() const;
 
     iterator begin();
     const_iterator begin() const;
@@ -364,6 +366,18 @@ template <typename T, typename Allocator>
 typename list<T, Allocator>::const_reference list<T, Allocator>::back() const
 {
     return m_pTail->m_value;
+}
+
+template <typename T, typename Allocator>
+typename list<T, Allocator>::iterator list<T, Allocator>::backPosition()
+{
+    return iterator(m_pTail);
+}
+
+template <typename T, typename Allocator>
+typename list<T, Allocator>::const_iterator list<T, Allocator>::backPosition() const
+{
+    return const_iterator(m_pTail);
 }
 
 template <typename T, typename Allocator>
@@ -639,11 +653,15 @@ typename list<T, Allocator>::const_reverse_iterator
 template <typename T, typename Allocator>
 void list<T, Allocator>::remove(const T& val)
 {
-    for (iterator i = begin(); i != end(); ++i)
+    for (iterator i = begin(); i != end();)
     {
         if (*i == val)
         {
             i = erase(i);
+        }
+        else
+        {
+            ++i;
         }
     }
 }
@@ -652,11 +670,15 @@ template <typename T, typename Allocator>
 template <class Predicate>
 void list<T, Allocator>::remove_if(Predicate pred)
 {
-    for (iterator i = begin(); i != end(); ++i)
+    for (iterator i = begin(); i != end();)
     {
         if (pred(*i))
         {
             i = erase(i);
+        }
+        else
+        {
+            ++i;
         }
     }
 }

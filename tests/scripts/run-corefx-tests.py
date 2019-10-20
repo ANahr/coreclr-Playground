@@ -29,6 +29,8 @@ import sys
 # Globals
 ##########################################################################
 
+testing = False
+
 Corefx_url = 'https://github.com/dotnet/corefx.git'
 
 # This should be factored out of build.sh
@@ -48,7 +50,7 @@ Is_windows = (os.name == 'nt')
 ##########################################################################
 
 def del_rw(action, name, exc):
-    os.chmod(name, 0651)
+    os.chmod(name, 0o651)
     os.remove(name)
 
 ##########################################################################
@@ -60,12 +62,15 @@ description = 'Tool to facilitate running CoreFx tests from the CoreCLR repo'
 parser = argparse.ArgumentParser(description=description)
 
 parser.add_argument('-arch', dest='arch', default='x64')
+parser.add_argument('-ci_arch', dest='ci_arch', default=None)
 parser.add_argument('-build_type', dest='build_type', default='Debug')
 parser.add_argument('-clr_root', dest='clr_root', default=None)
 parser.add_argument('-fx_root', dest='fx_root', default=None)
 parser.add_argument('-fx_branch', dest='fx_branch', default='master')
 parser.add_argument('-fx_commit', dest='fx_commit', default=None)
 parser.add_argument('-env_script', dest='env_script', default=None)
+parser.add_argument('-exclusion_rsp_file', dest='exclusion_rsp_file', default=None)
+parser.add_argument('-no_run_tests', dest='no_run_tests', action="store_true", default=False)
 
 
 ##########################################################################
@@ -77,20 +82,23 @@ def validate_args(args):
     Args:
         args (argparser.ArgumentParser): Args parsed by the argument parser.
     Returns:
-        (arch, build_type, clr_root, fx_root, fx_branch, fx_commit, env_script)
-            (str, str, str, str, str, str, str)
+        (arch, ci_arch, build_type, clr_root, fx_root, fx_branch, fx_commit, env_script, exclusion_rsp_file, no_run_tests)
+            (str, str, str, str, str, str, str, str, str)
     Notes:
     If the arguments are valid then return them all in a tuple. If not, raise
     an exception stating x argument is incorrect.
     """
 
     arch = args.arch
+    ci_arch = args.ci_arch
     build_type = args.build_type
     clr_root = args.clr_root
     fx_root = args.fx_root
     fx_branch = args.fx_branch
     fx_commit = args.fx_commit
     env_script = args.env_script
+    exclusion_rsp_file = args.exclusion_rsp_file
+    no_run_tests = args.no_run_tests
 
     def validate_arg(arg, check):
         """ Validate an individual arg
@@ -136,16 +144,23 @@ def validate_args(args):
         validate_arg(env_script, lambda item: os.path.isfile(env_script))
         env_script = os.path.abspath(env_script)
 
-    args = (arch, build_type, clr_root, fx_root, fx_branch, fx_commit, env_script)
+    if exclusion_rsp_file is not None:
+        validate_arg(exclusion_rsp_file, lambda item: os.path.isfile(exclusion_rsp_file))
+        exclusion_rsp_file = os.path.abspath(exclusion_rsp_file)
+
+    args = (arch, ci_arch, build_type, clr_root, fx_root, fx_branch, fx_commit, env_script, exclusion_rsp_file, no_run_tests)
 
     log('Configuration:')
     log(' arch: %s' % arch)
+    log(' ci_arch: %s' % ci_arch)
     log(' build_type: %s' % build_type)
     log(' clr_root: %s' % clr_root)
     log(' fx_root: %s' % fx_root)
     log(' fx_branch: %s' % fx_branch)
     log(' fx_commit: %s' % fx_commit)
     log(' env_script: %s' % env_script)
+    log(' exclusion_rsp_file: %s' % exclusion_rsp_file)
+    log(' no_run_tests: %s' % no_run_tests)
 
     return args
 
@@ -173,7 +188,30 @@ def log(message):
         message (str): message to be printed
     """
 
-    print '[%s]: %s' % (sys.argv[0], message)
+    print('[%s]: %s' % (sys.argv[0], message))
+
+def copy_files(source_dir, target_dir):
+    """ Copy any files in the source_dir to the target_dir.
+        The copy is not recursive.
+        The directories must already exist.
+    Args:
+        source_dir (str): source directory path
+        target_dir (str): target directory path
+    Returns:
+        Nothing
+    """
+
+    global testing
+    assert os.path.isdir(source_dir)
+    assert testing or os.path.isdir(target_dir)
+
+    for source_filename in os.listdir(source_dir):
+        source_pathname = os.path.join(source_dir, source_filename)
+        if os.path.isfile(source_pathname):
+            target_pathname = os.path.join(target_dir, source_filename)
+            log('Copy: %s => %s' % (source_pathname, target_pathname))
+            if not testing:
+                shutil.copy2(source_pathname, target_pathname)
 
 ##########################################################################
 # Main
@@ -182,10 +220,12 @@ def log(message):
 def main(args):
     global Corefx_url
     global Unix_name_map
+    global testing
 
-    testing = False
+    if testing:
+        log("Running with testing = True")
 
-    arch, build_type, clr_root, fx_root, fx_branch, fx_commit, env_script = validate_args(
+    arch, ci_arch, build_type, clr_root, fx_root, fx_branch, fx_commit, env_script, exclusion_rsp_file, no_run_tests = validate_args(
         args)
 
     clr_os = 'Windows_NT' if Is_windows else Unix_name_map[os.uname()[0]]
@@ -205,7 +245,7 @@ def main(args):
             while True:
                 res = subprocess.check_output(['tasklist'])
                 if not 'VBCSCompiler.exe' in res:
-                   break                
+                   break
         os.chdir(fx_root)
         os.system('git clean -fxd')
         os.chdir(clr_root)
@@ -234,8 +274,17 @@ def main(args):
     command = "git checkout %s" % fx_commit
     log(command)
     returncode = 0 if testing else os.system(command)
-    if not returncode == 0:
-        sys.exit(returncode)
+    if returncode != 0:
+        sys.exit(1)
+
+    # Print the currently checked out commit hash. Mostly useful if you just checked
+    # out HEAD, which is the default.
+
+    command = "git rev-parse HEAD"
+    log(command)
+    returncode = 0 if testing else os.system(command)
+    if returncode != 0:
+        sys.exit(1)
 
     # On Unix, coreFx build.sh requires HOME to be set, and it isn't by default
     # under our CI system, so set it now.
@@ -247,59 +296,142 @@ def main(args):
         os.putenv('HOME', fx_home)
         log('HOME=' + fx_home)
 
-    # Determine the RID to specify the to corefix build scripts.  This seems to
-    # be way harder than it ought to be.
- 
-    # Gather up some arguments to pass to both build and build-tests.
+    # Gather up some arguments to pass to the different build scripts.
 
-    config_args = '-Release -os:%s -buildArch:%s' % (clr_os, arch)
+    common_config_args = '-configuration Release -framework netcoreapp -os %s -arch %s' % (clr_os, arch)
+    build_args = '-build -restore'
+    build_test_args = '-buildtests  /p:ArchiveTests=Tests'
 
-    # Run the primary (non-test) corefx build
+    if not no_run_tests:
+        build_test_args += ' -test'
 
-    command = ' '.join(('build.cmd' if Is_windows else './build.sh', config_args))
+
+    if not Is_windows and arch == 'arm' :
+        # We need to force clang5.0; we are building in a docker container that doesn't have
+        # clang3.9, which is currently the default used by the native build.
+        common_config_args += ' /p:BuildNativeCompiler=--clang5.0'
+
+    if not Is_windows and (arch == 'arm' or arch == 'arm64'):
+        # It is needed under docker where LC_ALL is not configured.
+        common_config_args += ' --warnAsError false'
+
+    build_command = 'build.cmd' if Is_windows else './build.sh'
+
+    command = ' '.join((build_command, common_config_args, build_args))
     log(command)
     returncode = 0 if testing else os.system(command)
     if returncode != 0:
-        sys.exit(returncode)
+        log('Error: exit code %s' % returncode)
+        sys.exit(1)
 
-    # Copy the coreclr runtime we wish to run tests against.  This is the recommended
-    # hack until a full-stack test solution is ready.  This assumes there is a single
-    # directory under <fx_root>/bin/runtime into which we copy coreclr binaries.  We
-    # assume the appropriate coreclr has already been built.
+    # Override the built corefx runtime (which it picked up by copying from packages determined
+    # by its dependencies.props file). Note that we always build Release corefx.
+    # We must copy all files, not just the files that already exist in the corefx runtime
+    # directory. This is required so we copy over all altjit compilers.
+    #
+    # We find the latest numbered directory in the 'Microsoft.NETCore.App' directory. This
+    # is expected to be the current product version, e.g., 3.0.0.
+    #
+    # TODO: it might be cleaner to encapsulate the knowledge of how to do this in the
+    # corefx msbuild files somewhere.
 
-    fx_runtime_dir = os.path.join(fx_root, 'bin', 'runtime')
-    overlay_dest = os.path.join(fx_runtime_dir, os.listdir(fx_runtime_dir)[0])
-    log('[overlay] %s -> %s' % (core_root, overlay_dest))
-    if not testing:
-        distutils.dir_util.copy_tree(core_root, overlay_dest)
+    netcore_app_path = os.path.join(fx_root,
+                                    'artifacts',
+                                    'bin',
+                                    'testhost',
+                                    'netcoreapp-%s-%s-%s' % (clr_os, 'Release', arch),
+                                    'shared',
+                                    'Microsoft.NETCore.App')
 
-    # Build the build-tests command line.
+    if not testing and not os.path.isdir(netcore_app_path):
+        log("Error: path not found or is not a directory: %s" % netcore_app_path)
+        sys.exit(1)
 
-    if Is_windows:
-        command = 'build-tests.cmd'
-        if env_script is not None:
-            command = ('cmd /c %s&&' % env_script) + command
+    fx_runtime = None
+
+    if testing:
+        fx_runtime = os.path.join(netcore_app_path, '9.9.9')
     else:
-        command = './build-tests.sh'
-        if env_script is not None:
-            command = ('. %s;' % env_script) + command
+        # Figure out what the latest product version is, and use that.
+        netcore_app_version_dirs = os.listdir(netcore_app_path)
+
+        if netcore_app_version_dirs is None:
+            log("Error: no version directories in %s" % netcore_app_path)
+            sys.exit(1)
+
+        netcore_app_version_dirs.sort(reverse=True)
+        for netcore_app_version_dir in netcore_app_version_dirs:
+            netcore_app_version_path = os.path.join(netcore_app_path, netcore_app_version_dir)
+            if os.path.isdir(netcore_app_version_path):
+                fx_runtime = netcore_app_version_path
+                break
+
+    if fx_runtime is None:
+        log("Error: couldn't find fx runtime directory in %s" % netcore_app_path)
+        sys.exit(1)
+
+    log('Updating CoreCLR: %s => %s' % (core_root, fx_runtime))
+    copy_files(core_root, fx_runtime)
+
+    # Build the test command line.
+
+    # If we're doing altjit testing, then don't run any tests that don't work with altjit.
+    if ci_arch is not None and (ci_arch == 'x86_arm_altjit' or ci_arch == 'x64_arm64_altjit'):
+        # The property value we need to specify for the WithoutCategories property is a semicolon
+        # separated list of two values, so the two values must be enclosed in double quotes, namely:
+        #
+        #  /p:WithoutCategories="IgnoreForCI;XsltcExeRequired"
+        #
+        # Without the quotes, msbuild interprets the semicolon as separating two name/value pairs,
+        # which is incorrect (and causes an error).
+        #
+        # If we pass this on the command-line, it requires an extraordinary number of backslashes
+        # to prevent special Python, dotnet CLI, CMD, and other command-line processing, as the command
+        # filters through batch files, the RUN tool, dotnet CLI, and finally gets to msbuild. To avoid
+        # this, and make it simpler and hopefully more resilient to scripting changes, we create an
+        # msbuild response file with the required text and pass the response file on to msbuild.
+
+        without_categories_filename = os.path.join(fx_root, 'msbuild_commands.rsp')
+        without_categories_string = '/p:WithoutCategories="IgnoreForCI;XsltcExeRequired"'
+        with open(without_categories_filename, "w") as without_categories_file:
+            without_categories_file.write(without_categories_string)
+        without_categories = " @%s" % without_categories_filename
+
+        log('Response file %s contents:' % without_categories_filename)
+        log('%s' % without_categories_string)
+        log('[end response file contents]')
+    else:
+        without_categories = ' /p:WithoutCategories=IgnoreForCI'
 
     command = ' '.join((
-        command,
-        config_args,
-        '--',
-        '/p:WithoutCategories=IgnoreForCI'
+        build_command,
+        common_config_args,
+        build_test_args,
+        without_categories
     ))
+
+    if env_script is not None:
+        command += (' /p:PreExecutionTestScript=%s' % env_script)
 
     if not Is_windows:
         command += ' /p:TestWithLocalNativeLibraries=true'
+
+    if not Is_windows and (arch == 'arm' or arch == 'arm64'):
+        # It is needed under docker where LC_ALL is not configured.
+        command += ' --warnAsError false'
+
+    if exclusion_rsp_file is not None:
+        command += (' /p:TestRspFile=%s' % exclusion_rsp_file)
 
     # Run the corefx test build and run the tests themselves.
 
     log(command)
     returncode = 0 if testing else os.system(command)
+    if returncode != 0:
+        log('Error: exit code %s' % returncode)
+        sys.exit(1)
 
-    sys.exit(returncode)
+    sys.exit(0)
 
 
 ##########################################################################

@@ -41,6 +41,7 @@ SET_DEFAULT_DEBUG_CHANNEL(DEBUG); // some headers have code with asserts, so do 
 #include "pal/module.h"
 #include "pal/stackstring.hpp"
 #include "pal/virtual.h"
+#include "pal/utils.h"
 
 #include <signal.h>
 #include <unistd.h>
@@ -345,7 +346,7 @@ DebugBreakCommand()
             goto FAILED;
         }
 
-        if (snprintf (exe_buf, sizeof (CHAR) * (dwexe_buf + 1), EXE_TEXT "%ls", (wchar_t *)exe_module.lib_name) <= 0)
+        if (snprintf (exe_buf, sizeof (CHAR) * (dwexe_buf + 1), EXE_TEXT "%ls", (wchar_t*)exe_module.lib_name) <= 0)
         {
             goto FAILED;
         }
@@ -374,10 +375,10 @@ DebugBreakCommand()
 FAILED:
     if (command_string)
     {
+        fprintf (stderr, "Failed to execute command: '%s'\n", command_string);
         free(command_string);
     }
 
-    fprintf (stderr, "Failed to execute command: '%s'\n", command_string);
     return -1;
 #else // ENABLE_RUN_ON_DEBUG_BREAK
     return 0;
@@ -447,7 +448,6 @@ GetThreadContext(
     palError = InternalGetThreadDataFromHandle(
         pThread,
         hThread,
-        0, // THREAD_GET_CONTEXT
         &pTargetThread,
         &pobjThread
         );
@@ -509,7 +509,6 @@ SetThreadContext(
     palError = InternalGetThreadDataFromHandle(
         pThread,
         hThread,
-        0, // THREAD_SET_CONTEXT
         &pTargetThread,
         &pobjThread
         );
@@ -609,7 +608,7 @@ PAL_ProbeMemory(
         }
 
         // Round to the beginning of the next page
-        pBuffer = (PVOID)(((SIZE_T)pBuffer & ~VIRTUAL_PAGE_MASK) + VIRTUAL_PAGE_SIZE);
+        pBuffer = PVOID(ALIGN_DOWN((SIZE_T)pBuffer, GetVirtualPageSize()) + GetVirtualPageSize());
     }
 
     close(fds[0]);

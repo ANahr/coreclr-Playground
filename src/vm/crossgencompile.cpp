@@ -16,7 +16,6 @@
 
 #include "comdelegate.h"
 #include "compile.h"
-#include "security.h"
 #include "invokeutil.h"
 #include "comcallablewrapper.h"
 
@@ -73,27 +72,6 @@ BOOL Debug_IsLockedViaThreadSuspension()
 }
 #endif // _DEBUG
 
-#if defined(FEATURE_MERGE_JIT_AND_ENGINE) && defined(FEATURE_IMPLICIT_TLS)
-void* theJitTls;
-
-extern "C"
-{
-
-void* GetJitTls()
-{
-    LIMITED_METHOD_CONTRACT
-
-    return theJitTls;
-}
-void SetJitTls(void* v)
-{
-    LIMITED_METHOD_CONTRACT
-    theJitTls = v;
-}
-
-}
-#endif
-
 //---------------------------------------------------------------------------------------
 //
 // All locks are nops because of there is always only one thread.
@@ -133,13 +111,7 @@ BOOL g_fEEComActivatedStartup=FALSE;
 
 GVAL_IMPL_INIT(DWORD, g_fHostConfig, 0);
 
-#ifdef FEATURE_SVR_GC
-SVAL_IMPL_INIT(uint32_t,IGCHeap,gcHeapType,IGCHeap::GC_HEAP_WKS);
-#endif
-
-void UpdateGCSettingFromHost()
-{
-}
+GVAL_IMPL_INIT(GCHeapType, g_heap_type, GC_HEAP_WKS);
 
 HRESULT GetExceptionHResult(OBJECTREF throwable)
 {
@@ -259,11 +231,6 @@ ClassID TypeHandleToClassID(TypeHandle th)
 // Stubed-out implementations of functions that can do anything useful only when we are actually running managed code
 //
 
-MethodTable *Object::GetTrueMethodTable()
-{
-    UNREACHABLE();
-}
-
 FuncPtrStubs::FuncPtrStubs()
     : m_hashTableCrst(CrstFuncPtrStubs, CRST_UNSAFE_ANYMODE)
 {
@@ -279,15 +246,15 @@ PCODE MethodDesc::TryGetMultiCallableAddrOfCode(CORINFO_ACCESS_FLAGS accessFlags
     return 0x321;
 }
 
-#ifdef _TARGET_X86_
-BOOL Runtime_Test_For_SSE2()
-{
-    return TRUE;
-}
-#endif
-
 #ifdef _TARGET_AMD64_
-INT32 rel32UsingJumpStub(INT32 UNALIGNED * pRel32, PCODE target, MethodDesc *pMethod, LoaderAllocator *pLoaderAllocator /* = NULL */)
+INT32 rel32UsingJumpStub(INT32 UNALIGNED * pRel32, PCODE target, MethodDesc *pMethod,
+    LoaderAllocator *pLoaderAllocator /* = NULL */, bool throwOnOutOfMemoryWithinRange /*= true*/)
+{
+    // crossgen does not have jump stubs
+    return 0;
+}
+
+INT32 rel32UsingPreallocatedJumpStub(INT32 UNALIGNED * pRel32, PCODE target, PCODE jumpStubAddr, bool emitJump)
 {
     // crossgen does not have jump stubs
     return 0;
@@ -301,11 +268,6 @@ CORINFO_GENERIC_HANDLE JIT_GenericHandleWorker(MethodDesc *  pMD, MethodTable * 
 }
 
 void CrawlFrame::GetExactGenericInstantiations(Instantiation *pClassInst, Instantiation *pMethodInst)
-{
-    UNREACHABLE();
-}
-
-OBJECTREF AppDomain::GetExposedObject()
 {
     UNREACHABLE();
 }
@@ -396,43 +358,24 @@ LONG ComCallWrapperTemplate::Release()
 }
 #endif
 
-//---------------------------------------------------------------------------------------
-//
-// Security-related functions. They are reachable in theory for legacy security attributes. The legacy security
-// attributes should not be used in code running on CoreCLR. We fail fast for number of these just in case somebody 
-// tries to use the legacy security attributes.
-//
-
-void SecurityDeclarative::FullTrustInheritanceDemand(Assembly *pTargetAssembly)
-{
-    CrossGenNotSupported("FullTrustInheritanceDemand");
-}
-
-void SecurityDeclarative::InheritanceLinkDemandCheck(Assembly *pTargetAssembly, MethodDesc * pMDLinkDemand)
-{
-    CrossGenNotSupported("InheritanceLinkDemandCheck");
-}
-
-void ApplicationSecurityDescriptor::PreResolve(BOOL *pfIsFullyTrusted, BOOL *pfIsHomogeneous)
-{
-    // virtual method unreachable in crossgen
-    UNREACHABLE();
-}
-
 extern "C" UINT_PTR STDCALL GetCurrentIP()
 { 
     return 0;
 }
 
-void EEPolicy::HandleFatalError(UINT exitCode, UINT_PTR address, LPCWSTR pszMessage, PEXCEPTION_POINTERS pExceptionInfo)
+// This method must return a value to avoid getting non-actionable dumps on x86.
+// If this method were a DECLSPEC_NORETURN then dumps would not provide the necessary
+// context at the point of the failure
+int NOINLINE EEPolicy::HandleFatalError(UINT exitCode, UINT_PTR address, LPCWSTR pszMessage, PEXCEPTION_POINTERS pExceptionInfo, LPCWSTR errorSource, LPCWSTR argExceptionString)
 { 
     fprintf(stderr, "Fatal error: %08x\n", exitCode);
     ExitProcess(exitCode);
+    return -1;
 }
 
 //---------------------------------------------------------------------------------------
 
-Assembly * AppDomain::RaiseAssemblyResolveEvent(AssemblySpec * pSpec, BOOL fIntrospection, BOOL fPreBind)
+Assembly * AppDomain::RaiseAssemblyResolveEvent(AssemblySpec * pSpec)
 {
     return NULL;
 }
@@ -449,13 +392,4 @@ DomainAssembly * AppDomain::RaiseTypeResolveEventThrowing(DomainAssembly* pAssem
 
 void AppDomain::RaiseLoadingAssemblyEvent(DomainAssembly *pAssembly)
 {
-}
-
-BOOL AppDomain::BindingByManifestFile()
-{
-    return FALSE;
-}
-
-ReJitManager::ReJitManager()
-{ 
 }

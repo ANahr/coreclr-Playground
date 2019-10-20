@@ -23,6 +23,10 @@ Revision History:
 
 #include "pal/thread.hpp"
 #include "pal/synchobjects.hpp"
+#include "pal/handlemgr.hpp"
+#include "pal/event.hpp"
+#include "pal/mutex.hpp"
+#include "pal/semaphore.hpp"
 #include "pal/malloc.hpp"
 #include "pal/dbgmsg.h"
 
@@ -44,6 +48,16 @@ static PalObjectTypeId sg_rgWaitObjectsIds[] =
     };
 static CAllowedObjectTypes sg_aotWaitObject(sg_rgWaitObjectsIds, 
     sizeof(sg_rgWaitObjectsIds)/sizeof(sg_rgWaitObjectsIds[0]));
+
+static PalObjectTypeId sg_rgSignalableObjectIds[] =
+{
+    otiAutoResetEvent,
+    otiManualResetEvent,
+    otiMutex,
+    otiNamedMutex,
+    otiSemaphore
+};
+static CAllowedObjectTypes sg_aotSignalableObject(sg_rgSignalableObjectIds, _countof(sg_rgSignalableObjectIds));
 
 /*++
 Function:
@@ -69,6 +83,35 @@ WaitForSingleObject(IN HANDLE hHandle,
 
     LOGEXIT("WaitForSingleObject returns DWORD %u\n", dwRet);
     PERF_EXIT(WaitForSingleObject);
+    return dwRet;
+}
+
+
+/*++
+Function:
+  WaitForSingleObjectPrioritized
+
+Similar to WaitForSingleObject, except uses a LIFO release policy for waiting threads by prioritizing new waiters (registering
+them at the beginning of the wait queue rather than at the end).
+--*/
+DWORD
+PALAPI
+PAL_WaitForSingleObjectPrioritized(IN HANDLE hHandle,
+                                   IN DWORD dwMilliseconds)
+{
+    DWORD dwRet;
+
+    PERF_ENTRY(PAL_WaitForSingleObjectPrioritized);
+    ENTRY("PAL_WaitForSingleObjectPrioritized(hHandle=%p, dwMilliseconds=%u)\n",
+          hHandle, dwMilliseconds);
+
+    CPalThread * pThread = InternalGetCurrentThread();
+
+    dwRet = InternalWaitForMultipleObjectsEx(pThread, 1, &hHandle, FALSE,
+                                             dwMilliseconds, FALSE, TRUE /* bPrioritize */);
+
+    LOGEXIT("PAL_WaitForSingleObjectPrioritized returns DWORD %u\n", dwRet);
+    PERF_EXIT(PAL_WaitForSingleObjectPrioritized);
     return dwRet;
 }
 
@@ -151,8 +194,8 @@ WaitForMultipleObjectsEx(IN DWORD nCount,
 
     PERF_ENTRY(WaitForMultipleObjectsEx);
     ENTRY("WaitForMultipleObjectsEx(nCount=%d, lpHandles=%p,"
-          " bWaitAll=%d, dwMilliseconds=%u, bAlertable=d)\n",
-          nCount, lpHandles, bWaitAll, dwMilliseconds, bAlertable);
+          " bWaitAll=%d, dwMilliseconds=%u, bAlertable=%s)\n",
+          nCount, lpHandles, bWaitAll, dwMilliseconds, bAlertable ? "TRUE" : "FALSE");
 
     CPalThread * pThread = InternalGetCurrentThread();
 
@@ -162,6 +205,36 @@ WaitForMultipleObjectsEx(IN DWORD nCount,
     LOGEXIT("WaitForMultipleObjectsEx returns DWORD %u\n", dwRet);
     PERF_EXIT(WaitForMultipleObjectsEx);
     return dwRet;
+}
+
+/*++
+Function:
+  SignalObjectAndWait
+
+See MSDN doc for info about this function.
+--*/
+DWORD
+PALAPI
+SignalObjectAndWait(
+    IN HANDLE hObjectToSignal,
+    IN HANDLE hObjectToWaitOn,
+    IN DWORD dwMilliseconds,
+    IN BOOL bAlertable)
+{
+    PERF_ENTRY(SignalObjectAndWait);
+    ENTRY(
+        "SignalObjectAndWait(hObjectToSignal=%p, hObjectToWaitOn=%p, dwMilliseconds=%u, bAlertable=%s)\n",
+        hObjectToSignal,
+        hObjectToWaitOn,
+        dwMilliseconds,
+        bAlertable ? "TRUE" : "FALSE");
+
+    CPalThread *thread = InternalGetCurrentThread();
+    DWORD result = InternalSignalObjectAndWait(thread, hObjectToSignal, hObjectToWaitOn, dwMilliseconds, bAlertable);
+
+    LOGEXIT("SignalObjectAndWait returns DWORD %u\n", result);
+    PERF_EXIT(SignalObjectAndWait);
+    return result;
 }
 
 /*++
@@ -250,7 +323,6 @@ QueueUserAPC(
     palErr = InternalGetThreadDataFromHandle(
         pCurrentThread,
         hThread,
-        0, // THREAD_SET_CONTEXT
         &pTargetThread,
         &pTargetThreadObject
         );
@@ -285,7 +357,8 @@ DWORD CorUnix::InternalWaitForMultipleObjectsEx(
     CONST HANDLE *lpHandles,
     BOOL bWaitAll,
     DWORD dwMilliseconds,
-    BOOL bAlertable)
+    BOOL bAlertable,
+    BOOL bPrioritize)
 {
     DWORD dwRet = WAIT_FAILED;
     PAL_ERROR palErr = NO_ERROR;
@@ -333,7 +406,6 @@ DWORD CorUnix::InternalWaitForMultipleObjectsEx(
                                                                      (VOID **)lpHandles, 
                                                                      nCount,
                                                                      &sg_aotWaitObject,
-                                                                     SYNCHRONIZE,
                                                                      ppIPalObjs);
     if (NO_ERROR != palErr)
     {
@@ -457,14 +529,18 @@ DWORD CorUnix::InternalWaitForMultipleObjectsEx(
     iSignaledObjIndex = -1;
     for (i=0;i<(int)nCount;i++)
     {
-        bool fValue;
-        palErr = ppISyncWaitCtrlrs[i]->CanThreadWaitWithoutBlocking(&fValue, &fAbandoned);
+        bool fValue, fWaitObjectAbandoned = false;
+        palErr = ppISyncWaitCtrlrs[i]->CanThreadWaitWithoutBlocking(&fValue, &fWaitObjectAbandoned);
         if (NO_ERROR != palErr)
         {
             ERROR("ISynchWaitController::CanThreadWaitWithoutBlocking() failed for "
                   "%d-th object [handle=%p error=%u]\n", i, lpHandles[i], palErr);
             pThread->SetLastError(ERROR_INTERNAL_ERROR);
             goto WFMOExIntReleaseControllers;            
+        }
+        if (fWaitObjectAbandoned)
+        {
+            fAbandoned = true;
         }
         if (fValue)
         {
@@ -530,7 +606,8 @@ DWORD CorUnix::InternalWaitForMultipleObjectsEx(
             palErr = ppISyncWaitCtrlrs[i]->RegisterWaitingThread(
                                                         wtWaitType, 
                                                         i,
-                                                        (TRUE == bAlertable));
+                                                        (TRUE == bAlertable),
+                                                        bPrioritize != FALSE);
             if (NO_ERROR != palErr)
             {               
                 ERROR("RegisterWaitingThread() failed for %d-th object "
@@ -638,6 +715,113 @@ WFMOExIntExit:
     return dwRet;
 }
 
+DWORD CorUnix::InternalSignalObjectAndWait(
+    CPalThread *thread,
+    HANDLE hObjectToSignal,
+    HANDLE hObjectToWaitOn,
+    DWORD dwMilliseconds,
+    BOOL bAlertable)
+{
+    DWORD result = WAIT_FAILED;
+    PAL_ERROR palError = NO_ERROR;
+    IPalObject *objectToSignal = nullptr;
+    IPalObject *objectToWaitOn = nullptr;
+
+    // Validate and add a reference to the object to signal
+    palError =
+        g_pObjectManager->ReferenceObjectByHandle(
+            thread,
+            hObjectToSignal,
+            &sg_aotSignalableObject,
+            &objectToSignal);
+    if (palError != NO_ERROR)
+    {
+        ERROR("Unable to obtain object for handle %p (error %u)!\n", hObjectToSignal, palError);
+        goto InternalSignalObjectAndWait_Error;
+    }
+
+    // Validate and add a reference to the object to wait on. Error checking is done before signaling.
+    palError =
+        g_pObjectManager->ReferenceObjectByHandle(
+            thread,
+            hObjectToWaitOn,
+            &sg_aotWaitObject,
+            &objectToWaitOn);
+    if (palError != NO_ERROR)
+    {
+        ERROR("Unable to obtain object for handle %p (error %u)!\n", hObjectToWaitOn, palError);
+        goto InternalSignalObjectAndWait_Error;
+    }
+
+    // Signal
+    switch (objectToSignal->GetObjectType()->GetId())
+    {
+        case otiAutoResetEvent:
+        case otiManualResetEvent:
+            palError = InternalSetEvent(thread, hObjectToSignal, true /* fSetEvent */);
+            break;
+
+        case otiMutex:
+        case otiNamedMutex:
+            palError = InternalReleaseMutex(thread, hObjectToSignal);
+            break;
+
+        case otiSemaphore:
+            palError = InternalReleaseSemaphore(thread, hObjectToSignal, 1 /* lReleaseCount */, nullptr /* lpPreviousCount */);
+            break;
+
+        default:
+            palError = ERROR_INVALID_HANDLE;
+            break;
+    }
+    if (palError != NO_ERROR)
+    {
+        ERROR("Unable to signal object for handle %p (error %u)!\n", hObjectToSignal, palError);
+        goto InternalSignalObjectAndWait_Error;
+    }
+    objectToSignal->ReleaseReference(thread);
+    objectToSignal = nullptr;
+
+    // Wait
+    result =
+        InternalWaitForMultipleObjectsEx(
+            thread,
+            1 /* nCount */,
+            &hObjectToWaitOn,
+            false /* bWaitAll */,
+            dwMilliseconds,
+            bAlertable);
+    if (result == WAIT_FAILED)
+    {
+        ERROR("Unable to wait on object for handle %p (error %u)!\n", hObjectToWaitOn, palError);
+        goto InternalSignalObjectAndWait_Error;
+    }
+    objectToWaitOn->ReleaseReference(thread);
+    objectToWaitOn = nullptr;
+
+    goto InternalSignalObjectAndWait_Exit;
+
+InternalSignalObjectAndWait_Error:
+    if (objectToSignal != nullptr)
+    {
+        objectToSignal->ReleaseReference(thread);
+    }
+    if (objectToWaitOn != nullptr)
+    {
+        objectToWaitOn->ReleaseReference(thread);
+    }
+
+    if (palError != NO_ERROR)
+    {
+        _ASSERTE(result == WAIT_FAILED);
+        thread->SetLastError(palError);
+    }
+
+InternalSignalObjectAndWait_Exit:
+    LOGEXIT("InternalSignalObjectAndWait returns %u\n", result);
+    return result;
+}
+
 DWORD CorUnix::InternalSleepEx (
     CPalThread * pThread,
     DWORD dwMilliseconds,
@@ -702,6 +886,7 @@ DWORD CorUnix::InternalSleepEx (
     }
     else
     {
+        sched_yield();
         dwRet = 0;
     }
 

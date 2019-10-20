@@ -27,24 +27,24 @@ from __future__ import print_function
 
 import sys
 import re
+import os
 
 debug = 0
 
 # For the native part, return the sorted definition array.
 def loadDefinitionFile(filename):
     result = []
+
     try:
-        f = open(filename, 'r')
-    except:
+        with open(filename, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    result.append(line)
+    except IOError:
+        # If cmake was not used, this script won't work, and that's ok
         sys.exit(0)
-    # if cmake was not used (because of skipnative or systems that do not use cmake), this script won't work.
 
-    for line in f:
-        theLine = line.rstrip("\r\n").strip()
-        if (len(theLine) > 0):
-            result.append(theLine)
-
-    f.close()
     result = sorted(result)
     return result
 
@@ -108,9 +108,10 @@ def getDiff(arrNative, arrManaged):
 
 
 def printPotentiallyCritical(arrDefinitions, referencedFilename, arrIgnore):
-    f = open(referencedFilename, 'r')
-    content = f.read()
-    f.close()
+    content = None
+    with open(referencedFilename, 'r') as f:
+        content = f.read()
+
     for keyword in arrDefinitions:
         skip = 0
 
@@ -130,32 +131,33 @@ def printPotentiallyCritical(arrDefinitions, referencedFilename, arrIgnore):
 # MAIN SCRIPT
 if len(sys.argv) < 3:
     print("\nUsage:")
-    print("$ check-definitions.py [Definition file] [String of definitions]")
+    print("$ check-definitions.py [ProjectDir] [Definition file] [String of definitions]")
     print("    Definition file contains the list of cmake (native) compiler definitions")
     print("      seperated by line.")
     print("    String of definitions contains the list of csproj (managed) definitions")
     print("      seperated by semicolons.")
     sys.exit(-1)
 
-filename = sys.argv[1]
-string = sys.argv[2]
+projectDir = sys.argv[1]
+filename = sys.argv[2]
+string = sys.argv[3]
 
 arrayNative = loadDefinitionFile(filename)
 arrayManaged = loadDefinitionString(string)
 arrayIgnore = []
 
-if len(sys.argv) > 3:
-    arrayIgnore = loadDefinitionString(sys.argv[3])
+if len(sys.argv) > 4:
+    arrayIgnore = loadDefinitionString(sys.argv[4])
 
 arrays = getDiff(arrayNative, arrayManaged)
 # arrays[0] = array of added in managed
 # arrays[1] = array of omitted in managed (added in native)
 
 print("Potentially Dangerous Compiler Definitions in clrdefinitions.cmake (omitted in native build):")
-printPotentiallyCritical(arrays[0], "../../clrdefinitions.cmake", arrayIgnore)
+printPotentiallyCritical(arrays[0], os.path.join(projectDir, "clrdefinitions.cmake"), arrayIgnore)
 
-print("Potentially Dangerous Compiler Definitions in clr.defines.targets (omitted in managed build):")
-printPotentiallyCritical(arrays[1], "../../clr.defines.targets", arrayIgnore)
+print("Potentially Dangerous Compiler Definitions in clr.featuredefines.props (omitted in managed build):")
+printPotentiallyCritical(arrays[1], os.path.join(projectDir, "clr.featuredefines.props"), arrayIgnore)
 
 print("Definition Check Completed.")
 

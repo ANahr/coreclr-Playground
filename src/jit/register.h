@@ -67,18 +67,12 @@ REGALIAS(EDI, RDI)
 
 #endif // !defined(_TARGET_X86_)
 
-#ifdef LEGACY_BACKEND
-
-REGDEF(STK,     8,   0x00, "STK"   )
-
-#else // !LEGACY_BACKEND
-
 #ifdef _TARGET_AMD64_
 #define XMMBASE 16
-#define XMMMASK(x) (__int64(1) << (x+XMMBASE))
+#define XMMMASK(x) (__int64(1) << ((x)+XMMBASE))
 #else // !_TARGET_AMD64_
 #define XMMBASE 8
-#define XMMMASK(x) (__int32(1) << (x+XMMBASE))
+#define XMMMASK(x) (__int32(1) << ((x)+XMMBASE))
 #endif // !_TARGET_AMD64_
 
 REGDEF(XMM0,    0+XMMBASE,  XMMMASK(0),   "mm0"  )
@@ -103,8 +97,6 @@ REGDEF(XMM14,  14+XMMBASE,  XMMMASK(14),  "mm14" )
 REGDEF(XMM15,  15+XMMBASE,  XMMMASK(15),  "mm15" )
 REGDEF(STK,    16+XMMBASE,  0x0000,       "STK"  )
 #endif // !_TARGET_X86_
-
-#endif // !LEGACY_BACKEND
 
 #elif defined(_TARGET_ARM_)
  #include "registerarm.h"

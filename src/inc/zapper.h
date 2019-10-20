@@ -126,9 +126,10 @@ class Zapper
 #if !defined(NO_NGENPDB)
     SString                 m_DiasymreaderPath;
 #endif // !defined(NO_NGENPDB)
-    bool                    m_fForceFullTrust;
 
     SString                 m_outputFilename;
+
+    SIZE_T                  m_customBaseAddress;
 
   public:
 
@@ -299,7 +300,6 @@ class Zapper
     void ComputeAssemblyDependencies(CORINFO_ASSEMBLY_HANDLE hAssembly);
 
     void CreatePdb(BSTR pAssemblyPathOrName, BSTR pNativeImagePath, BSTR pPdbPath, BOOL pdbLines, BSTR pManagedPdbSearchPath);
-    void CreatePdbInCurrentDomain(BSTR pAssemblyPathOrName, BSTR pNativeImagePath, BSTR pPdbPath, BOOL pdbLines, BSTR pManagedPdbSearchPath);
 
     void DefineOutputAssembly(SString& strAssemblyName, ULONG * pHashAlgId);
 
@@ -322,7 +322,6 @@ class Zapper
     void Print(CorZapLogLevel level, LPCWSTR format, va_list args);
     void PrintErrorMessage(CorZapLogLevel level, Exception *ex);
     void PrintErrorMessage(CorZapLogLevel level, HRESULT hr);
-    void ReportEventNGEN(WORD wType, DWORD dwEventID, LPCWSTR format, ...);
 
     BOOL            CheckAssemblyUpToDate(CORINFO_ASSEMBLY_HANDLE hAssembly, CORCOMPILE_NGEN_SIGNATURE * pNativeImageSig);
     BOOL            TryToInstallFromRepository(CORINFO_ASSEMBLY_HANDLE hAssembly, CORCOMPILE_NGEN_SIGNATURE * pNativeImageSig);
@@ -352,7 +351,6 @@ class Zapper
     void SetAppPaths(LPCWSTR pwzAppPaths);
     void SetAppNiPaths(LPCWSTR pwzAppNiPaths);
     void SetPlatformWinmdPaths(LPCWSTR pwzPlatformWinmdPaths);
-    void SetForceFullTrust(bool val);
 
 #if !defined(FEATURE_MERGE_JIT_AND_ENGINE)
     void SetCLRJITPath(LPCWSTR pwszCLRJITPath);
@@ -366,7 +364,8 @@ class Zapper
     void SetOutputFilename(LPCWSTR pwszOutputFilename);
     SString GetOutputFileName();
 
-    void SetLegacyMode();
+    void SetCustomBaseAddress(SIZE_T baseAddress);
+    SIZE_T GetCustomBaseAddress();
 
  private:
 
@@ -384,9 +383,6 @@ class Zapper
     public:
         virtual void doCallback() = NULL;
     };
-
-    static HRESULT __stdcall GenericDomainCallback(LPVOID pvArgs);
-    void InvokeDomainCallback(DomainCallback *callback);
 
     void CompileInCurrentDomain(__in LPCWSTR path, CORCOMPILE_NGEN_SIGNATURE * pNativeImageSig);
     void ComputeDependenciesInCurrentDomain(LPCWSTR pAssemblyName, CORCOMPILE_NGEN_SIGNATURE * pNativeImageSig);
@@ -444,37 +440,12 @@ class ZapperOptions
 
     CORJIT_FLAGS m_compilerFlags;
 
-    bool       m_legacyMode;          // true if the zapper was invoked using legacy mode
-
     bool        m_fNoMetaData;          // Do not copy metadata and IL to native image
+
+    void SetCompilerFlags(void);
 
     ZapperOptions();
     ~ZapperOptions();
-};
-
-struct NGenPrivateAttributesClass : public NGenPrivateAttributes
-{
-    NGenPrivateAttributesClass()
-    {
-        Flags    = 0;
-        ZapStats = 0;
-        DbgDir   = NULL;
-    }
-
-private:
-    // Make sure that copies of this object aren't inadvertently created
-    NGenPrivateAttributesClass(const NGenPrivateAttributesClass &init);
-    const NGenPrivateAttributesClass &operator =(const NGenPrivateAttributesClass &rhs);
-
-public:
-    ~NGenPrivateAttributesClass()
-    {
-        if (DbgDir)
-        {
-            ::SysFreeString(DbgDir);
-            DbgDir = NULL;
-        }
-    }
 };
 
 #endif // ZAPPER_H_

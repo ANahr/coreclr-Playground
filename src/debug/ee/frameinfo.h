@@ -89,7 +89,7 @@ public:
     // only set for stackwalking, not stepping
     void                *exactGenericArgsToken;
 
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
     // This field is only used on IA64 to determine which registers are available and 
     // whether we need to adjust the IP.
     bool                 fIsLeaf;
@@ -101,7 +101,7 @@ public:
     bool IsFuncletFrame()          { return fIsFunclet; }
     bool IsFilterFrame()           { return fIsFilter;  }
     bool IsNonFilterFuncletFrame() { return (fIsFunclet && !fIsFilter); }
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 
 
     // A ridiculous flag that is targetting a very narrow fix at issue 650903 (4.5.1/Blue).
@@ -130,7 +130,7 @@ public:
 
     // Does this FrameInfo represent a method frame? (aka a frameless frame)
     // This may be combined w/ both StubFrames and ChainMarkers.
-    bool HasMethodFrame() { return md != NULL && !internal; }
+    bool HasMethodFrame() const { return md != NULL && !internal; }
 
     // Is this frame for a stub?
     // This is mutually exclusive w/ Chain Markers.
@@ -138,14 +138,14 @@ public:
     // M2U transition may have the Method for the Managed Wrapper for the unmanaged call.
     // Stub frames map to internal frames on the RS.  They use the same enum 
     // (CorDebugInternalFrameType) to represent the type of the frame.
-    bool HasStubFrame() { return eStubFrameType != STUBFRAME_NONE; }
+    bool HasStubFrame() const { return eStubFrameType != STUBFRAME_NONE; }
 
     // Does this FrameInfo mark the start of a new chain? (A Frame info may both
     // start a chain and represent a method)
-    bool HasChainMarker() { return chainReason != CHAIN_NONE; }
+    bool HasChainMarker() const { return chainReason != CHAIN_NONE; }
 
     // Helper functions for retrieving the DJI and the DMI
-    DebuggerJitInfo * GetJitInfoFromFrame();
+    DebuggerJitInfo * GetJitInfoFromFrame() const;
     DebuggerMethodInfo * GetMethodInfoFromFrameOrThrow();
 
     // Debug helper which nops in retail; and asserts invariants in debug.

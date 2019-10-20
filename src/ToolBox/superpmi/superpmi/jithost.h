@@ -6,7 +6,7 @@
 #ifndef _JITHOST
 #define _JITHOST
 
-class JitHost : public ICorJitHost
+class JitHost final : public ICorJitHost
 {
 public:
     JitHost(JitInstance& jitInstance);
@@ -14,6 +14,8 @@ public:
 #include "icorjithostimpl.h"
 
 private:
+    bool convertStringValueToInt(const WCHAR* key, const WCHAR* stringValue, int& result);
+
     JitInstance& jitInstance;
 };
 

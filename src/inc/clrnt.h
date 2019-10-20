@@ -587,7 +587,7 @@ typedef struct _TEB {
     PVOID SystemReserved1[54];      // Used by FP emulator
     NTSTATUS ExceptionCode;         // for RaiseUserException
     ACTIVATION_CONTEXT_STACK ActivationContextStack;   // Fusion activation stack
-    // sizeof(PVOID) is a way to express processor-dependence, more generally than #ifdef _WIN64
+    // sizeof(PVOID) is a way to express processor-dependence, more generally than #ifdef BIT64
     UCHAR SpareBytes1[48 - sizeof(PVOID) - sizeof(ACTIVATION_CONTEXT_STACK)];
     GDI_TEB_BATCH GdiTebBatch;      // Gdi batching
     CLIENT_ID RealClientId;
@@ -852,8 +852,9 @@ typedef struct _DISPATCHER_CONTEXT {
 #define RUNTIME_FUNCTION__BeginAddress(prf)             (prf)->BeginAddress
 #define RUNTIME_FUNCTION__SetBeginAddress(prf,addr)     ((prf)->BeginAddress = (addr))
 
-#ifdef WIN64EXCEPTIONS
+#ifdef FEATURE_EH_FUNCLETS
 #include "win64unwind.h"
+#include "daccess.h"
 
 FORCEINLINE
 DWORD
@@ -862,7 +863,7 @@ RtlpGetFunctionEndAddress (
     __in TADDR ImageBase
     )
 {
-    PUNWIND_INFO pUnwindInfo = (PUNWIND_INFO)(ImageBase + FunctionEntry->UnwindData);
+    PTR_UNWIND_INFO pUnwindInfo = (PTR_UNWIND_INFO)(ImageBase + FunctionEntry->UnwindData);
 
     return FunctionEntry->BeginAddress + pUnwindInfo->FunctionLength;
 }
@@ -886,7 +887,7 @@ RtlVirtualUnwind (
     __out PDWORD EstablisherFrame,
     __inout_opt PT_KNONVOLATILE_CONTEXT_POINTERS ContextPointers
     );
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 
 #endif // _TARGET_X86_
 
@@ -907,7 +908,7 @@ FORCEINLINE
 ULONG
 RtlpGetFunctionEndAddress (
     __in PT_RUNTIME_FUNCTION FunctionEntry,
-    __in ULONG ImageBase
+    __in TADDR ImageBase
     )
 {
     ULONG FunctionLength;
@@ -933,6 +934,7 @@ typedef struct _UNWIND_INFO {
     // dummy
 } UNWIND_INFO, *PUNWIND_INFO;
 
+#if defined(FEATURE_PAL) || defined(_X86_)
 EXTERN_C
 NTSYSAPI
 VOID
@@ -960,6 +962,7 @@ RtlVirtualUnwind (
     __out PDWORD EstablisherFrame,
     __inout_opt PT_KNONVOLATILE_CONTEXT_POINTERS ContextPointers
     );
+#endif // FEATURE_PAL || _X86_
 
 #define UNW_FLAG_NHANDLER 0x0
 

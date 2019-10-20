@@ -25,12 +25,6 @@
 
 void AssertMulticoreJitAllowedModule(PCODE pTarget)
 {
-    CONTRACTL
-    {
-        SO_NOT_MAINLINE;
-    }
-    CONTRACTL_END;
-
     MethodDesc* pMethod = Entry2MethodDesc(pTarget, NULL); 
 
     Module * pModule = pMethod->GetModule_NoLogging();
@@ -52,7 +46,7 @@ void AssertMulticoreJitAllowedModule(PCODE pTarget)
 // and get the platform-appropriate exception handling.  A few places try to optimize by calling direct
 // to managed methods (see ArrayInitializeWorker or FastCallFinalize).  This sort of thing is
 // dangerous.  You have to worry about marking yourself as a legal managed caller and you have to
-// worry about how exceptions will be handled on a WIN64EXCEPTIONS plan.  It is generally only suitable
+// worry about how exceptions will be handled on a FEATURE_EH_FUNCLETS plan.  It is generally only suitable
 // for X86.
 
 //*******************************************************************************
@@ -60,8 +54,6 @@ void CallDescrWorkerWithHandler(
                 CallDescrData *   pCallDescrData,
                 BOOL              fCriticalCall)
 {
-    STATIC_CONTRACT_SO_INTOLERANT;
-
 #if defined(FEATURE_MULTICOREJIT) && defined(_DEBUG)
 
     // For multicore JITting, background thread should not call managed code, except when calling system code (e.g. throwing managed exception)
@@ -81,7 +73,7 @@ void CallDescrWorkerWithHandler(
 }
 
 
-#if !defined(_WIN64) && defined(_DEBUG) 
+#if !defined(BIT64) && defined(_DEBUG) 
 
 //*******************************************************************************
 // assembly code, in i386/asmhelpers.asm
@@ -103,7 +95,6 @@ void CallDescrWorker(CallDescrData * pCallDescrData)
 #endif // 0
     STATIC_CONTRACT_THROWS;
     STATIC_CONTRACT_GC_TRIGGERS;
-    STATIC_CONTRACT_SO_TOLERANT;
 
     _ASSERTE(!NingenEnabled() && "You cannot invoke managed code inside the ngen compilation process.");
 
@@ -141,11 +132,10 @@ void CallDescrWorker(CallDescrData * pCallDescrData)
 
     ENABLESTRESSHEAP();
 }
-#endif // !defined(_WIN64) && defined(_DEBUG)
+#endif // !defined(BIT64) && defined(_DEBUG)
 
 void DispatchCallDebuggerWrapper(
     CallDescrData *   pCallDescrData,
-    ContextTransitionFrame* pFrame,
     BOOL fCriticalCall
 )
 {
@@ -160,7 +150,7 @@ void DispatchCallDebuggerWrapper(
         BOOL fCriticalCall;
     } param;
 
-    param.pFrame = pFrame;
+    param.pFrame = NULL;
     param.pCallDescrData = pCallDescrData;
     param.fCriticalCall = fCriticalCall;
 
@@ -208,6 +198,12 @@ void * DispatchCallSimple(
     callDescrData.pSrc = pSrc;
     callDescrData.numStackSlots = numStackSlotsToCopy;
 #endif
+
+#ifdef CALLDESCR_RETBUFFARGREG
+    UINT64 retBuffArgPlaceholder = 0;
+    callDescrData.pRetBuffArg = &retBuffArgPlaceholder;
+#endif
+
 #ifdef CALLDESCR_FPARGREGS
     callDescrData.pFloatArgumentRegisters = NULL;
 #endif
@@ -221,7 +217,6 @@ void * DispatchCallSimple(
     {
         DispatchCallDebuggerWrapper(
             &callDescrData,
-            NULL,
             dwDispatchCallSimpleFlags & DispatchCallSimple_CriticalCall);
     }
     else
@@ -230,62 +225,6 @@ void * DispatchCallSimple(
     }
 
     return *(void **)(&callDescrData.returnValue);
-}
-
-// This method performs the proper profiler and debugger callbacks before dispatching the
-// call. The caller has the responsibility of furnishing the target address, register and stack arguments.
-// Stack arguments should be in reverse order, and pSrc should point to past the last argument
-// Returns the return value or the exception object if one was thrown.
-void DispatchCall(
-                    CallDescrData * pCallDescrData,
-                    OBJECTREF *pRefException,
-                    ContextTransitionFrame* pFrame /* = NULL */
-#ifdef FEATURE_CORRUPTING_EXCEPTIONS
-                    , CorruptionSeverity *pSeverity /*= NULL*/
-#endif // FEATURE_CORRUPTING_EXCEPTIONS
-                    )
-{
-    CONTRACTL
-    {
-        GC_TRIGGERS;
-        THROWS;
-        MODE_COOPERATIVE;
-    }
-    CONTRACTL_END;
-
-#ifdef DEBUGGING_SUPPORTED 
-    if (CORDebuggerTraceCall())
-        g_pDebugInterface->TraceCall((const BYTE *)pCallDescrData->pTarget);
-#endif // DEBUGGING_SUPPORTED
-
-#ifdef FEATURE_CORRUPTING_EXCEPTIONS
-    if (pSeverity != NULL)
-    {
-        // By default, assume any exception that comes out is NotCorrupting
-        *pSeverity = NotCorrupting;
-    }
-#endif // FEATURE_CORRUPTING_EXCEPTIONS
-
-    EX_TRY
-    {
-        DispatchCallDebuggerWrapper(pCallDescrData,
-                                    pFrame,
-                                    FALSE);
-    }
-    EX_CATCH
-    {
-        *pRefException = GET_THROWABLE();
-
-#ifdef FEATURE_CORRUPTING_EXCEPTIONS
-        if (pSeverity != NULL)
-        {
-            // By default, assume any exception that comes out is NotCorrupting
-            *pSeverity = GetThread()->GetExceptionState()->GetLastActiveExceptionCorruptionSeverity();
-        }
-#endif // FEATURE_CORRUPTING_EXCEPTIONS
-
-    }
-    EX_END_CATCH(RethrowTransientExceptions);
 }
 
 #ifdef CALLDESCR_REGTYPEMAP
@@ -318,12 +257,6 @@ void FillInRegTypeMap(int argOffset, CorElementType typ, BYTE * pMap)
 }
 #endif // CALLDESCR_REGTYPEMAP
 
-#if defined(_DEBUG) && defined(FEATURE_COMINTEROP)
-extern int g_fMainThreadApartmentStateSet;
-extern int g_fInitializingInitialAD;
-extern Volatile<LONG> g_fInExecuteMainMethod;
-#endif
-
 //*******************************************************************************
 #ifdef FEATURE_INTERPRETER
 void MethodDescCallSite::CallTargetWorker(const ARG_SLOT *pArguments, ARG_SLOT *pReturnValue, int cbReturnValue, bool transitionToPreemptive)
@@ -349,14 +282,6 @@ void MethodDescCallSite::CallTargetWorker(const ARG_SLOT *pArguments, ARG_SLOT *
         MODE_COOPERATIVE;
         PRECONDITION(GetAppDomain()->CheckCanExecuteManagedCode(m_pMD));
         PRECONDITION(m_pMD->CheckActivated());          // EnsureActive will trigger, so we must already be activated
-
-#ifdef FEATURE_COMINTEROP
-        // If we're an exe, then we must either be initializing the first AD, or have already setup the main thread's
-        //  COM apartment state.
-        // If you hit this assert, then you likely introduced code during startup that could inadvertently 
-        //  initialize the COM apartment state of the main thread before we set it based on the user attribute.
-        PRECONDITION(g_fInExecuteMainMethod ? (g_fMainThreadApartmentStateSet || g_fInitializingInitialAD) : TRUE);
-#endif // FEATURE_COMINTEROP
     }
     CONTRACTL_END;
 
@@ -398,8 +323,6 @@ void MethodDescCallSite::CallTargetWorker(const ARG_SLOT *pArguments, ARG_SLOT *
         //
         ENABLE_FORBID_GC_LOADER_USE_IN_THIS_SCOPE();
 
-        _ASSERTE(GetAppDomain()->ShouldHaveCode());
-
 #ifdef FEATURE_INTERPRETER
         _ASSERTE(isCallConv(m_methodSig.GetCallingConvention(), IMAGE_CEE_CS_CALLCONV_DEFAULT)
                  || isCallConv(m_methodSig.GetCallingConvention(), CorCallingConvention(IMAGE_CEE_CS_CALLCONV_C))
@@ -418,33 +341,19 @@ void MethodDescCallSite::CallTargetWorker(const ARG_SLOT *pArguments, ARG_SLOT *
         }
 #endif // DEBUGGING_SUPPORTED
 
-#if CHECK_APP_DOMAIN_LEAKS
-        if (g_pConfig->AppDomainLeaks())
-        {
-            // See if we are in the correct domain to call on the object
-            if (m_methodSig.HasThis() && !m_pMD->GetMethodTable()->IsValueType())
-            {
-                CONTRACT_VIOLATION(ThrowsViolation|GCViolation|FaultViolation);
-                OBJECTREF pThis = ArgSlotToObj(pArguments[0]);
-                if (!pThis->AssignAppDomain(GetAppDomain()))
-                    _ASSERTE(!"Attempt to call method on object in wrong domain");
-            }
-        }
-#endif // CHECK_APP_DOMAIN_LEAKS
-
 #ifdef _DEBUG
         {
-#ifdef FEATURE_UNIX_AMD64_STRUCT_PASSING_ITF
+#ifdef UNIX_AMD64_ABI
             // Validate that the return value is not too big for the buffer passed
             if (m_pMD->GetMethodTable()->IsRegPassedStruct())
             {
                 TypeHandle thReturnValueType;
                 if (m_methodSig.GetReturnTypeNormalized(&thReturnValueType) == ELEMENT_TYPE_VALUETYPE)
                 {
-                    _ASSERTE(cbReturnValue >= thReturnValueType.GetSize());
+                    _ASSERTE((DWORD)cbReturnValue >= thReturnValueType.GetSize());
                 }
             }
-#endif // FEATURE_UNIX_AMD64_STRUCT_PASSING_ITF
+#endif // UNIX_AMD64_ABI
 
             // The metasig should be reset
             _ASSERTE(m_methodSig.GetArgNum() == 0);
@@ -547,24 +456,13 @@ void MethodDescCallSite::CallTargetWorker(const ARG_SLOT *pArguments, ARG_SLOT *
             }
 #endif
 
-#if CHECK_APP_DOMAIN_LEAKS
-            // Make sure the arg is in the right app domain
-            if (g_pConfig->AppDomainLeaks() && m_argIt.GetArgType() == ELEMENT_TYPE_CLASS)
-            {
-                CONTRACT_VIOLATION(ThrowsViolation|GCViolation|FaultViolation);
-                OBJECTREF objRef = ArgSlotToObj(pArguments[arg]);
-                if (!objRef->AssignAppDomain(GetAppDomain()))
-                    _ASSERTE(!"Attempt to pass object in wrong app domain to method");
-            }
-#endif // CHECK_APP_DOMAIN_LEAKS
-
             ArgDestination argDest(pTransitionBlock, ofs, m_argIt.GetArgLocDescForStructInRegs());
 
             UINT32 stackSize = m_argIt.GetArgSize();
             // We need to pass in a pointer, but be careful of the ARG_SLOT calling convention. We might already have a pointer in the ARG_SLOT.
             PVOID pSrc = stackSize > sizeof(ARG_SLOT) ? (LPVOID)ArgSlotToPtr(pArguments[arg]) : (LPVOID)ArgSlotEndianessFixup((ARG_SLOT*)&pArguments[arg], stackSize);
 
-#if defined(UNIX_AMD64_ABI) && defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
+#if defined(UNIX_AMD64_ABI)
             if (argDest.IsStructPassedInRegs())
             {
                 TypeHandle th;
@@ -573,7 +471,7 @@ void MethodDescCallSite::CallTargetWorker(const ARG_SLOT *pArguments, ARG_SLOT *
                 argDest.CopyStructToRegisters(pSrc, th.AsMethodTable()->GetNumInstanceFieldBytes(), 0);
             }
             else
-#endif // UNIX_AMD64_ABI && FEATURE_UNIX_AMD64_STRUCT_PASSING
+#endif // UNIX_AMD64_ABI
             {
                 PVOID pDest = argDest.GetDestinationAddress();
 
@@ -622,6 +520,9 @@ void MethodDescCallSite::CallTargetWorker(const ARG_SLOT *pArguments, ARG_SLOT *
 #ifdef CALLDESCR_ARGREGS
     callDescrData.pArgumentRegisters = (ArgumentRegisters*)(pTransitionBlock + TransitionBlock::GetOffsetOfArgumentRegisters());
 #endif
+#ifdef CALLDESCR_RETBUFFARGREG
+    callDescrData.pRetBuffArg = (UINT64*)(pTransitionBlock + TransitionBlock::GetOffsetOfRetBuffArgReg());
+#endif
 #ifdef CALLDESCR_FPARGREGS
     callDescrData.pFloatArgumentRegisters = pFloatArgumentRegisters;
 #endif
@@ -652,10 +553,10 @@ void MethodDescCallSite::CallTargetWorker(const ARG_SLOT *pArguments, ARG_SLOT *
 
     if (pReturnValue != NULL)
     {
-        _ASSERTE(cbReturnValue <= sizeof(callDescrData.returnValue));
+        _ASSERTE((DWORD)cbReturnValue <= sizeof(callDescrData.returnValue));
         memcpyNoGCRefs(pReturnValue, &callDescrData.returnValue, cbReturnValue);
 
-#if !defined(_WIN64) && BIGENDIAN
+#if !defined(BIT64) && BIGENDIAN
         {
             GCX_FORBID();
 
@@ -664,7 +565,7 @@ void MethodDescCallSite::CallTargetWorker(const ARG_SLOT *pArguments, ARG_SLOT *
                 pReturnValue[0] >>= 32;
             }
         }
-#endif // !defined(_WIN64) && BIGENDIAN
+#endif // !defined(BIT64) && BIGENDIAN
     }
 }
 
@@ -678,7 +579,7 @@ void CallDefaultConstructor(OBJECTREF ref)
     }
     CONTRACTL_END;
 
-    MethodTable *pMT = ref->GetTrueMethodTable();
+    MethodTable *pMT = ref->GetMethodTable();
 
     PREFIX_ASSUME(pMT != NULL);
 

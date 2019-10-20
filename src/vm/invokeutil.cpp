@@ -18,7 +18,6 @@
 #include "method.hpp"
 #include "threads.h"
 #include "excep.h"
-#include "security.h"
 #include "field.h"
 #include "customattribute.h"
 #include "eeconfig.h"
@@ -77,7 +76,7 @@ OBJECTREF InvokeUtil::CreatePointer(TypeHandle th, void * p)
     ((ReflectionPointer *)OBJECTREFToObject(refObj))->_ptr = p;
 
     OBJECTREF refType = th.GetManagedClassObject();
-    SetObjectReference(&(((ReflectionPointer *)OBJECTREFToObject(refObj))->_ptrType), refType, GetAppDomain());
+    SetObjectReference(&(((ReflectionPointer *)OBJECTREFToObject(refObj))->_ptrType), refType);
     
     GCPROTECT_END();
     RETURN refObj;
@@ -167,8 +166,8 @@ void InvokeUtil::CopyArg(TypeHandle th, OBJECTREF *pObjUNSAFE, ArgDestination *a
     case ELEMENT_TYPE_I4:
     case ELEMENT_TYPE_U4:
     case ELEMENT_TYPE_R4:
-    IN_WIN32(case ELEMENT_TYPE_I:)
-    IN_WIN32(case ELEMENT_TYPE_U:)
+    IN_TARGET_32BIT(case ELEMENT_TYPE_I:)
+    IN_TARGET_32BIT(case ELEMENT_TYPE_U:)
     {
         // If we got the univeral zero...Then assign it and exit.
         if (rObj == 0)
@@ -186,8 +185,8 @@ void InvokeUtil::CopyArg(TypeHandle th, OBJECTREF *pObjUNSAFE, ArgDestination *a
     case ELEMENT_TYPE_I8:
     case ELEMENT_TYPE_U8:
     case ELEMENT_TYPE_R8:
-    IN_WIN64(case ELEMENT_TYPE_I:)
-    IN_WIN64(case ELEMENT_TYPE_U:)
+    IN_TARGET_64BIT(case ELEMENT_TYPE_I:)
+    IN_TARGET_64BIT(case ELEMENT_TYPE_U:)
     {
         // If we got the univeral zero...Then assign it and exit.
         if (rObj == 0)
@@ -370,11 +369,11 @@ void InvokeUtil::CreatePrimitiveValue(CorElementType dstType,CorElementType srcT
     case ELEMENT_TYPE_I2:
         data = *(INT16*)pSrc;
         break;
-    IN_WIN32(case ELEMENT_TYPE_I:)
+    IN_TARGET_32BIT(case ELEMENT_TYPE_I:)
     case ELEMENT_TYPE_I4:
         data = *(INT32 *)pSrc;
         break;
-    IN_WIN64(case ELEMENT_TYPE_I:)
+    IN_TARGET_64BIT(case ELEMENT_TYPE_I:)
     case ELEMENT_TYPE_I8:
         data = *(INT64 *)pSrc;
         break;
@@ -457,22 +456,22 @@ void InvokeUtil::CreatePrimitiveValue(CorElementType dstType,CorElementType srcT
         case ELEMENT_TYPE_I1:
         case ELEMENT_TYPE_I2:
         case ELEMENT_TYPE_I4:
-        IN_WIN32(case ELEMENT_TYPE_I:)
+        IN_TARGET_32BIT(case ELEMENT_TYPE_I:)
             r8 = (R8)((INT32)data);
             break;
         case ELEMENT_TYPE_U1:
         case ELEMENT_TYPE_CHAR:
         case ELEMENT_TYPE_U2:
         case ELEMENT_TYPE_U4:
-        IN_WIN32(case ELEMENT_TYPE_U:)
+        IN_TARGET_32BIT(case ELEMENT_TYPE_U:)
             r8 = (R8)((UINT32)data);
             break;
         case ELEMENT_TYPE_U8:
-        IN_WIN64(case ELEMENT_TYPE_U:)
+        IN_TARGET_64BIT(case ELEMENT_TYPE_U:)
             r8 = (R8)((UINT64)data);
             break;
         case ELEMENT_TYPE_I8:
-        IN_WIN64(case ELEMENT_TYPE_I:)
+        IN_TARGET_64BIT(case ELEMENT_TYPE_I:)
             r8 = (R8)((INT64)data);
             break;
         case ELEMENT_TYPE_R4:
@@ -601,11 +600,9 @@ void InvokeUtil::ValidField(TypeHandle th, OBJECTREF* value)
                 if (!srcTH.CanCastTo(th))
                     COMPlusThrow(kArgumentException,W("Arg_ObjObj"));
             }
-            Security::SpecialDemand(SSWT_LATEBOUND_LINKDEMAND, SECURITY_SKIP_VER);
             return;
         }
         else if (MscorlibBinder::IsClass((*value)->GetMethodTable(), CLASS__INTPTR)) {
-            Security::SpecialDemand(SSWT_LATEBOUND_LINKDEMAND, SECURITY_SKIP_VER);
             return;
         }
 
@@ -652,9 +649,14 @@ void InvokeUtil::ValidField(TypeHandle th, OBJECTREF* value)
         COMPlusThrow(kArgumentException,W("Arg_ObjObj"));
 }
 
-// InternalCreateObject
-// This routine will create the specified object from the value
-OBJECTREF InvokeUtil::CreateObject(TypeHandle th, void * pValue) {
+//
+// CreateObjectAfterInvoke
+// This routine will create the specified object from the value returned by the Invoke target. 
+//
+// This does not handle the ELEMENT_TYPE_VALUETYPE case. The caller must preallocate the box object and
+// copy the value type into it afterward.
+//
+OBJECTREF InvokeUtil::CreateObjectAfterInvoke(TypeHandle th, void * pValue) {
     CONTRACTL {
         THROWS;
         GC_TRIGGERS;
@@ -666,8 +668,10 @@ OBJECTREF InvokeUtil::CreateObject(TypeHandle th, void * pValue) {
     CONTRACTL_END;
 
     CorElementType type = th.GetSignatureCorElementType();
-    MethodTable *pMT = NULL;
     OBJECTREF obj = NULL;
+
+    // WARNING: pValue can be an inner reference into a managed object and it is not protected from GC. You must do nothing that
+    // triggers a GC until the all the data it points to has been captured in a GC-protected location.
 
     // Handle the non-table types
     switch (type) {
@@ -680,18 +684,6 @@ OBJECTREF InvokeUtil::CreateObject(TypeHandle th, void * pValue) {
         break;
     }
 
-    case ELEMENT_TYPE_FNPTR:
-        pMT = MscorlibBinder::GetElementType(ELEMENT_TYPE_I);
-        goto PrimitiveType;
-
-    case ELEMENT_TYPE_VALUETYPE:
-    {
-        _ASSERTE(!th.IsTypeDesc());
-        pMT = th.AsMethodTable();
-        obj = pMT->Box(pValue);
-        break;
-    }
-
     case ELEMENT_TYPE_CLASS:        // Class
     case ELEMENT_TYPE_SZARRAY:      // Single Dim, Zero
     case ELEMENT_TYPE_ARRAY:        // General Array
@@ -701,35 +693,15 @@ OBJECTREF InvokeUtil::CreateObject(TypeHandle th, void * pValue) {
         obj = *(OBJECTREF *)pValue;
         break;
     
-    case ELEMENT_TYPE_BOOLEAN:      // boolean
-    case ELEMENT_TYPE_I1:           // byte
-    case ELEMENT_TYPE_U1:
-    case ELEMENT_TYPE_I2:           // short
-    case ELEMENT_TYPE_U2:           
-    case ELEMENT_TYPE_CHAR:         // char
-    case ELEMENT_TYPE_I4:           // int
-    case ELEMENT_TYPE_U4:
-    case ELEMENT_TYPE_I8:           // long
-    case ELEMENT_TYPE_U8:       
-    case ELEMENT_TYPE_R4:           // float
-    case ELEMENT_TYPE_R8:           // double
-    case ELEMENT_TYPE_I:
-    case ELEMENT_TYPE_U:
-        _ASSERTE(!th.IsTypeDesc());
-        pMT = th.AsMethodTable();
-    PrimitiveType:
+    case ELEMENT_TYPE_FNPTR:
         {
-            // Don't use MethodTable::Box here for perf reasons
-            PREFIX_ASSUME(pMT != NULL);
-            obj = AllocateObject(pMT);
-            DWORD size = pMT->GetNumInstanceFieldBytes();
-            memcpyNoGCRefs(obj->UnBox(), pValue, size);
+            LPVOID capturedValue = *(LPVOID*)pValue;
+            INDEBUG(pValue = (LPVOID)0xcccccccc); // We're about to allocate a GC object - can no longer trust pValue
+            obj = AllocateObject(MscorlibBinder::GetElementType(ELEMENT_TYPE_I));
+            *(LPVOID*)(obj->UnBox()) = capturedValue;
         }
         break;
     
-    case ELEMENT_TYPE_BYREF:
-        COMPlusThrow(kNotSupportedException, W("NotSupported_ByRefReturn"));
-    case ELEMENT_TYPE_END:
     default:
         _ASSERTE(!"Unknown Type");
         COMPlusThrow(kNotSupportedException);
@@ -773,7 +745,7 @@ OBJECTREF InvokeUtil::CreateClassLoadExcept(OBJECTREF* classes, OBJECTREF* excep
     // Retrieve the resource string.
     ResMgrGetString(W("ReflectionTypeLoad_LoadFailed"), &gc.str);
 
-    MethodDesc* pMD = MemberLoader::FindMethod(gc.o->GetTrueMethodTable(),
+    MethodDesc* pMD = MemberLoader::FindMethod(gc.o->GetMethodTable(),
                             COR_CTOR_METHOD_NAME, &gsig_IM_ArrType_ArrException_Str_RetVoid);
 
     if (!pMD)
@@ -820,7 +792,7 @@ OBJECTREF InvokeUtil::CreateTargetExcept(OBJECTREF* except) {
     GCPROTECT_BEGIN(o);
     ARG_SLOT args[2];
 
-    MethodDesc* pMD = MemberLoader::FindMethod(o->GetTrueMethodTable(),
+    MethodDesc* pMD = MemberLoader::FindMethod(o->GetMethodTable(),
                             COR_CTOR_METHOD_NAME, &gsig_IM_Exception_RetVoid);
     
     if (!pMD)
@@ -998,10 +970,9 @@ void InvokeUtil::SetValidField(CorElementType fldType,
         else
         {
             pDeclMT->EnsureInstanceActive();
-            pDeclMT->CheckRunClassInitThrowing();   
+            pDeclMT->CheckRunClassInitThrowing();
 
-            if (declaringType.IsDomainNeutral() == FALSE)
-                *pDomainInitialized = TRUE;
+            *pDomainInitialized = TRUE;
         }
         }
         EX_CATCH_THROWABLE(&Throwable);
@@ -1209,8 +1180,7 @@ OBJECTREF InvokeUtil::GetFieldValue(FieldDesc* pField, TypeHandle fieldType, OBJ
             pDeclMT->EnsureInstanceActive();
             pDeclMT->CheckRunClassInitThrowing();   
 
-            if (!declaringType.IsDomainNeutral())
-                *pDomainInitialized = TRUE;
+            *pDomainInitialized = TRUE;
         }
         }
         EX_CATCH_THROWABLE(&Throwable);
@@ -1261,8 +1231,7 @@ OBJECTREF InvokeUtil::GetFieldValue(FieldDesc* pField, TypeHandle fieldType, OBJ
         if (pField->IsStatic()) 
             CopyValueClass(obj->UnBox(), 
                            pField->GetCurrentStaticAddress(), 
-                           fieldType.AsMethodTable(), 
-                           obj->GetAppDomain());
+                           fieldType.AsMethodTable());
         else
             pField->GetInstanceField(*target, obj->UnBox());
         GCPROTECT_END();
@@ -1302,7 +1271,7 @@ OBJECTREF InvokeUtil::GetFieldValue(FieldDesc* pField, TypeHandle fieldType, OBJ
         // copy the field to the unboxed object.
         // note: this will be done only for the non-remoting case
         if (p) {
-            CopyValueClass(obj->GetData(), p, fieldType.AsMethodTable(), obj->GetAppDomain());
+            CopyValueClass(obj->GetData(), p, fieldType.AsMethodTable());
         }
 
             // If it is a Nullable<T>, box it using Nullable<T> conventions.
@@ -1321,7 +1290,7 @@ OBJECTREF InvokeUtil::GetFieldValue(FieldDesc* pField, TypeHandle fieldType, OBJ
 
         MethodTable *pIntPtrMT = MscorlibBinder::GetClass(CLASS__INTPTR);
         obj = AllocateObject(pIntPtrMT);
-        CopyValueClass(obj->UnBox(), &value, pIntPtrMT, obj->GetAppDomain());
+        CopyValueClass(obj->UnBox(), &value, pIntPtrMT);
         break;
     }
 
@@ -1430,64 +1399,6 @@ bool RefSecContext::IsCalledFromInterop()
     return (pCaller == NULL);
 }
 
-BOOL InvokeUtil::IsCriticalWithConversionToFullDemand(MethodTable* pMT)
-{
-    WRAPPER_NO_CONTRACT;
-
-    return Security::TypeRequiresTransparencyCheck(pMT, true);
-}
-
-BOOL InvokeUtil::IsCriticalWithConversionToFullDemand(MethodDesc* pMD, MethodTable* pInstanceMT)
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_COOPERATIVE;
-    }
-    CONTRACTL_END;
-
-    if (Security::IsMethodCritical(pMD) && !Security::IsMethodSafeCritical(pMD)
-        && pMD->GetAssembly()->GetSecurityTransparencyBehavior()->CanCriticalMembersBeConvertedToLinkDemand())
-        return TRUE;
-
-    if (pMD->HasMethodInstantiation())
-    {
-        Instantiation inst = pMD->GetMethodInstantiation();
-        for (DWORD i = 0; i < inst.GetNumArgs(); i++)
-        {   
-            TypeHandle th = inst[i];
-            if (InvokeUtil::IsCriticalWithConversionToFullDemand(th.GetMethodTableOfElementType()))
-                return TRUE;
-        }
-    }
-
-    if (pInstanceMT && InvokeUtil::IsCriticalWithConversionToFullDemand(pInstanceMT))
-        return TRUE;
-
-    return FALSE;
-}
-
-BOOL InvokeUtil::IsCriticalWithConversionToFullDemand(FieldDesc* pFD, MethodTable* pInstanceMT)
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_COOPERATIVE;
-    }
-    CONTRACTL_END;
-    
-    if (Security::IsFieldCritical(pFD) && !Security::IsFieldSafeCritical(pFD)
-        && pFD->GetModule()->GetAssembly()->GetSecurityTransparencyBehavior()->CanCriticalMembersBeConvertedToLinkDemand())
-        return TRUE;
-
-    if (pInstanceMT && InvokeUtil::IsCriticalWithConversionToFullDemand(pInstanceMT))
-        return TRUE;
-
-    return FALSE;
-}
-
 void InvokeUtil::CanAccessClass(RefSecContext*  pCtx,
                                 MethodTable*    pClass,
                                 BOOL            checkAccessForImplicitValueTypeCtor /*= FALSE*/)
@@ -1522,100 +1433,10 @@ void InvokeUtil::CanAccessMethod(MethodDesc*    pMeth,
     }
     CONTRACTL_END;
 
-
     InvokeUtil::CheckAccessMethod(pSCtx,
                                   pParentMT,
                                   pInstanceMT,
                                   pMeth);
-
-
-    if (pMeth->RequiresLinktimeCheck())
-    {
-        // The following logic turns link demands on the target method into full
-        // stack walks in order to close security holes in poorly written
-        // reflection users.
-
-
-        struct _gc
-        {
-            OBJECTREF refClassNonCasDemands;
-            OBJECTREF refClassCasDemands;
-            OBJECTREF refMethodNonCasDemands;
-            OBJECTREF refMethodCasDemands;
-        } gc;
-        ZeroMemory(&gc, sizeof(gc));
-
-        GCPROTECT_BEGIN(gc);
-
-        // Fetch link demand sets from all the places in metadata where we might
-        // find them (class and method). These might be split into CAS and non-CAS
-        // sets as well.
-        Security::RetrieveLinktimeDemands(pMeth,
-                                          &gc.refClassCasDemands,
-                                          &gc.refClassNonCasDemands,
-                                          &gc.refMethodCasDemands,
-                                          &gc.refMethodNonCasDemands);
-
-        // CAS Link Demands
-        if (gc.refClassCasDemands != NULL)
-            Security::DemandSet(SSWT_LATEBOUND_LINKDEMAND, gc.refClassCasDemands);
-
-        if (gc.refMethodCasDemands != NULL)
-            Security::DemandSet(SSWT_LATEBOUND_LINKDEMAND, gc.refMethodCasDemands);
-
-        // Non-CAS demands are not applied against a grant
-        // set, they're standalone.
-        if (gc.refClassNonCasDemands != NULL)
-            Security::CheckNonCasDemand(&gc.refClassNonCasDemands);
-
-        if (gc.refMethodNonCasDemands != NULL)
-            Security::CheckNonCasDemand(&gc.refMethodNonCasDemands);
-
-        GCPROTECT_END();
-
-        if (pMeth->IsNDirect() ||
-            (pMeth->IsComPlusCall() && !pMeth->IsInterface()))
-        {
-            if (Security::IsTransparencyEnforcementEnabled())
-            {
-                MethodDesc* pmdCaller = pSCtx->GetCallerMethod();
-
-                if (pmdCaller != NULL &&
-                    Security::IsMethodTransparent(pmdCaller))
-                {
-                    ThrowMethodAccessException(pSCtx, pMeth, IDS_E_TRANSPARENT_CALL_NATIVE);
-                }
-            }
-        }
-
-    }
-
-    // @todo: 
-    //if (checkSkipVer && !Security::CanSkipVerification(pSCtx->GetCallerMethod()->GetModule()))
-    //Security::ThrowSecurityException(g_SecurityPermissionClassName, SPFLAGSSKIPVERIFICATION);
-    //checkSkipVer is set only when the user tries to invoke a constructor on a existing object.
-    if (checkSkipVer)
-    {
-        if (Security::IsTransparencyEnforcementEnabled())
-        {
-            MethodDesc *pCallerMD = pSCtx->GetCallerMethod();
-
-            // Interop (NULL) caller should be able to skip verification
-            if (pCallerMD != NULL &&
-                Security::IsMethodTransparent(pCallerMD) &&
-                !pCallerMD->GetAssembly()->GetSecurityTransparencyBehavior()->CanTransparentCodeSkipVerification())
-            {
-#ifdef _DEBUG
-                if (g_pConfig->LogTransparencyErrors())
-                {
-                    SecurityTransparent::LogTransparencyError(pMeth, "Attempt by a transparent method to use unverifiable code");
-                }
-#endif // _DEBUG
-                ThrowMethodAccessException(pCallerMD, pMeth, FALSE, IDS_E_TRANSPARENT_REFLECTION);
-            }
-        }
-
-    }
 }
 #endif // #ifndef DACCESS_COMPILE
 
@@ -1637,7 +1458,7 @@ void InvokeUtil::CanAccessField(RefSecContext*  pCtx,
 }
 
 //
-// Ensure that a type is accessable, throwing a TypeLoadException if not
+// Ensure that a type is accessible, throwing a TypeLoadException if not
 //
 // Arguments:
 //    pCtx                  - current reflection context
@@ -1689,7 +1510,7 @@ void InvokeUtil::CheckAccessClass(RefSecContext *pCtx,
 }
 
 //
-// Ensure that a method is accessable, throwing a MethodAccessException if not
+// Ensure that a method is accessible, throwing a MethodAccessException if not
 //
 // Arguments:
 //    pCtx                  - current reflection context
@@ -1730,7 +1551,7 @@ void InvokeUtil::CheckAccessMethod(RefSecContext       *pCtx,
 }
 
 //
-// Ensure that a field is accessable, throwing a FieldAccessException if not
+// Ensure that a field is accessible, throwing a FieldAccessException if not
 //
 // Arguments:
 //    pCtx                  - current reflection context
@@ -1773,7 +1594,7 @@ void InvokeUtil::CheckAccessField(RefSecContext       *pCtx,
 
 
 //
-// Check accessability of a field or method.
+// Check accessibility of a field or method.
 //
 // Arguments:
 //    pCtx                  - current reflection context
@@ -1842,36 +1663,6 @@ void InvokeUtil::CheckAccess(RefSecContext               *pCtx,
     _ASSERTE(canAccess);
 }
 
-// If a method has a linktime demand attached, perform it.
-
-// static
-void InvokeUtil::CheckLinktimeDemand(RefSecContext *pCtx, MethodDesc *pCalleeMD) {
-    CONTRACTL {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_COOPERATIVE;
-        
-        INJECT_FAULT(COMPlusThrowOM(););
-    }
-    CONTRACTL_END
-        
-    if (pCalleeMD->RequiresLinktimeCheck())
-    {
-        MethodDesc* pCallerMD = pCtx->GetCallerMethod();
-
-        if (pCallerMD)
-        {
-            Security::LinktimeCheckMethod(pCallerMD->GetAssembly(), pCalleeMD);
-
-            // perform transparency checks as well
-            if (Security::RequiresTransparentAssemblyChecks(pCallerMD, pCalleeMD, NULL))
-            {
-                Security::EnforceTransparentAssemblyChecks(pCallerMD, pCalleeMD);
-            }
-        }
-    }
-}
-
 /*static*/
 AccessCheckOptions::AccessCheckType InvokeUtil::GetInvocationAccessCheckType(BOOL targetRemoted /*= FALSE*/)
 {
@@ -1880,108 +1671,9 @@ AccessCheckOptions::AccessCheckType InvokeUtil::GetInvocationAccessCheckType(BOO
     if (targetRemoted)
         return AccessCheckOptions::kMemberAccess;
 
-    AppDomain * pAppDomain = GetAppDomain();
-
-
-    if (pAppDomain->GetSecurityDescriptor()->IsFullyTrusted())
-        // Ignore transparency so that reflection invocation is consistenct with LCG.
-        // There is no security concern because we are in Full Trust.
-        return AccessCheckOptions::kRestrictedMemberAccessNoTransparency;
-
-    return AccessCheckOptions::kMemberAccess;
-
+    // Ignore transparency so that reflection invocation is consistenct with LCG.
+    // There is no security concern because we are in Full Trust.
+    return AccessCheckOptions::kRestrictedMemberAccessNoTransparency;
 }
 
 #endif // CROSSGEN_COMPILE
-
-struct DangerousAPIEntry
-{
-    BinderClassID   classID;
-    const LPCSTR    *pszAPINames;
-    DWORD           cAPINames;
-};
-
-#define DEFINE_DANGEROUS_API(classID, szAPINames) static const LPCSTR g__ ## classID ## __DangerousAPIs[] = { szAPINames };
-#include "dangerousapis.h"
-#undef DEFINE_DANGEROUS_API
-
-#define DEFINE_DANGEROUS_API(classID, szAPINames) { CLASS__ ## classID, g__ ## classID ## __DangerousAPIs, NumItems(g__ ## classID ## __DangerousAPIs)},
-static const DangerousAPIEntry DangerousAPIs[] = 
-{
-#include "dangerousapis.h"
-};
-#undef DEFINE_DANGEROUS_API
-
-/*static*/
-bool InvokeUtil::IsDangerousMethod(MethodDesc *pMD)
-{
-    CONTRACTL {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_ANY;
-    }
-    CONTRACTL_END;
-
-    MethodTable *pMT = pMD->GetMethodTable();
-
-    if (pMT->GetModule()->IsSystem())
-    {
-        // All methods on these types are considered dangerous
-        static const BinderClassID dangerousTypes[] = {
-            CLASS__TYPE_HANDLE,
-            CLASS__METHOD_HANDLE,
-            CLASS__FIELD_HANDLE,
-            CLASS__ACTIVATOR,
-            CLASS__DELEGATE,
-            CLASS__MULTICAST_DELEGATE,
-            CLASS__RUNTIME_HELPERS
-        };
-
-
-        static bool fInited = false;
-
-        if (!VolatileLoad(&fInited))
-        {
-            // Make sure all types are loaded so that we can use faster GetExistingClass()
-            for (unsigned i = 0; i < NumItems(dangerousTypes); i++)
-            {
-                MscorlibBinder::GetClass(dangerousTypes[i]);
-            }
-
-            for (unsigned i = 0; i < NumItems(DangerousAPIs); i++)
-            {
-                MscorlibBinder::GetClass(DangerousAPIs[i].classID);
-            }
-
-            VolatileStore(&fInited, true);
-        }
-
-        for (unsigned i = 0; i < NumItems(dangerousTypes); i++)
-        {
-            if (MscorlibBinder::GetExistingClass(dangerousTypes[i]) == pMT)
-                return true;
-        }
-
-        for (unsigned i = 0; i < NumItems(DangerousAPIs); i++)
-        {
-            DangerousAPIEntry entry = DangerousAPIs[i];
-            if (MscorlibBinder::GetExistingClass(entry.classID) == pMT)
-            {
-                LPCUTF8 szMethodName = pMD->GetName();
-                for (unsigned j = 0; j < entry.cAPINames; j++)
-                {
-                    if (strcmp(szMethodName, entry.pszAPINames[j]) == 0)
-                        return true;
-                }
-
-                break;
-            }
-        }
-    }
-
-    // For reduce compat risks we treat non-ctors on DynamicMethod as safe.
-    if (pMT->IsDelegate() && pMD->IsCtor())
-        return true;
-
-    return false;
-}

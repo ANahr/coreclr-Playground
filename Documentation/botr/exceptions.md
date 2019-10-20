@@ -13,7 +13,7 @@ Exceptions matter almost everywhere. They matter the most in functions that thro
 Why are CLR internal exceptions different?
 ==========================================
 
-The CLR's internal exceptions are much like C++ exceptions, but not exactly. Rotor can be built for Mac OSX, for BSD, and for Windows. The OS and compiler differences dictate that we can't just use standard C++ try/catch. In addition, the CLR internal exceptions provide features similar to the managed "finally" and "fault".
+The CLR's internal exceptions are much like C++ exceptions, but not exactly. CoreCLR can be built for Mac OSX, for Linux, for BSD, and for Windows. The OS and compiler differences dictate that we can't just use standard C++ try/catch. In addition, the CLR internal exceptions provide features similar to the managed "finally" and "fault".
 
 With the help of some macros, it is possible to write exception handling code that is almost as easy to write and to read as standard C++.
 
@@ -210,7 +210,7 @@ Yet another flavor of invalid argument exception.
 COMPlusThrowInvalidCastException(thFrom, thTo)
 ----------------------------------------------
 
-Given type handles to from and to types of the attempted cast, the helper creates the a nicely formatted exception message.
+Given type handles to from and to types of the attempted cast, the helper creates a nicely formatted exception message.
 
 EX_THROW
 --------
@@ -301,5 +301,3 @@ Miscellaneous
 =============
 
 There are actually a lot of macros involved in EX_TRY. Most of them should never, ever, be used outside of the macro implementations.
-
-One set, BEGIN_EXCEPTION_GLUE / END_EXCEPTION_GLUE, deserves special mention. These were intended to be transitional macros, and were to be replaced with more appropriate macros in the Whidbey project. Of course, they worked just fine, and so they weren't all replaced. Ideally, all instances will be converted during a "cleanup" milestone, and the macros removed. In the meantime, any CLR dev tempted to use them should resist, and instead write EX_TRY/EX_CATCH/EX_CATCH_END or EX_CATCH_HRESULT.

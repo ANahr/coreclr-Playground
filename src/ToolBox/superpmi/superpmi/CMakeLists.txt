@@ -5,6 +5,7 @@ remove_definitions(-D_UNICODE)
 
 add_definitions(-DFEATURE_NO_HOST)
 add_definitions(-DSELF_NO_HOST)
+add_definitions(-DUSE_COREDISTOOLS)
 
 if(WIN32)
   #use static crt
@@ -13,10 +14,6 @@ endif(WIN32)
 
 include_directories(.)
 include_directories(../superpmi-shared)
-
-# When it is ready (the build works on all platforms, referencing the coredistools
-# package), define this:
-# add_definitions(-DUSE_COREDISTOOLS)
 
 set(SUPERPMI_SOURCES
     commandline.cpp
@@ -43,17 +40,14 @@ set(SUPERPMI_SOURCES
     ../superpmi-shared/spmiutil.cpp
     ../superpmi-shared/tocfile.cpp
     ../superpmi-shared/typeutils.cpp
+    ../superpmi-shared/spmidumphelper.cpp
 )
 
-add_precompiled_header(
-    standardpch.h
-    ../superpmi-shared/standardpch.cpp
-    SUPERPMI_SOURCES
-)
-
-add_executable(superpmi
+_add_executable(superpmi
     ${SUPERPMI_SOURCES}
 )
+
+target_precompile_header(TARGET superpmi HEADER standardpch.h)
 
 if(CLR_CMAKE_PLATFORM_UNIX)
     target_link_libraries(superpmi
@@ -70,7 +64,7 @@ else()
         ${STATIC_MT_CPP_LIB}
     )
 
-    install (FILES ${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/superpmi.pdb DESTINATION PDB)
+    _install (FILES ${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/superpmi.pdb DESTINATION PDB)
 endif(CLR_CMAKE_PLATFORM_UNIX)
 
-install (TARGETS superpmi DESTINATION .)
+_install (TARGETS superpmi DESTINATION .)

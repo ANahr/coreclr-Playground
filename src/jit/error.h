@@ -73,14 +73,33 @@ extern void DECLSPEC_NORETURN noWayAssertBody(const char* cond, const char* file
 // Conditionally invoke the noway assert body. The conditional predicate is evaluated using a method on the tlsCompiler.
 // If a noway_assert is hit, we ask the Compiler whether to raise an exception (i.e., conditionally raise exception.)
 // To have backward compatibility between v4.5 and v4.0, in min-opts we take a shot at codegen rather than rethrow.
-extern void noWayAssertBodyConditional(
+extern void ANALYZER_NORETURN noWayAssertBodyConditional(
 #ifdef FEATURE_TRACELOGGING
     const char* file, unsigned line
 #endif
     );
-extern void noWayAssertBodyConditional(const char* cond, const char* file, unsigned line);
+
+extern void ANALYZER_NORETURN noWayAssertBodyConditional(const char* cond, const char* file, unsigned line);
+
+// Define MEASURE_NOWAY to 1 to enable code to count and rank individual noway_assert calls by occurrence.
+// These asserts would be dynamically executed, but not necessarily fail. The provides some insight into
+// the dynamic prevalence of these (if not a direct measure of their cost), which exist in non-DEBUG as
+// well as DEBUG builds.
+#ifdef DEBUG
+#define MEASURE_NOWAY 1
+#else // !DEBUG
+#define MEASURE_NOWAY 0
+#endif // !DEBUG
+
+#if MEASURE_NOWAY
+extern void RecordNowayAssertGlobal(const char* filename, unsigned line, const char* condStr);
+#define RECORD_NOWAY_ASSERT(condStr) RecordNowayAssertGlobal(__FILE__, __LINE__, condStr);
+#else
+#define RECORD_NOWAY_ASSERT(condStr)
+#endif
 
 #ifdef DEBUG
+
 #define NO_WAY(msg) (debugError(msg, __FILE__, __LINE__), noWay())
 // Used for fallback stress mode
 #define NO_WAY_NOASSERT(msg) noWay()
@@ -90,6 +109,7 @@ extern void noWayAssertBodyConditional(const char* cond, const char* file, unsig
 #define noway_assert(cond)                                                                                             \
     do                                                                                                                 \
     {                                                                                                                  \
+        RECORD_NOWAY_ASSERT(#cond)                                                                                     \
         if (!(cond))                                                                                                   \
         {                                                                                                              \
             noWayAssertBodyConditional(#cond, __FILE__, __LINE__);                                                     \
@@ -99,7 +119,7 @@ extern void noWayAssertBodyConditional(const char* cond, const char* file, unsig
 
 #define NOWAY_MSG(msg) noWayAssertBodyConditional(msg, __FILE__, __LINE__)
 
-#else
+#else // !DEBUG
 
 #define NO_WAY(msg) noWay()
 #define BADCODE(msg) badCode()
@@ -114,6 +134,7 @@ extern void noWayAssertBodyConditional(const char* cond, const char* file, unsig
 #define noway_assert(cond)                                                                                             \
     do                                                                                                                 \
     {                                                                                                                  \
+        RECORD_NOWAY_ASSERT(#cond)                                                                                     \
         if (!(cond))                                                                                                   \
         {                                                                                                              \
             noWayAssertBodyConditional(NOWAY_ASSERT_BODY_ARGUMENTS);                                                   \
@@ -123,14 +144,14 @@ extern void noWayAssertBodyConditional(const char* cond, const char* file, unsig
 
 #define NOWAY_MSG(msg) noWayAssertBodyConditional(NOWAY_ASSERT_BODY_ARGUMENTS)
 
-#endif
+#endif // !DEBUG
 
 // IMPL_LIMITATION is called when we encounter valid IL that is not
 // supported by our current implementation because of various
 // limitations (that could be removed in the future)
 #define IMPL_LIMITATION(msg) NO_WAY(msg)
 
-#if !defined(_TARGET_X86_) || !defined(LEGACY_BACKEND)
+#if 1 // All platforms currently enable NYI; this should be a tighter condition to exclude some platforms from NYI
 
 #if defined(ALT_JIT)
 
@@ -183,24 +204,12 @@ extern void notYetImplemented(const char* msg, const char* file, unsigned line);
 
 #else // NYI not available; make it an assert.
 
-#define NYI(msg)        assert(!msg)
+#define NYI(msg)        assert(!(msg))
 #define NYI_AMD64(msg)  do { } while (0)
 #define NYI_ARM(msg)    do { } while (0)
 #define NYI_ARM64(msg)  do { } while (0)
 
 #endif // NYI not available
-
-#if !defined(_TARGET_X86_) && !defined(FEATURE_STACK_FP_X87)
-
-#define NYI_FLAT_FP_X87(msg)    NYI(msg)
-#define NYI_FLAT_FP_X87_NC(msg) NYI(msg)
-
-#else
-
-#define NYI_FLAT_FP_X87(msg)    do { } while (0)
-#define NYI_FLAT_FP_X87_NC(msg) do { } while (0)
-
-#endif // !_TARGET_X86_ && !FEATURE_STACK_FP_X87
 
 // clang-format on
 

@@ -14,18 +14,23 @@
 class JitInstance
 {
 private:
-    char *PathToOriginalJit;
-    char *PathToTempJit;
-    HANDLE ourHeap;
-    HMODULE hLib;
-    PgetJit pngetJit;
-    PjitStartup pnjitStartup;
+    char*          PathToOriginalJit;
+    char*          PathToTempJit;
+    HANDLE         ourHeap;
+    HMODULE        hLib;
+    PgetJit        pngetJit;
+    PjitStartup    pnjitStartup;
     PsxsJitStartup pnsxsJitStartup;
-    ICorJitHost *jitHost;
-    ICorJitInfo *icji;
-    SimpleTimer stj;
+    ICorJitHost*   jitHost;
+    ICorJitInfo*   icji;
+    SimpleTimer    stj;
 
-    JitInstance() {};
+    LightWeightMap<DWORD, DWORD>* forceOptions;
+    LightWeightMap<DWORD, DWORD>* options;
+
+    MethodContext::Environment environment;
+
+    JitInstance(){};
     void timeResult(CORINFO_METHOD_INFO info, unsigned flags);
 
 public:
@@ -35,18 +40,33 @@ public:
         RESULT_SUCCESS,
         RESULT_MISSING
     };
-    CycleTimer lt;
-    MethodContext *mc;
-    ULONGLONG times[2];
-    ICorJitCompiler *pJitInstance;
+    CycleTimer       lt;
+    MethodContext*   mc;
+    ULONGLONG        times[2];
+    ICorJitCompiler* pJitInstance;
 
     // Allocate and initialize the jit provided
-    static JitInstance *InitJit(char *nameOfJit, bool breakOnAssert, SimpleTimer *st1, MethodContext* firstContext);
+    static JitInstance* InitJit(char*          nameOfJit,
+                                bool           breakOnAssert,
+                                SimpleTimer*   st1,
+                                MethodContext* firstContext,
+                                LightWeightMap<DWORD, DWORD>* forceOptions,
+                                LightWeightMap<DWORD, DWORD>* options);
 
-    HRESULT StartUp(char *PathToJit, bool copyJit, bool breakOnDebugBreakorAV, MethodContext* firstContext);
+    HRESULT StartUp(char* PathToJit, bool copyJit, bool breakOnDebugBreakorAV, MethodContext* firstContext);
     bool reLoad(MethodContext* firstContext);
 
-    Result CompileMethod(MethodContext *MethodToCompile, int mcIndex, bool collectThroughput);
+    bool callJitStartup(ICorJitHost* newHost);
+
+    bool resetConfig(MethodContext* firstContext);
+
+    Result CompileMethod(MethodContext* MethodToCompile, int mcIndex, bool collectThroughput);
+
+    const WCHAR* getForceOption(const WCHAR* key);
+    const WCHAR* getOption(const WCHAR* key);
+    const WCHAR* getOption(const WCHAR* key, LightWeightMap<DWORD, DWORD>* options);
+
+    const MethodContext::Environment& getEnvironment();
 
     void* allocateArray(ULONG size);
     void* allocateLongLivedArray(ULONG size);

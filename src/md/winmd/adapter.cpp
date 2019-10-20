@@ -1101,7 +1101,7 @@ HRESULT WinMDAdapter::ModifyExportedTypeName(
 
 //------------------------------------------------------------------------------
 
-// We must optionaly add an assembly ref for System.Numerics.Vectors.dll since this assembly is not available
+// We must optionally add an assembly ref for System.Numerics.Vectors.dll since this assembly is not available
 // on downlevel platforms. 
 //
 // This function assumes that System.Numerics.Vectors.dll is the last assembly that
@@ -1599,7 +1599,6 @@ HRESULT WinMDAdapter::ComputeMethodDefTreatment(mdMethodDef tkMethodDef, mdTypeD
         
         mdToken tkMethodImplFirst;
         ULONG count;
-        mdTypeRef mtTypeRef;
         IfFailGo(m_pRawMetaModelCommonRO->CommonGetMethodImpls(tkDeclaringTypeDef, &tkMethodImplFirst, &count));
         for (ULONG i = 0; i < count; i++)
         {

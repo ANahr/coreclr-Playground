@@ -31,6 +31,7 @@ enum DispatchWrapperType
 {
     DispatchWrapperType_Unknown         = 0x00000001,
     DispatchWrapperType_Dispatch        = 0x00000002,
+    //DispatchWrapperType_Record          = 0x00000004,
     DispatchWrapperType_Error           = 0x00000008,
     DispatchWrapperType_Currency        = 0x00000010,
     DispatchWrapperType_BStr            = 0x00000020,
@@ -81,9 +82,8 @@ struct OverrideProcArgs
 
         struct
         {
+            MethodTable*    m_pArrayMT;
             VARTYPE         m_vt;
-            UINT16          m_optionalbaseoffset; //for fast marshaling, offset of dataptr if known and less than 64k (0 otherwise)
-            MethodTable*    m_pMT;
 #ifdef FEATURE_COMINTEROP
             SIZE_T          m_cbElementSize;
             WinMDAdapter::RedirectedTypeIndex m_redirectedTypeIndex;
@@ -225,58 +225,6 @@ public:
         return m_hndSystemPCEventArgsType;
     }
 
-    ABI::Windows::UI::Xaml::Interop::INotifyCollectionChangedEventArgsFactory *GetNCCEventArgsFactory()
-    {
-        CONTRACTL
-        {
-            THROWS;
-            GC_TRIGGERS;    // For potential COOP->PREEMP->COOP switch
-            MODE_ANY;
-            PRECONDITION(!GetAppDomain()->IsCompilationDomain()); 
-        }
-        CONTRACTL_END;   
-
-        if (m_pNCCEventArgsFactory.Load() == NULL)
-        {
-            GCX_PREEMP();
-            SafeComHolderPreemp<ABI::Windows::UI::Xaml::Interop::INotifyCollectionChangedEventArgsFactory> pNCCEventArgsFactory;
-
-            IfFailThrow(clr::winrt::GetActivationFactory(g_WinRTNotifyCollectionChangedEventArgsNameW, (ABI::Windows::UI::Xaml::Interop::INotifyCollectionChangedEventArgsFactory **)&pNCCEventArgsFactory));
-            _ASSERTE_MSG(pNCCEventArgsFactory, "Got NULL NCCEventArgs factory!");
-
-            if (InterlockedCompareExchangeT(&m_pNCCEventArgsFactory, (ABI::Windows::UI::Xaml::Interop::INotifyCollectionChangedEventArgsFactory *)pNCCEventArgsFactory, NULL) == NULL)
-                pNCCEventArgsFactory.SuppressRelease();            
-        }
-
-        return m_pNCCEventArgsFactory;
-    }
-
-    ABI::Windows::UI::Xaml::Data::IPropertyChangedEventArgsFactory *GetPCEventArgsFactory()
-    {
-        CONTRACTL
-        {
-            THROWS;
-            GC_TRIGGERS;    // For potential COOP->PREEMP->COOP switch
-            MODE_ANY;
-            PRECONDITION(!GetAppDomain()->IsCompilationDomain()); 
-        }
-        CONTRACTL_END;   
-
-        if (m_pPCEventArgsFactory.Load() == NULL)
-        {
-            GCX_PREEMP();
-            SafeComHolderPreemp<ABI::Windows::UI::Xaml::Data::IPropertyChangedEventArgsFactory> pPCEventArgsFactory;
-
-            IfFailThrow(clr::winrt::GetActivationFactory(g_WinRTPropertyChangedEventArgsNameW, (ABI::Windows::UI::Xaml::Data::IPropertyChangedEventArgsFactory **)&pPCEventArgsFactory));
-            _ASSERTE_MSG(pPCEventArgsFactory, "Got NULL PCEventArgs factory!");
-
-            if (InterlockedCompareExchangeT(&m_pPCEventArgsFactory, (ABI::Windows::UI::Xaml::Data::IPropertyChangedEventArgsFactory *)pPCEventArgsFactory, NULL) == NULL)
-                pPCEventArgsFactory.SuppressRelease();            
-        }
-
-        return m_pPCEventArgsFactory;
-    }
-
     MethodDesc *GetSystemNCCEventArgsToWinRTNCCEventArgsMD()
     {
         LIMITED_METHOD_CONTRACT;
@@ -310,9 +258,6 @@ private:
     MethodDesc *m_pWinRTNCCEventArgsToSystemNCCEventArgsMD;
     MethodDesc *m_pSystemPCEventArgsToWinRTPCEventArgsMD;
     MethodDesc *m_pWinRTPCEventArgsToSystemPCEventArgsMD;
-
-    VolatilePtr<ABI::Windows::UI::Xaml::Interop::INotifyCollectionChangedEventArgsFactory> m_pNCCEventArgsFactory;
-    VolatilePtr<ABI::Windows::UI::Xaml::Data::IPropertyChangedEventArgsFactory> m_pPCEventArgsFactory;
 };
 
 class UriMarshalingInfo
@@ -427,7 +372,7 @@ private:
 class EEMarshalingData
 {
 public:
-    EEMarshalingData(BaseDomain *pDomain, LoaderHeap *pHeap, CrstBase *pCrst);
+    EEMarshalingData(LoaderAllocator *pAllocator, CrstBase *pCrst);
     ~EEMarshalingData();
 
     // EEMarshalingData's are always allocated on the loader heap so we need to redefine
@@ -456,14 +401,15 @@ private:
     EECMHelperHashTable                 m_CMHelperHashtable;
     EEPtrHashTable                      m_SharedCMHelperToCMInfoMap;
 #endif // CROSSGEN_COMPILE
+    LoaderAllocator*                    m_pAllocator;
     LoaderHeap*                         m_pHeap;
-    BaseDomain*                         m_pDomain;
     CMINFOLIST                          m_pCMInfoList;
 #ifdef FEATURE_COMINTEROP
     OleColorMarshalingInfo*             m_pOleColorInfo;
     UriMarshalingInfo*                  m_pUriInfo;
     EventArgsMarshalingInfo*            m_pEventArgsInfo;
 #endif // FEATURE_COMINTEROP
+    CrstBase*                           m_lock;
 };
 
 struct ItfMarshalInfo;
@@ -510,6 +456,7 @@ public:
                 BOOL BestFit,
                 BOOL ThrowOnUnmappableChar,
                 BOOL fEmitsIL,
+                BOOL onInstanceMethod,
                 MethodDesc* pMD = NULL,
                 BOOL fUseCustomMarshal = TRUE
 #ifdef _DEBUG
@@ -524,8 +471,7 @@ public:
     VOID EmitOrThrowInteropParamException(NDirectStubLinker* psl, BOOL fMngToNative, UINT resID, UINT paramIdx);
 
     // These methods retrieve the information for different element types.
-    HRESULT HandleArrayElemType(NativeTypeParamInfo *pParamInfo, 
-                                UINT16 optbaseoffset, 
+    HRESULT HandleArrayElemType(NativeTypeParamInfo *pParamInfo,
                                 TypeHandle elemTypeHnd, 
                                 int iRank, 
                                 BOOL fNoLowerBounds, 
@@ -792,18 +738,13 @@ private:
 enum ArrayMarshalInfoFlags
 {
     amiRuntime                                  = 0x0001,
-    amiExport32Bit                              = 0x0002,
-    amiExport64Bit                              = 0x0004,
     amiIsPtr                                    = 0x0008,
     amiSafeArraySubTypeExplicitlySpecified      = 0x0010
 };
 
-#define IsAMIRuntime(flags) (flags & amiRuntime)
-#define IsAMIExport(flags) (flags & (amiExport32Bit | amiExport64Bit))
-#define IsAMIExport32Bit(flags) (flags & amiExport32Bit)
-#define IsAMIExport64Bit(flags) (flags & amiExport64Bit)
-#define IsAMIPtr(flags) (flags & amiIsPtr)
-#define IsAMISafeArraySubTypeExplicitlySpecified(flags) (flags & amiSafeArraySubTypeExplicitlySpecified)
+#define IsAMIRuntime(flags) ((flags) & amiRuntime)
+#define IsAMIPtr(flags) ((flags) & amiIsPtr)
+#define IsAMISafeArraySubTypeExplicitlySpecified(flags) ((flags) & amiSafeArraySubTypeExplicitlySpecified)
 //
 // Helper classes to determine the marshalling information for arrays.
 //
@@ -914,14 +855,7 @@ protected:
     {
         LIMITED_METHOD_CONTRACT;
 
-        // If we are exporting, use the pointer size specified via the flags, otherwise use
-        // the current size of a pointer.
-        if (IsAMIExport32Bit(m_flags))
-            return 4;
-        else if (IsAMIExport64Bit(m_flags))
-            return 8;
-        else 
-            return sizeof(LPVOID);
+        return sizeof(LPVOID);
     }
 
 protected:
@@ -945,7 +879,7 @@ protected:
 VOID ThrowInteropParamException(UINT resID, UINT paramIdx);
 
 VOID CollateParamTokens(IMDInternalImport *pInternalImport, mdMethodDef md, ULONG numargs, mdParamDef *aParams);
-bool IsUnsupportedValueTypeReturn(MetaSig& msig);
+bool IsUnsupportedTypedrefReturn(MetaSig& msig);
 
 void FindCopyCtor(Module *pModule, MethodTable *pMT, MethodDesc **pMDOut);
 void FindDtor(Module *pModule, MethodTable *pMT, MethodDesc **pMDOut);

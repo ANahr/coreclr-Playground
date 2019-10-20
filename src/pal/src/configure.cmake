@@ -16,6 +16,14 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL Darwin AND NOT CMAKE_SYSTEM_NAME STREQUAL Free
   set(CMAKE_REQUIRED_DEFINITIONS "-D_BSD_SOURCE -D_SVID_SOURCE -D_DEFAULT_SOURCE -D_POSIX_C_SOURCE=200809L")
 endif()
 
+if(CMAKE_SYSTEM_NAME STREQUAL Linux AND NOT CLR_CMAKE_PLATFORM_ANDROID)
+  set(CMAKE_RT_LIBS rt)
+elseif(CMAKE_SYSTEM_NAME STREQUAL FreeBSD OR CMAKE_SYSTEM_NAME STREQUAL NetBSD)
+  set(CMAKE_RT_LIBS rt)
+else()
+  set(CMAKE_RT_LIBS "")
+endif()
+
 list(APPEND CMAKE_REQUIRED_DEFINITIONS -D_FILE_OFFSET_BITS=64)
 
 check_include_files(ieeefp.h HAVE_IEEEFP_H)
@@ -31,25 +39,50 @@ check_include_files(sys/time.h HAVE_SYS_TIME_H)
 check_include_files(pthread_np.h HAVE_PTHREAD_NP_H)
 check_include_files(sys/lwp.h HAVE_SYS_LWP_H)
 check_include_files(lwp.h HAVE_LWP_H)
-check_include_files(libunwind.h HAVE_LIBUNWIND_H)
 check_include_files(runetype.h HAVE_RUNETYPE_H)
 check_include_files(semaphore.h HAVE_SEMAPHORE_H)
+check_include_files(sys/prctl.h HAVE_PRCTL_H)
+check_include_files(numa.h HAVE_NUMA_H)
+check_include_files(pthread_np.h HAVE_PTHREAD_NP_H)
+check_include_files("sys/auxv.h;asm/hwcap.h" HAVE_AUXV_HWCAP_H)
 
-if(NOT CMAKE_SYSTEM_NAME STREQUAL FreeBSD AND NOT CMAKE_SYSTEM_NAME STREQUAL NetBSD)
-  set(CMAKE_REQUIRED_FLAGS "-ldl")
-endif()
-check_include_files(lttng/tracepoint.h HAVE_LTTNG_TRACEPOINT_H)
-if(NOT CMAKE_SYSTEM_NAME STREQUAL FreeBSD AND NOT CMAKE_SYSTEM_NAME STREQUAL NetBSD)
-  unset(CMAKE_REQUIRED_FLAGS)
+if(NOT CMAKE_SYSTEM_NAME STREQUAL Darwin)
+  check_include_files("libintl.h" HAVE_LIBINTL_H)
 endif()
 
-check_include_files(uuid/uuid.h HAVE_LIBUUID_H)
+set(CMAKE_REQUIRED_LIBRARIES ${CMAKE_DL_LIBS})
+
+check_cxx_source_compiles("
+#include <sys/mman.h>
+int main()
+{
+  return VM_FLAGS_SUPERPAGE_SIZE_ANY;
+}
+" HAVE_VM_FLAGS_SUPERPAGE_SIZE_ANY)
+
+check_cxx_source_compiles("
+#include <sys/mman.h>
+int main()
+{
+  return MAP_HUGETLB;
+}
+" HAVE_MAP_HUGETLB)
+
+check_cxx_source_compiles("
+#include <lttng/tracepoint.h>
+int main(int argc, char **argv) {
+  return 0;
+}" HAVE_LTTNG_TRACEPOINT_H)
+
+set(CMAKE_REQUIRED_LIBRARIES)
+
 check_include_files(sys/sysctl.h HAVE_SYS_SYSCTL_H)
+check_function_exists(sysctlbyname HAVE_SYSCTLBYNAME)
 check_include_files(gnu/lib-names.h HAVE_GNU_LIBNAMES_H)
 
 check_function_exists(kqueue HAVE_KQUEUE)
-check_function_exists(getpwuid_r HAVE_GETPWUID_R)
 
+check_library_exists(c sched_getaffinity "" HAVE_SCHED_GETAFFINITY)
 check_library_exists(pthread pthread_create "" HAVE_LIBPTHREAD)
 check_library_exists(c pthread_create "" HAVE_PTHREAD_IN_LIBC)
 
@@ -68,6 +101,8 @@ check_library_exists(${PTHREAD_LIBRARY} pthread_attr_get_np "" HAVE_PTHREAD_ATTR
 check_library_exists(${PTHREAD_LIBRARY} pthread_getattr_np "" HAVE_PTHREAD_GETATTR_NP)
 check_library_exists(${PTHREAD_LIBRARY} pthread_getcpuclockid "" HAVE_PTHREAD_GETCPUCLOCKID)
 check_library_exists(${PTHREAD_LIBRARY} pthread_sigqueue "" HAVE_PTHREAD_SIGQUEUE)
+check_library_exists(${PTHREAD_LIBRARY} pthread_getaffinity_np "" HAVE_PTHREAD_GETAFFINITY_NP)
+check_library_exists(${PTHREAD_LIBRARY} pthread_attr_setaffinity_np "" HAVE_PTHREAD_ATTR_SETAFFINITY_NP)
 
 check_function_exists(sigreturn HAVE_SIGRETURN)
 check_function_exists(_thread_sys_sigreturn HAVE__THREAD_SYS_SIGRETURN)
@@ -78,8 +113,8 @@ check_function_exists(fsync HAVE_FSYNC)
 check_function_exists(futimes HAVE_FUTIMES)
 check_function_exists(utimes HAVE_UTIMES)
 check_function_exists(sysctl HAVE_SYSCTL)
+check_function_exists(sysinfo HAVE_SYSINFO)
 check_function_exists(sysconf HAVE_SYSCONF)
-check_function_exists(localtime_r HAVE_LOCALTIME_R)
 check_function_exists(gmtime_r HAVE_GMTIME_R)
 check_function_exists(timegm HAVE_TIMEGM)
 check_function_exists(poll HAVE_POLL)
@@ -94,34 +129,24 @@ check_function_exists(directio HAVE_DIRECTIO)
 check_function_exists(semget HAS_SYSV_SEMAPHORES)
 check_function_exists(pthread_mutex_init HAS_PTHREAD_MUTEXES)
 check_function_exists(ttrace HAVE_TTRACE)
-set(CMAKE_REQUIRED_LIBRARIES unwind unwind-generic)
-check_cxx_source_compiles("
-#include <libunwind.h>
+check_function_exists(pipe2 HAVE_PIPE2)
 
+check_cxx_source_compiles("
+#include <pthread_np.h>
 int main(int argc, char **argv) {
-  unw_cursor_t cursor;
-  unw_save_loc_t saveLoc;
-  int reg = UNW_REG_IP;
-  unw_get_save_loc(&cursor, reg, &saveLoc);
+  cpuset_t cpuSet;
 
   return 0;
-}" HAVE_UNW_GET_SAVE_LOC)
-check_cxx_source_compiles("
-#include <libunwind.h>
-
-int main(int argc, char **argv) {
-  unw_addr_space_t as;
-  unw_get_accessors(as);
-
-  return 0;
-}" HAVE_UNW_GET_ACCESSORS)
-set(CMAKE_REQUIRED_LIBRARIES)
+}" HAVE_CPUSET_T)
 
 check_struct_has_member ("struct stat" st_atimespec "sys/types.h;sys/stat.h" HAVE_STAT_TIMESPEC)
+check_struct_has_member ("struct stat" st_atim "sys/types.h;sys/stat.h" HAVE_STAT_TIM)
 check_struct_has_member ("struct stat" st_atimensec "sys/types.h;sys/stat.h" HAVE_STAT_NSEC)
 check_struct_has_member ("struct tm" tm_gmtoff time.h HAVE_TM_GMTOFF)
 check_struct_has_member ("ucontext_t" uc_mcontext.gregs[0] ucontext.h HAVE_GREGSET_T)
 check_struct_has_member ("ucontext_t" uc_mcontext.__gregs[0] ucontext.h HAVE___GREGSET_T)
+check_struct_has_member ("ucontext_t" uc_mcontext.fpregs->__glibc_reserved1[0] ucontext.h HAVE_FPSTATE_GLIBC_RESERVED1)
+check_struct_has_member ("struct sysinfo" mem_unit "sys/sysinfo.h" HAVE_SYSINFO_WITH_MEM_UNIT)
 
 set(CMAKE_EXTRA_INCLUDE_FILES machine/reg.h)
 check_type_size("struct reg" BSD_REGS_T)
@@ -130,7 +155,6 @@ set(CMAKE_EXTRA_INCLUDE_FILES asm/ptrace.h)
 check_type_size("struct pt_regs" PT_REGS)
 set(CMAKE_EXTRA_INCLUDE_FILES)
 set(CMAKE_EXTRA_INCLUDE_FILES signal.h)
-check_type_size(siginfo_t SIGINFO_T)
 set(CMAKE_EXTRA_INCLUDE_FILES)
 set(CMAKE_EXTRA_INCLUDE_FILES ucontext.h)
 check_type_size(ucontext_t UCONTEXT_T)
@@ -149,16 +173,6 @@ check_cxx_symbol_exists(CHAR_BIT limits.h HAVE_CHAR_BIT)
 check_cxx_symbol_exists(_DEBUG sys/user.h USER_H_DEFINES_DEBUG)
 check_cxx_symbol_exists(_SC_PHYS_PAGES unistd.h HAVE__SC_PHYS_PAGES)
 check_cxx_symbol_exists(_SC_AVPHYS_PAGES unistd.h HAVE__SC_AVPHYS_PAGES)
-
-check_cxx_source_runs("
-#include <uuid.h>
-
-int main(void) {
-  uuid_t uuid;
-  uint32_t status;
-  uuid_create(&uuid, &status);
-  return 0;
-}" HAVE_BSD_UUID_H)
 
 check_cxx_source_runs("
 #include <sys/param.h>
@@ -377,6 +391,8 @@ int main()
 
   exit(ret);
 }" HAVE_WORKING_GETTIMEOFDAY)
+
+set(CMAKE_REQUIRED_LIBRARIES ${CMAKE_RT_LIBS})
 check_cxx_source_runs("
 #include <stdlib.h>
 #include <time.h>
@@ -390,6 +406,9 @@ int main()
 
   exit(ret);
 }" HAVE_WORKING_CLOCK_GETTIME)
+set(CMAKE_REQUIRED_LIBRARIES)
+
+set(CMAKE_REQUIRED_LIBRARIES ${CMAKE_RT_LIBS})
 check_cxx_source_runs("
 #include <stdlib.h>
 #include <time.h>
@@ -403,6 +422,11 @@ int main()
 
   exit(ret);
 }" HAVE_CLOCK_MONOTONIC)
+set(CMAKE_REQUIRED_LIBRARIES)
+
+check_library_exists(${PTHREAD_LIBRARY} pthread_condattr_setclock "" HAVE_PTHREAD_CONDATTR_SETCLOCK)
+
+set(CMAKE_REQUIRED_LIBRARIES ${CMAKE_RT_LIBS})
 check_cxx_source_runs("
 #include <stdlib.h>
 #include <time.h>
@@ -416,6 +440,8 @@ int main()
 
   exit(ret);
 }" HAVE_CLOCK_MONOTONIC_COARSE)
+set(CMAKE_REQUIRED_LIBRARIES)
+
 check_cxx_source_runs("
 #include <stdlib.h>
 #include <mach/mach_time.h>
@@ -428,6 +454,8 @@ int main()
   mach_absolute_time();
   exit(ret);
 }" HAVE_MACH_ABSOLUTE_TIME)
+
+set(CMAKE_REQUIRED_LIBRARIES ${CMAKE_RT_LIBS})
 check_cxx_source_runs("
 #include <stdlib.h>
 #include <time.h>
@@ -441,6 +469,8 @@ int main()
 
   exit(ret);
 }" HAVE_CLOCK_THREAD_CPUTIME)
+set(CMAKE_REQUIRED_LIBRARIES)
+
 check_cxx_source_runs("
 #include <stdlib.h>
 #include <sys/types.h>
@@ -508,9 +538,10 @@ check_cxx_source_runs("
 #include <string.h>
 #include <sys/types.h>
 #include <sys/mman.h>
+#include <algorithm>
 
 #define MEM_SIZE 1024
-
+#define TEMP_FILE_TEMPLATE \"${CMAKE_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/CMakeTmp/multiplemaptestXXXXXX\"
 int main(void)
 {
   char * fname;
@@ -518,10 +549,10 @@ int main(void)
   int ret;
   void * pAddr0, * pAddr1;
 
-  fname = (char *)malloc(MEM_SIZE);
+  fname = (char *)malloc(std::max((size_t)MEM_SIZE, sizeof(TEMP_FILE_TEMPLATE)));
   if (!fname)
     exit(1);
-  strcpy(fname, \"/tmp/name/multiplemaptestXXXXXX\");
+  strcpy(fname, TEMP_FILE_TEMPLATE);
 
   fd = mkstemp(fname);
   if (fd < 0)
@@ -728,9 +759,9 @@ check_cxx_source_runs("
 int main(void) {
   double infinity = 1.0 / 0.0;
   if (pow(1.0, infinity) != 1.0 || pow(1.0, -infinity) != 1.0) {
-    exit(1)
+    exit(1);
   }
-  if (!isnan(pow(-1.0, infinity)) || !isnan(pow(-1.0, -infinity))) {
+  if (pow(-1.0, infinity) != 1.0 || pow(-1.0, -infinity) != 1.0) {
     exit(1);
   }
   if (pow(0.0, infinity) != 0.0) {
@@ -742,7 +773,7 @@ int main(void) {
   if (pow(-1.1, infinity) != infinity || pow(1.1, infinity) != infinity) {
     exit(1);
   }
-  if (pow(-1.1, -infinity) != 0.0 || pow(1.1, infinity) != 0.0) {
+  if (pow(-1.1, -infinity) != 0.0 || pow(1.1, -infinity) != 0.0) {
     exit(1);
   }
   if (pow(-0.0, -1) != -infinity) {
@@ -835,6 +866,32 @@ int main(void) {
   }
   exit(1);
 }" HAVE_COMPATIBLE_EXP)
+set(CMAKE_REQUIRED_LIBRARIES)
+set(CMAKE_REQUIRED_LIBRARIES m)
+check_cxx_source_runs("
+#include <math.h>
+#include <stdlib.h>
+
+int main(void) {
+  if (FP_ILOGB0 != -2147483648) {
+    exit(1);
+  }
+
+  exit(0);
+}" HAVE_COMPATIBLE_ILOGB0)
+set(CMAKE_REQUIRED_LIBRARIES)
+set(CMAKE_REQUIRED_LIBRARIES m)
+check_cxx_source_runs("
+#include <math.h>
+#include <stdlib.h>
+
+int main(void) {
+  if (FP_ILOGBNAN != 2147483647) {
+    exit(1);
+  }
+
+  exit(0);
+}" HAVE_COMPATIBLE_ILOGBNAN)
 set(CMAKE_REQUIRED_LIBRARIES)
 set(CMAKE_REQUIRED_LIBRARIES m)
 check_cxx_source_runs("
@@ -964,23 +1021,95 @@ int main()
 
   return 1;
 }" FILE_OPS_CHECK_FERROR_OF_PREVIOUS_CALL)
-set(CMAKE_REQUIRED_DEFINITIONS)
 
 set(SYNCHMGR_SUSPENSION_SAFE_CONDITION_SIGNALING 1)
 set(ERROR_FUNC_FOR_GLOB_HAS_FIXED_PARAMS 1)
 
-check_cxx_source_compiles("
+if(NOT CLR_CMAKE_USE_SYSTEM_LIBUNWIND)
+  list(INSERT CMAKE_REQUIRED_INCLUDES 0 ${CMAKE_CURRENT_SOURCE_DIR}/libunwind/include ${CMAKE_CURRENT_BINARY_DIR}/libunwind/include)
+endif()
+
+set(CMAKE_REQUIRED_FLAGS "-c -Werror=implicit-function-declaration")
+
+check_c_source_compiles("
 #include <libunwind.h>
 #include <ucontext.h>
-
 int main(int argc, char **argv)
 {
         unw_context_t libUnwindContext;
         ucontext_t uContext;
-
         libUnwindContext = uContext;
         return 0;
 }" UNWIND_CONTEXT_IS_UCONTEXT_T)
+
+check_c_source_compiles("
+#include <libunwind.h>
+
+int main(int argc, char **argv) {
+  unw_cursor_t cursor;
+  unw_save_loc_t saveLoc;
+  int reg = UNW_REG_IP;
+  unw_get_save_loc(&cursor, reg, &saveLoc);
+
+  return 0;
+}" HAVE_UNW_GET_SAVE_LOC)
+
+check_c_source_compiles("
+#include <libunwind.h>
+
+int main(int argc, char **argv) {
+  unw_addr_space_t as;
+  unw_get_accessors(as);
+
+  return 0;
+}" HAVE_UNW_GET_ACCESSORS)
+
+set(CMAKE_REQUIRED_FLAGS)
+if(NOT CLR_CMAKE_USE_SYSTEM_LIBUNWIND)
+  list(REMOVE_AT CMAKE_REQUIRED_INCLUDES 0 1)
+endif()
+
+check_cxx_source_compiles("
+#include <sys/param.h>
+#include <sys/sysctl.h>
+#include <vm/vm_param.h>
+
+int main(int argc, char **argv)
+{
+    struct xswdev xsw;
+
+    return 0;
+}" HAVE_XSWDEV)
+
+check_cxx_source_compiles("
+#include <sys/param.h>
+#include <sys/sysctl.h>
+
+int main(int argc, char **argv)
+{
+    struct xsw_usage xsu;
+
+    return 0;
+}" HAVE_XSW_USAGE)
+
+check_cxx_source_compiles("
+#include <signal.h>
+
+int main(int argc, char **argv)
+{
+    struct _xstate xstate;
+    struct _fpx_sw_bytes bytes;
+    return 0;
+}" HAVE_PUBLIC_XSTATE_STRUCT)
+
+check_cxx_source_compiles("
+#include <sys/prctl.h>
+
+int main(int argc, char **argv)
+{
+    int flag = (int)PR_SET_PTRACER;
+    return 0;
+}" HAVE_PR_SET_PTRACER)
 
 set(CMAKE_REQUIRED_LIBRARIES pthread)
 check_cxx_source_compiles("
@@ -1207,11 +1336,6 @@ if(NOT CLR_CMAKE_PLATFORM_ARCH_ARM AND NOT CLR_CMAKE_PLATFORM_ARCH_ARM64)
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL Darwin)
-  if(NOT HAVE_LIBUUID_H)
-    unset(HAVE_LIBUUID_H CACHE)
-    message(FATAL_ERROR "Cannot find libuuid. Try installing uuid-dev or the appropriate packages for your platform")
-  endif()
-  set(HAVE_COREFOUNDATION 1)
   set(HAVE__NSGETENVIRON 1)
   set(DEADLOCK_WHEN_THREAD_IS_SUSPENDED_WHILE_BLOCKED_ON_MUTEX 1)
   set(PAL_PTRACE "ptrace((cmd), (pid), (caddr_t)(addr), (data))")
@@ -1223,14 +1347,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL Darwin)
   set(HAVE_SCHED_OTHER_ASSIGNABLE 1)
 
 elseif(CMAKE_SYSTEM_NAME STREQUAL FreeBSD)
-  if(NOT HAVE_LIBUNWIND_H)
-    unset(HAVE_LIBUNWIND_H CACHE)
-    message(FATAL_ERROR "Cannot find libunwind. Try installing libunwind8 and libunwind8-dev (or the appropriate packages for your platform)")
-  endif()
-  if(NOT HAVE_BSD_UUID_H)
-    unset(HAVE_BSD_UUID_H CACHE)
-    message(FATAL_ERROR "Cannot find uuid.h")
-  endif()
   set(DEADLOCK_WHEN_THREAD_IS_SUSPENDED_WHILE_BLOCKED_ON_MUTEX 0)
   set(PAL_PTRACE "ptrace((cmd), (pid), (caddr_t)(addr), (data))")
   set(PAL_PT_ATTACH PT_ATTACH)
@@ -1241,14 +1357,6 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL FreeBSD)
   set(BSD_REGS_STYLE "((reg).r_##rr)")
   set(HAVE_SCHED_OTHER_ASSIGNABLE 1)
 elseif(CMAKE_SYSTEM_NAME STREQUAL NetBSD)
-  if(NOT HAVE_LIBUNWIND_H)
-    unset(HAVE_LIBUNWIND_H CACHE)
-    message(FATAL_ERROR "Cannot find libunwind. Try installing libunwind8 and libunwind8-dev (or the appropriate packages for your platform)")
-  endif()
-  if(NOT HAVE_BSD_UUID_H)
-    unset(HAVE_BSD_UUID_H CACHE)
-    message(FATAL_ERROR "Cannot find uuid.h")
-  endif()
   set(DEADLOCK_WHEN_THREAD_IS_SUSPENDED_WHILE_BLOCKED_ON_MUTEX 0)
   set(PAL_PTRACE "ptrace((cmd), (pid), (void*)(addr), (data))")
   set(PAL_PT_ATTACH PT_ATTACH)
@@ -1260,14 +1368,6 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL NetBSD)
   set(HAVE_SCHED_OTHER_ASSIGNABLE 0)
 
 elseif(CMAKE_SYSTEM_NAME STREQUAL SunOS)
-  if(NOT HAVE_LIBUNWIND_H)
-    unset(HAVE_LIBUNWIND_H CACHE)
-    message(FATAL_ERROR "Cannot find libunwind. Try installing libunwind8 and libunwind8-dev (or the appropriate packages for your platform)")
-  endif()
-  if(NOT HAVE_LIBUUID_H)
-    unset(HAVE_LIBUUID_H CACHE)
-    message(FATAL_ERROR "Cannot find libuuid. Try installing uuid-dev or the appropriate packages for your platform")
-  endif()
   set(DEADLOCK_WHEN_THREAD_IS_SUSPENDED_WHILE_BLOCKED_ON_MUTEX 0)
   set(PAL_PTRACE "ptrace((cmd), (pid), (caddr_t)(addr), (data))")
   set(PAL_PT_ATTACH PT_ATTACH)
@@ -1276,17 +1376,9 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL SunOS)
   set(PAL_PT_WRITE_D PT_WRITE_D)
   set(HAS_FTRUNCATE_LENGTH_ISSUE 0)
 else() # Anything else is Linux
-  if(NOT HAVE_LIBUNWIND_H)
-    unset(HAVE_LIBUNWIND_H CACHE)
-    message(FATAL_ERROR "Cannot find libunwind. Try installing libunwind8 and libunwind8-dev (or the appropriate packages for your platform)")
-  endif()
   if(NOT HAVE_LTTNG_TRACEPOINT_H AND FEATURE_EVENT_TRACE)
     unset(HAVE_LTTNG_TRACEPOINT_H CACHE)
     message(FATAL_ERROR "Cannot find liblttng-ust-dev. Try installing liblttng-ust-dev  (or the appropriate packages for your platform)")
-  endif()
-  if(NOT HAVE_LIBUUID_H)
-    unset(HAVE_LIBUUID_H CACHE)
-    message(FATAL_ERROR "Cannot find libuuid. Try installing uuid-dev or the appropriate packages for your platform")
   endif()
   set(DEADLOCK_WHEN_THREAD_IS_SUSPENDED_WHILE_BLOCKED_ON_MUTEX 0)
   set(PAL_PTRACE "ptrace((cmd), (pid), (void*)(addr), (data))")

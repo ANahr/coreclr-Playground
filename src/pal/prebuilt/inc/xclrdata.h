@@ -791,7 +791,7 @@ EXTERN_C const IID IID_IXCLRLibrarySupport;
 typedef SIZE_T ( __stdcall *CDSTranslateAddrCB )( 
     IXCLRDisassemblySupport *__MIDL____MIDL_itf_xclrdata_0000_00020000,
     CLRDATA_ADDRESS __MIDL____MIDL_itf_xclrdata_0000_00020001,
-    wchar_t *__MIDL____MIDL_itf_xclrdata_0000_00020002,
+    WCHAR *__MIDL____MIDL_itf_xclrdata_0000_00020002,
     SIZE_T __MIDL____MIDL_itf_xclrdata_0000_00020003,
     DWORDLONG *__MIDL____MIDL_itf_xclrdata_0000_00020004);
 
@@ -799,21 +799,21 @@ typedef SIZE_T ( __stdcall *CDSTranslateFixupCB )(
     IXCLRDisassemblySupport *__MIDL____MIDL_itf_xclrdata_0000_00020006,
     CLRDATA_ADDRESS __MIDL____MIDL_itf_xclrdata_0000_00020007,
     SIZE_T __MIDL____MIDL_itf_xclrdata_0000_00020008,
-    wchar_t *__MIDL____MIDL_itf_xclrdata_0000_00020009,
+    WCHAR *__MIDL____MIDL_itf_xclrdata_0000_00020009,
     SIZE_T __MIDL____MIDL_itf_xclrdata_0000_00020010,
     DWORDLONG *__MIDL____MIDL_itf_xclrdata_0000_00020011);
 
 typedef SIZE_T ( __stdcall *CDSTranslateConstCB )( 
     IXCLRDisassemblySupport *__MIDL____MIDL_itf_xclrdata_0000_00020013,
     DWORD __MIDL____MIDL_itf_xclrdata_0000_00020014,
-    wchar_t *__MIDL____MIDL_itf_xclrdata_0000_00020015,
+    WCHAR *__MIDL____MIDL_itf_xclrdata_0000_00020015,
     SIZE_T __MIDL____MIDL_itf_xclrdata_0000_00020016);
 
 typedef SIZE_T ( __stdcall *CDSTranslateRegrelCB )( 
     IXCLRDisassemblySupport *__MIDL____MIDL_itf_xclrdata_0000_00020018,
     unsigned int rega,
     CLRDATA_ADDRESS __MIDL____MIDL_itf_xclrdata_0000_00020019,
-    wchar_t *__MIDL____MIDL_itf_xclrdata_0000_00020020,
+    WCHAR *__MIDL____MIDL_itf_xclrdata_0000_00020020,
     SIZE_T __MIDL____MIDL_itf_xclrdata_0000_00020021,
     DWORD *__MIDL____MIDL_itf_xclrdata_0000_00020022);
 
@@ -854,7 +854,7 @@ EXTERN_C const IID IID_IXCLRDisassemblySupport;
             SIZE_T __MIDL__IXCLRDisassemblySupport0003) = 0;
         
         virtual SIZE_T STDMETHODCALLTYPE CchFormatInstr( 
-            wchar_t *__MIDL__IXCLRDisassemblySupport0004,
+            WCHAR *__MIDL__IXCLRDisassemblySupport0004,
             SIZE_T __MIDL__IXCLRDisassemblySupport0005) = 0;
         
         virtual void *STDMETHODCALLTYPE PvClient( void) = 0;
@@ -914,7 +914,7 @@ EXTERN_C const IID IID_IXCLRDisassemblySupport;
         
         SIZE_T ( STDMETHODCALLTYPE *CchFormatInstr )( 
             IXCLRDisassemblySupport * This,
-            wchar_t *__MIDL__IXCLRDisassemblySupport0004,
+            WCHAR *__MIDL__IXCLRDisassemblySupport0004,
             SIZE_T __MIDL__IXCLRDisassemblySupport0005);
         
         void *( STDMETHODCALLTYPE *PvClient )( 
@@ -7710,6 +7710,185 @@ EXTERN_C const IID IID_IXCLRDataExceptionNotification4;
 
 
 #endif 	/* C style interface */
+
+
+#ifndef __IXCLRDataExceptionNotification5_INTERFACE_DEFINED__
+#define __IXCLRDataExceptionNotification5_INTERFACE_DEFINED__
+
+/* interface IXCLRDataExceptionNotification5 */
+/* [uuid][local][object] */ 
+
+
+EXTERN_C const IID IID_IXCLRDataExceptionNotification5;
+
+#if defined(__cplusplus) && !defined(CINTERFACE)
+    
+    MIDL_INTERFACE("e77a39ea-3548-44d9-b171-8569ed1a9423")
+    IXCLRDataExceptionNotification5 : public IXCLRDataExceptionNotification4
+    {
+    public:
+        virtual HRESULT STDMETHODCALLTYPE OnCodeGenerated2( 
+            /* [in] */ IXCLRDataMethodInstance *method,
+            /* [in] */ CLRDATA_ADDRESS nativeCodeLocation) = 0;
+        
+    };
+    
+    
+#else   /* C style interface */
+
+    typedef struct IXCLRDataExceptionNotification5Vtbl
+    {
+        BEGIN_INTERFACE
+        
+        HRESULT ( STDMETHODCALLTYPE *QueryInterface )( 
+            IXCLRDataExceptionNotification5 * This,
+            /* [in] */ REFIID riid,
+            /* [annotation][iid_is][out] */ 
+            _COM_Outptr_  void **ppvObject);
+        
+        ULONG ( STDMETHODCALLTYPE *AddRef )( 
+            IXCLRDataExceptionNotification5 * This);
+        
+        ULONG ( STDMETHODCALLTYPE *Release )( 
+            IXCLRDataExceptionNotification5 * This);
+        
+        HRESULT ( STDMETHODCALLTYPE *OnCodeGenerated )( 
+            IXCLRDataExceptionNotification5 * This,
+            /* [in] */ IXCLRDataMethodInstance *method);
+        
+        HRESULT ( STDMETHODCALLTYPE *OnCodeDiscarded )( 
+            IXCLRDataExceptionNotification5 * This,
+            /* [in] */ IXCLRDataMethodInstance *method);
+        
+        HRESULT ( STDMETHODCALLTYPE *OnProcessExecution )( 
+            IXCLRDataExceptionNotification5 * This,
+            /* [in] */ ULONG32 state);
+        
+        HRESULT ( STDMETHODCALLTYPE *OnTaskExecution )( 
+            IXCLRDataExceptionNotification5 * This,
+            /* [in] */ IXCLRDataTask *task,
+            /* [in] */ ULONG32 state);
+        
+        HRESULT ( STDMETHODCALLTYPE *OnModuleLoaded )( 
+            IXCLRDataExceptionNotification5 * This,
+            /* [in] */ IXCLRDataModule *mod);
+        
+        HRESULT ( STDMETHODCALLTYPE *OnModuleUnloaded )( 
+            IXCLRDataExceptionNotification5 * This,
+            /* [in] */ IXCLRDataModule *mod);
+        
+        HRESULT ( STDMETHODCALLTYPE *OnTypeLoaded )( 
+            IXCLRDataExceptionNotification5 * This,
+            /* [in] */ IXCLRDataTypeInstance *typeInst);
+        
+        HRESULT ( STDMETHODCALLTYPE *OnTypeUnloaded )( 
+            IXCLRDataExceptionNotification5 * This,
+            /* [in] */ IXCLRDataTypeInstance *typeInst);
+        
+        HRESULT ( STDMETHODCALLTYPE *OnAppDomainLoaded )( 
+            IXCLRDataExceptionNotification5 * This,
+            /* [in] */ IXCLRDataAppDomain *domain);
+        
+        HRESULT ( STDMETHODCALLTYPE *OnAppDomainUnloaded )( 
+            IXCLRDataExceptionNotification5 * This,
+            /* [in] */ IXCLRDataAppDomain *domain);
+        
+        HRESULT ( STDMETHODCALLTYPE *OnException )( 
+            IXCLRDataExceptionNotification5 * This,
+            /* [in] */ IXCLRDataExceptionState *exception);
+        
+        HRESULT ( STDMETHODCALLTYPE *OnGcEvent )( 
+            IXCLRDataExceptionNotification5 * This,
+            /* [in] */ GcEvtArgs gcEvtArgs);
+        
+        HRESULT ( STDMETHODCALLTYPE *ExceptionCatcherEnter )( 
+            IXCLRDataExceptionNotification5 * This,
+            /* [in] */ IXCLRDataMethodInstance *catchingMethod,
+            DWORD catcherNativeOffset);
+        
+        HRESULT ( STDMETHODCALLTYPE *OnCodeGenerated2 )( 
+            IXCLRDataExceptionNotification5 * This,
+            /* [in] */ IXCLRDataMethodInstance *method,
+            /* [in] */ CLRDATA_ADDRESS nativeCodeLocation);
+        
+        END_INTERFACE
+    } IXCLRDataExceptionNotification5Vtbl;
+
+    interface IXCLRDataExceptionNotification5
+    {
+        CONST_VTBL struct IXCLRDataExceptionNotification5Vtbl *lpVtbl;
+    };
+
+    
+
+#ifdef COBJMACROS
+
+
+#define IXCLRDataExceptionNotification5_QueryInterface(This,riid,ppvObject) \
+    ( (This)->lpVtbl -> QueryInterface(This,riid,ppvObject) ) 
+
+#define IXCLRDataExceptionNotification5_AddRef(This)    \
+    ( (This)->lpVtbl -> AddRef(This) ) 
+
+#define IXCLRDataExceptionNotification5_Release(This)   \
+    ( (This)->lpVtbl -> Release(This) ) 
+
+
+#define IXCLRDataExceptionNotification5_OnCodeGenerated(This,method)    \
+    ( (This)->lpVtbl -> OnCodeGenerated(This,method) ) 
+
+#define IXCLRDataExceptionNotification5_OnCodeDiscarded(This,method)    \
+    ( (This)->lpVtbl -> OnCodeDiscarded(This,method) ) 
+
+#define IXCLRDataExceptionNotification5_OnProcessExecution(This,state)  \
+    ( (This)->lpVtbl -> OnProcessExecution(This,state) ) 
+
+#define IXCLRDataExceptionNotification5_OnTaskExecution(This,task,state)    \
+    ( (This)->lpVtbl -> OnTaskExecution(This,task,state) ) 
+
+#define IXCLRDataExceptionNotification5_OnModuleLoaded(This,mod)    \
+    ( (This)->lpVtbl -> OnModuleLoaded(This,mod) ) 
+
+#define IXCLRDataExceptionNotification5_OnModuleUnloaded(This,mod)  \
+    ( (This)->lpVtbl -> OnModuleUnloaded(This,mod) ) 
+
+#define IXCLRDataExceptionNotification5_OnTypeLoaded(This,typeInst) \
+    ( (This)->lpVtbl -> OnTypeLoaded(This,typeInst) ) 
+
+#define IXCLRDataExceptionNotification5_OnTypeUnloaded(This,typeInst)   \
+    ( (This)->lpVtbl -> OnTypeUnloaded(This,typeInst) ) 
+
+
+#define IXCLRDataExceptionNotification5_OnAppDomainLoaded(This,domain)  \
+    ( (This)->lpVtbl -> OnAppDomainLoaded(This,domain) ) 
+
+#define IXCLRDataExceptionNotification5_OnAppDomainUnloaded(This,domain)    \
+    ( (This)->lpVtbl -> OnAppDomainUnloaded(This,domain) ) 
+
+#define IXCLRDataExceptionNotification5_OnException(This,exception) \
+    ( (This)->lpVtbl -> OnException(This,exception) ) 
+
+
+#define IXCLRDataExceptionNotification5_OnGcEvent(This,gcEvtArgs)   \
+    ( (This)->lpVtbl -> OnGcEvent(This,gcEvtArgs) ) 
+
+
+#define IXCLRDataExceptionNotification5_ExceptionCatcherEnter(This,catchingMethod,catcherNativeOffset)  \
+    ( (This)->lpVtbl -> ExceptionCatcherEnter(This,catchingMethod,catcherNativeOffset) ) 
+
+
+#define IXCLRDataExceptionNotification5_OnCodeGenerated2(This,method,nativeCodeLocation)    \
+    ( (This)->lpVtbl -> OnCodeGenerated2(This,method,nativeCodeLocation) ) 
+
+#endif /* COBJMACROS */
+
+
+#endif  /* C style interface */
+
+
+
+
+#endif  /* __IXCLRDataExceptionNotification5_INTERFACE_DEFINED__ */
 
 
 

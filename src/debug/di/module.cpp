@@ -1550,7 +1550,8 @@ HRESULT CordbModule::GetFunctionFromToken(mdMethodDef token,
         RSLockHolder lockHolder(GetProcess()->GetProcessLock());
 
         // Check token is valid.
-        if ((token == mdMethodDefNil) || 
+        if ((token == mdMethodDefNil) ||
+            (TypeFromToken(token) != mdtMethodDef) ||
             (!GetMetaDataImporter()->IsValidToken(token)))
         {
             ThrowHR(E_INVALIDARG);
@@ -2975,8 +2976,9 @@ HRESULT CordbCode::CreateBreakpoint(ULONG32 offset,
 
     HRESULT hr;
     ULONG32 size = GetSize();
+    BOOL offsetIsIl = IsIL();
     LOG((LF_CORDB, LL_INFO10000, "CCode::CreateBreakpoint, offset=%d, size=%d, IsIl=%d, this=0x%p\n",
-        offset, size, m_fIsIL, this));
+        offset, size, offsetIsIl, this));
 
     // Make sure the offset is within range of the method.
     // If we're native code, then both offset & total code size are bytes of native code,
@@ -2986,7 +2988,7 @@ HRESULT CordbCode::CreateBreakpoint(ULONG32 offset,
         return CORDBG_E_UNABLE_TO_SET_BREAKPOINT;
     }
 
-    CordbFunctionBreakpoint *bp = new (nothrow) CordbFunctionBreakpoint(this, offset);
+    CordbFunctionBreakpoint *bp = new (nothrow) CordbFunctionBreakpoint(this, offset, offsetIsIl);
 
     if (bp == NULL)
         return E_OUTOFMEMORY;
@@ -3391,15 +3393,49 @@ mdSignature CordbILCode::GetLocalVarSigToken()
     return m_localVarSigToken;
 }
 
-CordbReJitILCode::CordbReJitILCode(CordbFunction *pFunction, SIZE_T encVersion, VMPTR_SharedReJitInfo vmSharedReJitInfo) :
-CordbILCode(pFunction, TargetBuffer(), encVersion, mdSignatureNil, VmPtrToCookie(vmSharedReJitInfo)),
+HRESULT CordbILCode::CreateNativeBreakpoint(ICorDebugFunctionBreakpoint **ppBreakpoint)
+{
+    FAIL_IF_NEUTERED(this);
+    VALIDATE_POINTER_TO_OBJECT(ppBreakpoint, ICorDebugFunctionBreakpoint **);
+
+    HRESULT hr;
+    ULONG32 size = GetSize();
+    LOG((LF_CORDB, LL_INFO10000, "CordbILCode::CreateNativeBreakpoint, size=%d, this=0x%p\n",
+        size, this));
+
+    ULONG32 offset = 0;
+    CordbFunctionBreakpoint *bp = new (nothrow) CordbFunctionBreakpoint(this, offset, FALSE);
+
+    if (bp == NULL)
+    {
+        return E_OUTOFMEMORY;
+    }
+
+    hr = bp->Activate(TRUE);
+    if (SUCCEEDED(hr))
+    {
+        *ppBreakpoint = static_cast<ICorDebugFunctionBreakpoint*> (bp);
+        bp->ExternalAddRef();
+        return S_OK;
+    }
+    else
+    {
+        delete bp;
+        return hr;
+    }
+}
+
+
+
+CordbReJitILCode::CordbReJitILCode(CordbFunction *pFunction, SIZE_T encVersion, VMPTR_ILCodeVersionNode vmILCodeVersionNode) :
+CordbILCode(pFunction, TargetBuffer(), encVersion, mdSignatureNil, VmPtrToCookie(vmILCodeVersionNode)),
 m_cClauses(0),
 m_cbLocalIL(0),
 m_cILMap(0)
 {
-    _ASSERTE(!vmSharedReJitInfo.IsNull());
+    _ASSERTE(!vmILCodeVersionNode.IsNull());
     DacSharedReJitInfo data = { 0 };
-    IfFailThrow(GetProcess()->GetDAC()->GetSharedReJitInfoData(vmSharedReJitInfo, &data));
+    IfFailThrow(GetProcess()->GetDAC()->GetILCodeVersionNodeData(vmILCodeVersionNode, &data));
     IfFailThrow(Init(&data));
 }
 
@@ -4425,7 +4461,7 @@ HRESULT CordbNativeCode::EnumerateVariableHomes(ICorDebugVariableHomeEnum **ppEn
         const DacDbiArrayList<ICorDebugInfo::NativeVarInfo> *pOffsetInfoList = m_nativeVarData.GetOffsetInfoList();
         _ASSERTE(pOffsetInfoList != NULL);
         DWORD countHomes = 0;
-        for (int i = 0; i < pOffsetInfoList->Count(); i++)
+        for (unsigned int i = 0; i < pOffsetInfoList->Count(); i++)
         {
             const ICorDebugInfo::NativeVarInfo *pNativeVarInfo = &((*pOffsetInfoList)[i]);
             _ASSERTE(pNativeVarInfo != NULL);
@@ -4442,7 +4478,7 @@ HRESULT CordbNativeCode::EnumerateVariableHomes(ICorDebugVariableHomeEnum **ppEn
         rsHomes = new RSSmartPtr<CordbVariableHome>[countHomes];
 
         DWORD varHomeInd = 0;
-        for (int i = 0; i < pOffsetInfoList->Count(); i++)
+        for (unsigned int i = 0; i < pOffsetInfoList->Count(); i++)
         {
             const ICorDebugInfo::NativeVarInfo *pNativeVarInfo = &((*pOffsetInfoList)[i]);
 
@@ -4487,7 +4523,10 @@ HRESULT CordbNativeCode::EnumerateVariableHomes(ICorDebugVariableHomeEnum **ppEn
 int CordbNativeCode::GetCallInstructionLength(BYTE *ip, ULONG32 count)
 {
 #if defined(DBG_TARGET_ARM)
-    return MAX_INSTRUCTION_LENGTH;
+    if (Is32BitInstruction(*(WORD*)ip))
+        return 4;
+    else
+        return 2;
 #elif defined(DBG_TARGET_ARM64)
     return MAX_INSTRUCTION_LENGTH;
 #elif defined(DBG_TARGET_X86)
@@ -4753,7 +4792,6 @@ int CordbNativeCode::GetCallInstructionLength(BYTE *ip, ULONG32 count)
                      return -1;
                  }
 
-                 BYTE *result;
                  WORD displace = -1;
 
                  // See: Tables A-15,16,17 in AMD Dev Manual 3 for information
@@ -4951,7 +4989,7 @@ HRESULT CordbNativeCode::EnsureReturnValueAllowedWorker(Instantiation *currentIn
         IfFailRet(CordbType::SigToType(GetModule(), &original, &inst, &pType));
 
         
-        IfFailRet(hr = pType->ReturnedByValue());
+        IfFailRet(pType->ReturnedByValue());
         if (hr == S_OK) // not S_FALSE
             return S_OK;
 
@@ -4964,7 +5002,7 @@ HRESULT CordbNativeCode::EnsureReturnValueAllowedWorker(Instantiation *currentIn
         CordbType *pType = 0;
         IfFailRet(CordbType::SigToType(GetModule(), &original, &inst, &pType));
 
-        IfFailRet(hr = pType->ReturnedByValue());
+        IfFailRet(pType->ReturnedByValue());
         if (hr == S_OK) // not S_FALSE
             return S_OK;
 

@@ -1,7 +1,7 @@
 
 # Using corerun To Run .NET Core Application
 
-In page [Using Your Build](UsingYourBuild.md) gives detailed instructions on using the standard
+In page [Using your .NET Core Runtime Build with dotnet cli](UsingDotNetCli.md) gives detailed instructions on using the standard
 command line host and SDK, dotnet.exe to run a .NET application with the modified build of the
 .NET Core runtime built here.   This is the preferred mechanism for you to officially deploy 
 your changes to other people since dotnet.exe and Nuget insure that you end up with a consistent
@@ -19,7 +19,7 @@ It does this by looking at two environment variables.
 
  * `CORE_ROOT` - The directory where to find the runtime DLLs itself (e.g. CoreCLR.dll).   
  Defaults to be next to the corerun.exe host itself.  
- * `CORE_LIBRARIES` - A Semicolon separated list of directories to look for DLLS to resolve any assembly references. 
+ * `CORE_LIBRARIES` - A directory to look for DLLS to resolve any assembly references. 
  It defaults CORE_ROOT if it is not specified.  
 
 These simple rules can be used in a number of ways 

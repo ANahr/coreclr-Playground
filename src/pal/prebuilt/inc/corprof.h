@@ -1,11 +1,19 @@
-// Licensed to the .NET Foundation under one or more agreements.
-// The .NET Foundation licenses this file to you under the MIT license.
-// See the LICENSE file in the project root for more information.
+
 
 /* this ALWAYS GENERATED file contains the definitions for the interfaces */
 
 
- /* File created by MIDL compiler version 8.01.0620 */
+ /* File created by MIDL compiler version 8.01.0622 */
+/* at Tue Jan 19 06:14:07 2038
+ */
+/* Compiler settings for src\inc\corprof.idl:
+    Oicf, W1, Zp8, env=Win32 (32b run), target_arch=X86 8.01.0622 
+    protocol : dce , ms_ext, c_ext, robust
+    error checks: allocation ref bounds_check enum stub_data 
+    VC __declspec() decoration level: 
+         __declspec(uuid()), __declspec(selectany), __declspec(novtable)
+         DECLSPEC_UUID(), MIDL_INTERFACE()
+*/
 /* @@MIDL_FILE_HEADING(  ) */
 
 #pragma warning( disable: 4049 )  /* more than 64k source lines */
@@ -91,6 +99,13 @@ typedef interface ICorProfilerCallback7 ICorProfilerCallback7;
 typedef interface ICorProfilerCallback8 ICorProfilerCallback8;
 
 #endif 	/* __ICorProfilerCallback8_FWD_DEFINED__ */
+
+
+#ifndef __ICorProfilerCallback9_FWD_DEFINED__
+#define __ICorProfilerCallback9_FWD_DEFINED__
+typedef interface ICorProfilerCallback9 ICorProfilerCallback9;
+
+#endif 	/* __ICorProfilerCallback9_FWD_DEFINED__ */
 
 
 #ifndef __ICorProfilerInfo_FWD_DEFINED__
@@ -182,6 +197,20 @@ typedef interface ICorProfilerInfo7 ICorProfilerInfo7;
 typedef interface ICorProfilerInfo8 ICorProfilerInfo8;
 
 #endif 	/* __ICorProfilerInfo8_FWD_DEFINED__ */
+
+
+#ifndef __ICorProfilerInfo9_FWD_DEFINED__
+#define __ICorProfilerInfo9_FWD_DEFINED__
+typedef interface ICorProfilerInfo9 ICorProfilerInfo9;
+
+#endif 	/* __ICorProfilerInfo9_FWD_DEFINED__ */
+
+
+#ifndef __ICorProfilerInfo10_FWD_DEFINED__
+#define __ICorProfilerInfo10_FWD_DEFINED__
+typedef interface ICorProfilerInfo10 ICorProfilerInfo10;
+
+#endif 	/* __ICorProfilerInfo10_FWD_DEFINED__ */
 
 
 #ifndef __ICorProfilerMethodEnum_FWD_DEFINED__
@@ -402,50 +431,50 @@ typedef struct _COR_PRF_METHOD
     mdMethodDef methodId;
     } 	COR_PRF_METHOD;
 
-typedef void __stdcall __stdcall FunctionEnter( 
+typedef void FunctionEnter( 
     FunctionID funcID);
 
-typedef void __stdcall __stdcall FunctionLeave( 
+typedef void FunctionLeave( 
     FunctionID funcID);
 
-typedef void __stdcall __stdcall FunctionTailcall( 
+typedef void FunctionTailcall( 
     FunctionID funcID);
 
-typedef void __stdcall __stdcall FunctionEnter2( 
+typedef void FunctionEnter2( 
     FunctionID funcId,
     UINT_PTR clientData,
     COR_PRF_FRAME_INFO func,
     COR_PRF_FUNCTION_ARGUMENT_INFO *argumentInfo);
 
-typedef void __stdcall __stdcall FunctionLeave2( 
+typedef void FunctionLeave2( 
     FunctionID funcId,
     UINT_PTR clientData,
     COR_PRF_FRAME_INFO func,
     COR_PRF_FUNCTION_ARGUMENT_RANGE *retvalRange);
 
-typedef void __stdcall __stdcall FunctionTailcall2( 
+typedef void FunctionTailcall2( 
     FunctionID funcId,
     UINT_PTR clientData,
     COR_PRF_FRAME_INFO func);
 
-typedef void __stdcall __stdcall FunctionEnter3( 
+typedef void FunctionEnter3( 
     FunctionIDOrClientID functionIDOrClientID);
 
-typedef void __stdcall __stdcall FunctionLeave3( 
+typedef void FunctionLeave3( 
     FunctionIDOrClientID functionIDOrClientID);
 
-typedef void __stdcall __stdcall FunctionTailcall3( 
+typedef void FunctionTailcall3( 
     FunctionIDOrClientID functionIDOrClientID);
 
-typedef void __stdcall __stdcall FunctionEnter3WithInfo( 
+typedef void FunctionEnter3WithInfo( 
     FunctionIDOrClientID functionIDOrClientID,
     COR_PRF_ELT_INFO eltInfo);
 
-typedef void __stdcall __stdcall FunctionLeave3WithInfo( 
+typedef void FunctionLeave3WithInfo( 
     FunctionIDOrClientID functionIDOrClientID,
     COR_PRF_ELT_INFO eltInfo);
 
-typedef void __stdcall __stdcall FunctionTailcall3WithInfo( 
+typedef void FunctionTailcall3WithInfo( 
     FunctionIDOrClientID functionIDOrClientID,
     COR_PRF_ELT_INFO eltInfo);
 
@@ -455,6 +484,11 @@ typedef HRESULT __stdcall __stdcall StackSnapshotCallback(
     COR_PRF_FRAME_INFO frameInfo,
     ULONG32 contextSize,
     BYTE context[  ],
+    void *clientData);
+
+typedef BOOL ObjectReferenceCallback( 
+    ObjectID root,
+    ObjectID *reference,
     void *clientData);
 
 typedef /* [public] */ 
@@ -496,8 +530,8 @@ enum __MIDL___MIDL_itf_corprof_0000_0000_0005
         COR_PRF_DISABLE_ALL_NGEN_IMAGES	= 0x80000000,
         COR_PRF_ALL	= 0x8fffffff,
         COR_PRF_REQUIRE_PROFILE_IMAGE	= ( ( COR_PRF_USE_PROFILE_IMAGES | COR_PRF_MONITOR_CODE_TRANSITIONS )  | COR_PRF_MONITOR_ENTERLEAVE ) ,
-        COR_PRF_ALLOWABLE_AFTER_ATTACH	= ( ( ( ( ( ( ( ( ( COR_PRF_MONITOR_THREADS | COR_PRF_MONITOR_MODULE_LOADS )  | COR_PRF_MONITOR_ASSEMBLY_LOADS )  | COR_PRF_MONITOR_APPDOMAIN_LOADS )  | COR_PRF_ENABLE_STACK_SNAPSHOT )  | COR_PRF_MONITOR_GC )  | COR_PRF_MONITOR_SUSPENDS )  | COR_PRF_MONITOR_CLASS_LOADS )  | COR_PRF_MONITOR_EXCEPTIONS )  | COR_PRF_MONITOR_JIT_COMPILATION ) ,
-        COR_PRF_MONITOR_IMMUTABLE	= ( ( ( ( ( ( ( ( ( ( ( ( ( ( ( COR_PRF_MONITOR_CODE_TRANSITIONS | COR_PRF_MONITOR_REMOTING )  | COR_PRF_MONITOR_REMOTING_COOKIE )  | COR_PRF_MONITOR_REMOTING_ASYNC )  | COR_PRF_ENABLE_REJIT )  | COR_PRF_ENABLE_INPROC_DEBUGGING )  | COR_PRF_ENABLE_JIT_MAPS )  | COR_PRF_DISABLE_OPTIMIZATIONS )  | COR_PRF_DISABLE_INLINING )  | COR_PRF_ENABLE_OBJECT_ALLOCATED )  | COR_PRF_ENABLE_FUNCTION_ARGS )  | COR_PRF_ENABLE_FUNCTION_RETVAL )  | COR_PRF_ENABLE_FRAME_INFO )  | COR_PRF_USE_PROFILE_IMAGES )  | COR_PRF_DISABLE_TRANSPARENCY_CHECKS_UNDER_FULL_TRUST )  | COR_PRF_DISABLE_ALL_NGEN_IMAGES ) 
+        COR_PRF_ALLOWABLE_AFTER_ATTACH	= ( ( ( ( ( ( ( ( ( ( COR_PRF_MONITOR_THREADS | COR_PRF_MONITOR_MODULE_LOADS )  | COR_PRF_MONITOR_ASSEMBLY_LOADS )  | COR_PRF_MONITOR_APPDOMAIN_LOADS )  | COR_PRF_ENABLE_STACK_SNAPSHOT )  | COR_PRF_MONITOR_GC )  | COR_PRF_MONITOR_SUSPENDS )  | COR_PRF_MONITOR_CLASS_LOADS )  | COR_PRF_MONITOR_EXCEPTIONS )  | COR_PRF_MONITOR_JIT_COMPILATION )  | COR_PRF_ENABLE_REJIT ) ,
+        COR_PRF_MONITOR_IMMUTABLE	= ( ( ( ( ( ( ( ( ( ( ( ( ( ( COR_PRF_MONITOR_CODE_TRANSITIONS | COR_PRF_MONITOR_REMOTING )  | COR_PRF_MONITOR_REMOTING_COOKIE )  | COR_PRF_MONITOR_REMOTING_ASYNC )  | COR_PRF_ENABLE_INPROC_DEBUGGING )  | COR_PRF_ENABLE_JIT_MAPS )  | COR_PRF_DISABLE_OPTIMIZATIONS )  | COR_PRF_DISABLE_INLINING )  | COR_PRF_ENABLE_OBJECT_ALLOCATED )  | COR_PRF_ENABLE_FUNCTION_ARGS )  | COR_PRF_ENABLE_FUNCTION_RETVAL )  | COR_PRF_ENABLE_FRAME_INFO )  | COR_PRF_USE_PROFILE_IMAGES )  | COR_PRF_DISABLE_TRANSPARENCY_CHECKS_UNDER_FULL_TRUST )  | COR_PRF_DISABLE_ALL_NGEN_IMAGES ) 
     } 	COR_PRF_MONITOR;
 
 typedef /* [public] */ 
@@ -506,9 +540,14 @@ enum __MIDL___MIDL_itf_corprof_0000_0000_0006
         COR_PRF_HIGH_MONITOR_NONE	= 0,
         COR_PRF_HIGH_ADD_ASSEMBLY_REFERENCES	= 0x1,
         COR_PRF_HIGH_IN_MEMORY_SYMBOLS_UPDATED	= 0x2,
+        COR_PRF_HIGH_MONITOR_DYNAMIC_FUNCTION_UNLOADS	= 0x4,
+        COR_PRF_HIGH_DISABLE_TIERED_COMPILATION	= 0x8,
+        COR_PRF_HIGH_BASIC_GC	= 0x10,
+        COR_PRF_HIGH_MONITOR_GC_MOVED_OBJECTS	= 0x20,
         COR_PRF_HIGH_REQUIRE_PROFILE_IMAGE	= 0,
-        COR_PRF_HIGH_ALLOWABLE_AFTER_ATTACH	= COR_PRF_HIGH_IN_MEMORY_SYMBOLS_UPDATED,
-        COR_PRF_HIGH_MONITOR_IMMUTABLE	= 0
+        COR_PRF_HIGH_MONITOR_LARGEOBJECT_ALLOCATED	= 0x40,
+        COR_PRF_HIGH_ALLOWABLE_AFTER_ATTACH	= ( ( ( ( COR_PRF_HIGH_IN_MEMORY_SYMBOLS_UPDATED | COR_PRF_HIGH_MONITOR_DYNAMIC_FUNCTION_UNLOADS )  | COR_PRF_HIGH_BASIC_GC )  | COR_PRF_HIGH_MONITOR_GC_MOVED_OBJECTS )  | COR_PRF_HIGH_MONITOR_LARGEOBJECT_ALLOCATED ) ,
+        COR_PRF_HIGH_MONITOR_IMMUTABLE	= COR_PRF_HIGH_DISABLE_TIERED_COMPILATION
     } 	COR_PRF_HIGH_MONITOR;
 
 typedef /* [public] */ 
@@ -543,7 +582,8 @@ enum __MIDL___MIDL_itf_corprof_0000_0000_0010
         COR_PRF_SUSPEND_FOR_SHUTDOWN	= 4,
         COR_PRF_SUSPEND_FOR_INPROC_DEBUGGER	= 6,
         COR_PRF_SUSPEND_FOR_GC_PREP	= 7,
-        COR_PRF_SUSPEND_FOR_REJIT	= 8
+        COR_PRF_SUSPEND_FOR_REJIT	= 8,
+        COR_PRF_SUSPEND_FOR_PROFILER	= 9
     } 	COR_PRF_SUSPEND_REASON;
 
 typedef /* [public][public] */ 
@@ -552,6 +592,13 @@ enum __MIDL___MIDL_itf_corprof_0000_0000_0011
         COR_PRF_DESKTOP_CLR	= 0x1,
         COR_PRF_CORE_CLR	= 0x2
     } 	COR_PRF_RUNTIME_TYPE;
+
+typedef /* [public] */ 
+enum __MIDL___MIDL_itf_corprof_0000_0000_0012
+    {
+        COR_PRF_REJIT_BLOCK_INLINING	= 0x1,
+        COR_PRF_REJIT_INLINING_CALLBACKS	= 0x2
+    } 	COR_PRF_REJIT_FLAGS;
 
 
 
@@ -6611,11 +6658,795 @@ EXTERN_C const IID IID_ICorProfilerCallback8;
 #endif 	/* __ICorProfilerCallback8_INTERFACE_DEFINED__ */
 
 
-/* interface __MIDL_itf_corprof_0000_0008 */
+#ifndef __ICorProfilerCallback9_INTERFACE_DEFINED__
+#define __ICorProfilerCallback9_INTERFACE_DEFINED__
+
+/* interface ICorProfilerCallback9 */
+/* [local][unique][uuid][object] */ 
+
+
+EXTERN_C const IID IID_ICorProfilerCallback9;
+
+#if defined(__cplusplus) && !defined(CINTERFACE)
+    
+    MIDL_INTERFACE("27583EC3-C8F5-482F-8052-194B8CE4705A")
+    ICorProfilerCallback9 : public ICorProfilerCallback8
+    {
+    public:
+        virtual HRESULT STDMETHODCALLTYPE DynamicMethodUnloaded( 
+            /* [in] */ FunctionID functionId) = 0;
+        
+    };
+    
+    
+#else 	/* C style interface */
+
+    typedef struct ICorProfilerCallback9Vtbl
+    {
+        BEGIN_INTERFACE
+        
+        HRESULT ( STDMETHODCALLTYPE *QueryInterface )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ REFIID riid,
+            /* [annotation][iid_is][out] */ 
+            _COM_Outptr_  void **ppvObject);
+        
+        ULONG ( STDMETHODCALLTYPE *AddRef )( 
+            ICorProfilerCallback9 * This);
+        
+        ULONG ( STDMETHODCALLTYPE *Release )( 
+            ICorProfilerCallback9 * This);
+        
+        HRESULT ( STDMETHODCALLTYPE *Initialize )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ IUnknown *pICorProfilerInfoUnk);
+        
+        HRESULT ( STDMETHODCALLTYPE *Shutdown )( 
+            ICorProfilerCallback9 * This);
+        
+        HRESULT ( STDMETHODCALLTYPE *AppDomainCreationStarted )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ AppDomainID appDomainId);
+        
+        HRESULT ( STDMETHODCALLTYPE *AppDomainCreationFinished )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ AppDomainID appDomainId,
+            /* [in] */ HRESULT hrStatus);
+        
+        HRESULT ( STDMETHODCALLTYPE *AppDomainShutdownStarted )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ AppDomainID appDomainId);
+        
+        HRESULT ( STDMETHODCALLTYPE *AppDomainShutdownFinished )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ AppDomainID appDomainId,
+            /* [in] */ HRESULT hrStatus);
+        
+        HRESULT ( STDMETHODCALLTYPE *AssemblyLoadStarted )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ AssemblyID assemblyId);
+        
+        HRESULT ( STDMETHODCALLTYPE *AssemblyLoadFinished )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ AssemblyID assemblyId,
+            /* [in] */ HRESULT hrStatus);
+        
+        HRESULT ( STDMETHODCALLTYPE *AssemblyUnloadStarted )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ AssemblyID assemblyId);
+        
+        HRESULT ( STDMETHODCALLTYPE *AssemblyUnloadFinished )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ AssemblyID assemblyId,
+            /* [in] */ HRESULT hrStatus);
+        
+        HRESULT ( STDMETHODCALLTYPE *ModuleLoadStarted )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ ModuleID moduleId);
+        
+        HRESULT ( STDMETHODCALLTYPE *ModuleLoadFinished )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ ModuleID moduleId,
+            /* [in] */ HRESULT hrStatus);
+        
+        HRESULT ( STDMETHODCALLTYPE *ModuleUnloadStarted )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ ModuleID moduleId);
+        
+        HRESULT ( STDMETHODCALLTYPE *ModuleUnloadFinished )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ ModuleID moduleId,
+            /* [in] */ HRESULT hrStatus);
+        
+        HRESULT ( STDMETHODCALLTYPE *ModuleAttachedToAssembly )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ ModuleID moduleId,
+            /* [in] */ AssemblyID AssemblyId);
+        
+        HRESULT ( STDMETHODCALLTYPE *ClassLoadStarted )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ ClassID classId);
+        
+        HRESULT ( STDMETHODCALLTYPE *ClassLoadFinished )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ ClassID classId,
+            /* [in] */ HRESULT hrStatus);
+        
+        HRESULT ( STDMETHODCALLTYPE *ClassUnloadStarted )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ ClassID classId);
+        
+        HRESULT ( STDMETHODCALLTYPE *ClassUnloadFinished )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ ClassID classId,
+            /* [in] */ HRESULT hrStatus);
+        
+        HRESULT ( STDMETHODCALLTYPE *FunctionUnloadStarted )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ FunctionID functionId);
+        
+        HRESULT ( STDMETHODCALLTYPE *JITCompilationStarted )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ FunctionID functionId,
+            /* [in] */ BOOL fIsSafeToBlock);
+        
+        HRESULT ( STDMETHODCALLTYPE *JITCompilationFinished )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ FunctionID functionId,
+            /* [in] */ HRESULT hrStatus,
+            /* [in] */ BOOL fIsSafeToBlock);
+        
+        HRESULT ( STDMETHODCALLTYPE *JITCachedFunctionSearchStarted )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ FunctionID functionId,
+            /* [out] */ BOOL *pbUseCachedFunction);
+        
+        HRESULT ( STDMETHODCALLTYPE *JITCachedFunctionSearchFinished )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ FunctionID functionId,
+            /* [in] */ COR_PRF_JIT_CACHE result);
+        
+        HRESULT ( STDMETHODCALLTYPE *JITFunctionPitched )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ FunctionID functionId);
+        
+        HRESULT ( STDMETHODCALLTYPE *JITInlining )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ FunctionID callerId,
+            /* [in] */ FunctionID calleeId,
+            /* [out] */ BOOL *pfShouldInline);
+        
+        HRESULT ( STDMETHODCALLTYPE *ThreadCreated )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ ThreadID threadId);
+        
+        HRESULT ( STDMETHODCALLTYPE *ThreadDestroyed )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ ThreadID threadId);
+        
+        HRESULT ( STDMETHODCALLTYPE *ThreadAssignedToOSThread )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ ThreadID managedThreadId,
+            /* [in] */ DWORD osThreadId);
+        
+        HRESULT ( STDMETHODCALLTYPE *RemotingClientInvocationStarted )( 
+            ICorProfilerCallback9 * This);
+        
+        HRESULT ( STDMETHODCALLTYPE *RemotingClientSendingMessage )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ GUID *pCookie,
+            /* [in] */ BOOL fIsAsync);
+        
+        HRESULT ( STDMETHODCALLTYPE *RemotingClientReceivingReply )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ GUID *pCookie,
+            /* [in] */ BOOL fIsAsync);
+        
+        HRESULT ( STDMETHODCALLTYPE *RemotingClientInvocationFinished )( 
+            ICorProfilerCallback9 * This);
+        
+        HRESULT ( STDMETHODCALLTYPE *RemotingServerReceivingMessage )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ GUID *pCookie,
+            /* [in] */ BOOL fIsAsync);
+        
+        HRESULT ( STDMETHODCALLTYPE *RemotingServerInvocationStarted )( 
+            ICorProfilerCallback9 * This);
+        
+        HRESULT ( STDMETHODCALLTYPE *RemotingServerInvocationReturned )( 
+            ICorProfilerCallback9 * This);
+        
+        HRESULT ( STDMETHODCALLTYPE *RemotingServerSendingReply )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ GUID *pCookie,
+            /* [in] */ BOOL fIsAsync);
+        
+        HRESULT ( STDMETHODCALLTYPE *UnmanagedToManagedTransition )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ FunctionID functionId,
+            /* [in] */ COR_PRF_TRANSITION_REASON reason);
+        
+        HRESULT ( STDMETHODCALLTYPE *ManagedToUnmanagedTransition )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ FunctionID functionId,
+            /* [in] */ COR_PRF_TRANSITION_REASON reason);
+        
+        HRESULT ( STDMETHODCALLTYPE *RuntimeSuspendStarted )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ COR_PRF_SUSPEND_REASON suspendReason);
+        
+        HRESULT ( STDMETHODCALLTYPE *RuntimeSuspendFinished )( 
+            ICorProfilerCallback9 * This);
+        
+        HRESULT ( STDMETHODCALLTYPE *RuntimeSuspendAborted )( 
+            ICorProfilerCallback9 * This);
+        
+        HRESULT ( STDMETHODCALLTYPE *RuntimeResumeStarted )( 
+            ICorProfilerCallback9 * This);
+        
+        HRESULT ( STDMETHODCALLTYPE *RuntimeResumeFinished )( 
+            ICorProfilerCallback9 * This);
+        
+        HRESULT ( STDMETHODCALLTYPE *RuntimeThreadSuspended )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ ThreadID threadId);
+        
+        HRESULT ( STDMETHODCALLTYPE *RuntimeThreadResumed )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ ThreadID threadId);
+        
+        HRESULT ( STDMETHODCALLTYPE *MovedReferences )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ ULONG cMovedObjectIDRanges,
+            /* [size_is][in] */ ObjectID oldObjectIDRangeStart[  ],
+            /* [size_is][in] */ ObjectID newObjectIDRangeStart[  ],
+            /* [size_is][in] */ ULONG cObjectIDRangeLength[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *ObjectAllocated )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ ObjectID objectId,
+            /* [in] */ ClassID classId);
+        
+        HRESULT ( STDMETHODCALLTYPE *ObjectsAllocatedByClass )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ ULONG cClassCount,
+            /* [size_is][in] */ ClassID classIds[  ],
+            /* [size_is][in] */ ULONG cObjects[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *ObjectReferences )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ ObjectID objectId,
+            /* [in] */ ClassID classId,
+            /* [in] */ ULONG cObjectRefs,
+            /* [size_is][in] */ ObjectID objectRefIds[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *RootReferences )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ ULONG cRootRefs,
+            /* [size_is][in] */ ObjectID rootRefIds[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *ExceptionThrown )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ ObjectID thrownObjectId);
+        
+        HRESULT ( STDMETHODCALLTYPE *ExceptionSearchFunctionEnter )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ FunctionID functionId);
+        
+        HRESULT ( STDMETHODCALLTYPE *ExceptionSearchFunctionLeave )( 
+            ICorProfilerCallback9 * This);
+        
+        HRESULT ( STDMETHODCALLTYPE *ExceptionSearchFilterEnter )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ FunctionID functionId);
+        
+        HRESULT ( STDMETHODCALLTYPE *ExceptionSearchFilterLeave )( 
+            ICorProfilerCallback9 * This);
+        
+        HRESULT ( STDMETHODCALLTYPE *ExceptionSearchCatcherFound )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ FunctionID functionId);
+        
+        HRESULT ( STDMETHODCALLTYPE *ExceptionOSHandlerEnter )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ UINT_PTR __unused);
+        
+        HRESULT ( STDMETHODCALLTYPE *ExceptionOSHandlerLeave )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ UINT_PTR __unused);
+        
+        HRESULT ( STDMETHODCALLTYPE *ExceptionUnwindFunctionEnter )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ FunctionID functionId);
+        
+        HRESULT ( STDMETHODCALLTYPE *ExceptionUnwindFunctionLeave )( 
+            ICorProfilerCallback9 * This);
+        
+        HRESULT ( STDMETHODCALLTYPE *ExceptionUnwindFinallyEnter )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ FunctionID functionId);
+        
+        HRESULT ( STDMETHODCALLTYPE *ExceptionUnwindFinallyLeave )( 
+            ICorProfilerCallback9 * This);
+        
+        HRESULT ( STDMETHODCALLTYPE *ExceptionCatcherEnter )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ FunctionID functionId,
+            /* [in] */ ObjectID objectId);
+        
+        HRESULT ( STDMETHODCALLTYPE *ExceptionCatcherLeave )( 
+            ICorProfilerCallback9 * This);
+        
+        HRESULT ( STDMETHODCALLTYPE *COMClassicVTableCreated )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ ClassID wrappedClassId,
+            /* [in] */ REFGUID implementedIID,
+            /* [in] */ void *pVTable,
+            /* [in] */ ULONG cSlots);
+        
+        HRESULT ( STDMETHODCALLTYPE *COMClassicVTableDestroyed )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ ClassID wrappedClassId,
+            /* [in] */ REFGUID implementedIID,
+            /* [in] */ void *pVTable);
+        
+        HRESULT ( STDMETHODCALLTYPE *ExceptionCLRCatcherFound )( 
+            ICorProfilerCallback9 * This);
+        
+        HRESULT ( STDMETHODCALLTYPE *ExceptionCLRCatcherExecute )( 
+            ICorProfilerCallback9 * This);
+        
+        HRESULT ( STDMETHODCALLTYPE *ThreadNameChanged )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ ThreadID threadId,
+            /* [in] */ ULONG cchName,
+            /* [annotation][in] */ 
+            _In_reads_opt_(cchName)  WCHAR name[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *GarbageCollectionStarted )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ int cGenerations,
+            /* [size_is][in] */ BOOL generationCollected[  ],
+            /* [in] */ COR_PRF_GC_REASON reason);
+        
+        HRESULT ( STDMETHODCALLTYPE *SurvivingReferences )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ ULONG cSurvivingObjectIDRanges,
+            /* [size_is][in] */ ObjectID objectIDRangeStart[  ],
+            /* [size_is][in] */ ULONG cObjectIDRangeLength[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *GarbageCollectionFinished )( 
+            ICorProfilerCallback9 * This);
+        
+        HRESULT ( STDMETHODCALLTYPE *FinalizeableObjectQueued )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ DWORD finalizerFlags,
+            /* [in] */ ObjectID objectID);
+        
+        HRESULT ( STDMETHODCALLTYPE *RootReferences2 )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ ULONG cRootRefs,
+            /* [size_is][in] */ ObjectID rootRefIds[  ],
+            /* [size_is][in] */ COR_PRF_GC_ROOT_KIND rootKinds[  ],
+            /* [size_is][in] */ COR_PRF_GC_ROOT_FLAGS rootFlags[  ],
+            /* [size_is][in] */ UINT_PTR rootIds[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *HandleCreated )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ GCHandleID handleId,
+            /* [in] */ ObjectID initialObjectId);
+        
+        HRESULT ( STDMETHODCALLTYPE *HandleDestroyed )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ GCHandleID handleId);
+        
+        HRESULT ( STDMETHODCALLTYPE *InitializeForAttach )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ IUnknown *pCorProfilerInfoUnk,
+            /* [in] */ void *pvClientData,
+            /* [in] */ UINT cbClientData);
+        
+        HRESULT ( STDMETHODCALLTYPE *ProfilerAttachComplete )( 
+            ICorProfilerCallback9 * This);
+        
+        HRESULT ( STDMETHODCALLTYPE *ProfilerDetachSucceeded )( 
+            ICorProfilerCallback9 * This);
+        
+        HRESULT ( STDMETHODCALLTYPE *ReJITCompilationStarted )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ FunctionID functionId,
+            /* [in] */ ReJITID rejitId,
+            /* [in] */ BOOL fIsSafeToBlock);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetReJITParameters )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ ModuleID moduleId,
+            /* [in] */ mdMethodDef methodId,
+            /* [in] */ ICorProfilerFunctionControl *pFunctionControl);
+        
+        HRESULT ( STDMETHODCALLTYPE *ReJITCompilationFinished )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ FunctionID functionId,
+            /* [in] */ ReJITID rejitId,
+            /* [in] */ HRESULT hrStatus,
+            /* [in] */ BOOL fIsSafeToBlock);
+        
+        HRESULT ( STDMETHODCALLTYPE *ReJITError )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ ModuleID moduleId,
+            /* [in] */ mdMethodDef methodId,
+            /* [in] */ FunctionID functionId,
+            /* [in] */ HRESULT hrStatus);
+        
+        HRESULT ( STDMETHODCALLTYPE *MovedReferences2 )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ ULONG cMovedObjectIDRanges,
+            /* [size_is][in] */ ObjectID oldObjectIDRangeStart[  ],
+            /* [size_is][in] */ ObjectID newObjectIDRangeStart[  ],
+            /* [size_is][in] */ SIZE_T cObjectIDRangeLength[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *SurvivingReferences2 )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ ULONG cSurvivingObjectIDRanges,
+            /* [size_is][in] */ ObjectID objectIDRangeStart[  ],
+            /* [size_is][in] */ SIZE_T cObjectIDRangeLength[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *ConditionalWeakTableElementReferences )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ ULONG cRootRefs,
+            /* [size_is][in] */ ObjectID keyRefIds[  ],
+            /* [size_is][in] */ ObjectID valueRefIds[  ],
+            /* [size_is][in] */ GCHandleID rootIds[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetAssemblyReferences )( 
+            ICorProfilerCallback9 * This,
+            /* [string][in] */ const WCHAR *wszAssemblyPath,
+            /* [in] */ ICorProfilerAssemblyReferenceProvider *pAsmRefProvider);
+        
+        HRESULT ( STDMETHODCALLTYPE *ModuleInMemorySymbolsUpdated )( 
+            ICorProfilerCallback9 * This,
+            ModuleID moduleId);
+        
+        HRESULT ( STDMETHODCALLTYPE *DynamicMethodJITCompilationStarted )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ FunctionID functionId,
+            /* [in] */ BOOL fIsSafeToBlock,
+            /* [in] */ LPCBYTE pILHeader,
+            /* [in] */ ULONG cbILHeader);
+        
+        HRESULT ( STDMETHODCALLTYPE *DynamicMethodJITCompilationFinished )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ FunctionID functionId,
+            /* [in] */ HRESULT hrStatus,
+            /* [in] */ BOOL fIsSafeToBlock);
+        
+        HRESULT ( STDMETHODCALLTYPE *DynamicMethodUnloaded )( 
+            ICorProfilerCallback9 * This,
+            /* [in] */ FunctionID functionId);
+        
+        END_INTERFACE
+    } ICorProfilerCallback9Vtbl;
+
+    interface ICorProfilerCallback9
+    {
+        CONST_VTBL struct ICorProfilerCallback9Vtbl *lpVtbl;
+    };
+
+    
+
+#ifdef COBJMACROS
+
+
+#define ICorProfilerCallback9_QueryInterface(This,riid,ppvObject)	\
+    ( (This)->lpVtbl -> QueryInterface(This,riid,ppvObject) ) 
+
+#define ICorProfilerCallback9_AddRef(This)	\
+    ( (This)->lpVtbl -> AddRef(This) ) 
+
+#define ICorProfilerCallback9_Release(This)	\
+    ( (This)->lpVtbl -> Release(This) ) 
+
+
+#define ICorProfilerCallback9_Initialize(This,pICorProfilerInfoUnk)	\
+    ( (This)->lpVtbl -> Initialize(This,pICorProfilerInfoUnk) ) 
+
+#define ICorProfilerCallback9_Shutdown(This)	\
+    ( (This)->lpVtbl -> Shutdown(This) ) 
+
+#define ICorProfilerCallback9_AppDomainCreationStarted(This,appDomainId)	\
+    ( (This)->lpVtbl -> AppDomainCreationStarted(This,appDomainId) ) 
+
+#define ICorProfilerCallback9_AppDomainCreationFinished(This,appDomainId,hrStatus)	\
+    ( (This)->lpVtbl -> AppDomainCreationFinished(This,appDomainId,hrStatus) ) 
+
+#define ICorProfilerCallback9_AppDomainShutdownStarted(This,appDomainId)	\
+    ( (This)->lpVtbl -> AppDomainShutdownStarted(This,appDomainId) ) 
+
+#define ICorProfilerCallback9_AppDomainShutdownFinished(This,appDomainId,hrStatus)	\
+    ( (This)->lpVtbl -> AppDomainShutdownFinished(This,appDomainId,hrStatus) ) 
+
+#define ICorProfilerCallback9_AssemblyLoadStarted(This,assemblyId)	\
+    ( (This)->lpVtbl -> AssemblyLoadStarted(This,assemblyId) ) 
+
+#define ICorProfilerCallback9_AssemblyLoadFinished(This,assemblyId,hrStatus)	\
+    ( (This)->lpVtbl -> AssemblyLoadFinished(This,assemblyId,hrStatus) ) 
+
+#define ICorProfilerCallback9_AssemblyUnloadStarted(This,assemblyId)	\
+    ( (This)->lpVtbl -> AssemblyUnloadStarted(This,assemblyId) ) 
+
+#define ICorProfilerCallback9_AssemblyUnloadFinished(This,assemblyId,hrStatus)	\
+    ( (This)->lpVtbl -> AssemblyUnloadFinished(This,assemblyId,hrStatus) ) 
+
+#define ICorProfilerCallback9_ModuleLoadStarted(This,moduleId)	\
+    ( (This)->lpVtbl -> ModuleLoadStarted(This,moduleId) ) 
+
+#define ICorProfilerCallback9_ModuleLoadFinished(This,moduleId,hrStatus)	\
+    ( (This)->lpVtbl -> ModuleLoadFinished(This,moduleId,hrStatus) ) 
+
+#define ICorProfilerCallback9_ModuleUnloadStarted(This,moduleId)	\
+    ( (This)->lpVtbl -> ModuleUnloadStarted(This,moduleId) ) 
+
+#define ICorProfilerCallback9_ModuleUnloadFinished(This,moduleId,hrStatus)	\
+    ( (This)->lpVtbl -> ModuleUnloadFinished(This,moduleId,hrStatus) ) 
+
+#define ICorProfilerCallback9_ModuleAttachedToAssembly(This,moduleId,AssemblyId)	\
+    ( (This)->lpVtbl -> ModuleAttachedToAssembly(This,moduleId,AssemblyId) ) 
+
+#define ICorProfilerCallback9_ClassLoadStarted(This,classId)	\
+    ( (This)->lpVtbl -> ClassLoadStarted(This,classId) ) 
+
+#define ICorProfilerCallback9_ClassLoadFinished(This,classId,hrStatus)	\
+    ( (This)->lpVtbl -> ClassLoadFinished(This,classId,hrStatus) ) 
+
+#define ICorProfilerCallback9_ClassUnloadStarted(This,classId)	\
+    ( (This)->lpVtbl -> ClassUnloadStarted(This,classId) ) 
+
+#define ICorProfilerCallback9_ClassUnloadFinished(This,classId,hrStatus)	\
+    ( (This)->lpVtbl -> ClassUnloadFinished(This,classId,hrStatus) ) 
+
+#define ICorProfilerCallback9_FunctionUnloadStarted(This,functionId)	\
+    ( (This)->lpVtbl -> FunctionUnloadStarted(This,functionId) ) 
+
+#define ICorProfilerCallback9_JITCompilationStarted(This,functionId,fIsSafeToBlock)	\
+    ( (This)->lpVtbl -> JITCompilationStarted(This,functionId,fIsSafeToBlock) ) 
+
+#define ICorProfilerCallback9_JITCompilationFinished(This,functionId,hrStatus,fIsSafeToBlock)	\
+    ( (This)->lpVtbl -> JITCompilationFinished(This,functionId,hrStatus,fIsSafeToBlock) ) 
+
+#define ICorProfilerCallback9_JITCachedFunctionSearchStarted(This,functionId,pbUseCachedFunction)	\
+    ( (This)->lpVtbl -> JITCachedFunctionSearchStarted(This,functionId,pbUseCachedFunction) ) 
+
+#define ICorProfilerCallback9_JITCachedFunctionSearchFinished(This,functionId,result)	\
+    ( (This)->lpVtbl -> JITCachedFunctionSearchFinished(This,functionId,result) ) 
+
+#define ICorProfilerCallback9_JITFunctionPitched(This,functionId)	\
+    ( (This)->lpVtbl -> JITFunctionPitched(This,functionId) ) 
+
+#define ICorProfilerCallback9_JITInlining(This,callerId,calleeId,pfShouldInline)	\
+    ( (This)->lpVtbl -> JITInlining(This,callerId,calleeId,pfShouldInline) ) 
+
+#define ICorProfilerCallback9_ThreadCreated(This,threadId)	\
+    ( (This)->lpVtbl -> ThreadCreated(This,threadId) ) 
+
+#define ICorProfilerCallback9_ThreadDestroyed(This,threadId)	\
+    ( (This)->lpVtbl -> ThreadDestroyed(This,threadId) ) 
+
+#define ICorProfilerCallback9_ThreadAssignedToOSThread(This,managedThreadId,osThreadId)	\
+    ( (This)->lpVtbl -> ThreadAssignedToOSThread(This,managedThreadId,osThreadId) ) 
+
+#define ICorProfilerCallback9_RemotingClientInvocationStarted(This)	\
+    ( (This)->lpVtbl -> RemotingClientInvocationStarted(This) ) 
+
+#define ICorProfilerCallback9_RemotingClientSendingMessage(This,pCookie,fIsAsync)	\
+    ( (This)->lpVtbl -> RemotingClientSendingMessage(This,pCookie,fIsAsync) ) 
+
+#define ICorProfilerCallback9_RemotingClientReceivingReply(This,pCookie,fIsAsync)	\
+    ( (This)->lpVtbl -> RemotingClientReceivingReply(This,pCookie,fIsAsync) ) 
+
+#define ICorProfilerCallback9_RemotingClientInvocationFinished(This)	\
+    ( (This)->lpVtbl -> RemotingClientInvocationFinished(This) ) 
+
+#define ICorProfilerCallback9_RemotingServerReceivingMessage(This,pCookie,fIsAsync)	\
+    ( (This)->lpVtbl -> RemotingServerReceivingMessage(This,pCookie,fIsAsync) ) 
+
+#define ICorProfilerCallback9_RemotingServerInvocationStarted(This)	\
+    ( (This)->lpVtbl -> RemotingServerInvocationStarted(This) ) 
+
+#define ICorProfilerCallback9_RemotingServerInvocationReturned(This)	\
+    ( (This)->lpVtbl -> RemotingServerInvocationReturned(This) ) 
+
+#define ICorProfilerCallback9_RemotingServerSendingReply(This,pCookie,fIsAsync)	\
+    ( (This)->lpVtbl -> RemotingServerSendingReply(This,pCookie,fIsAsync) ) 
+
+#define ICorProfilerCallback9_UnmanagedToManagedTransition(This,functionId,reason)	\
+    ( (This)->lpVtbl -> UnmanagedToManagedTransition(This,functionId,reason) ) 
+
+#define ICorProfilerCallback9_ManagedToUnmanagedTransition(This,functionId,reason)	\
+    ( (This)->lpVtbl -> ManagedToUnmanagedTransition(This,functionId,reason) ) 
+
+#define ICorProfilerCallback9_RuntimeSuspendStarted(This,suspendReason)	\
+    ( (This)->lpVtbl -> RuntimeSuspendStarted(This,suspendReason) ) 
+
+#define ICorProfilerCallback9_RuntimeSuspendFinished(This)	\
+    ( (This)->lpVtbl -> RuntimeSuspendFinished(This) ) 
+
+#define ICorProfilerCallback9_RuntimeSuspendAborted(This)	\
+    ( (This)->lpVtbl -> RuntimeSuspendAborted(This) ) 
+
+#define ICorProfilerCallback9_RuntimeResumeStarted(This)	\
+    ( (This)->lpVtbl -> RuntimeResumeStarted(This) ) 
+
+#define ICorProfilerCallback9_RuntimeResumeFinished(This)	\
+    ( (This)->lpVtbl -> RuntimeResumeFinished(This) ) 
+
+#define ICorProfilerCallback9_RuntimeThreadSuspended(This,threadId)	\
+    ( (This)->lpVtbl -> RuntimeThreadSuspended(This,threadId) ) 
+
+#define ICorProfilerCallback9_RuntimeThreadResumed(This,threadId)	\
+    ( (This)->lpVtbl -> RuntimeThreadResumed(This,threadId) ) 
+
+#define ICorProfilerCallback9_MovedReferences(This,cMovedObjectIDRanges,oldObjectIDRangeStart,newObjectIDRangeStart,cObjectIDRangeLength)	\
+    ( (This)->lpVtbl -> MovedReferences(This,cMovedObjectIDRanges,oldObjectIDRangeStart,newObjectIDRangeStart,cObjectIDRangeLength) ) 
+
+#define ICorProfilerCallback9_ObjectAllocated(This,objectId,classId)	\
+    ( (This)->lpVtbl -> ObjectAllocated(This,objectId,classId) ) 
+
+#define ICorProfilerCallback9_ObjectsAllocatedByClass(This,cClassCount,classIds,cObjects)	\
+    ( (This)->lpVtbl -> ObjectsAllocatedByClass(This,cClassCount,classIds,cObjects) ) 
+
+#define ICorProfilerCallback9_ObjectReferences(This,objectId,classId,cObjectRefs,objectRefIds)	\
+    ( (This)->lpVtbl -> ObjectReferences(This,objectId,classId,cObjectRefs,objectRefIds) ) 
+
+#define ICorProfilerCallback9_RootReferences(This,cRootRefs,rootRefIds)	\
+    ( (This)->lpVtbl -> RootReferences(This,cRootRefs,rootRefIds) ) 
+
+#define ICorProfilerCallback9_ExceptionThrown(This,thrownObjectId)	\
+    ( (This)->lpVtbl -> ExceptionThrown(This,thrownObjectId) ) 
+
+#define ICorProfilerCallback9_ExceptionSearchFunctionEnter(This,functionId)	\
+    ( (This)->lpVtbl -> ExceptionSearchFunctionEnter(This,functionId) ) 
+
+#define ICorProfilerCallback9_ExceptionSearchFunctionLeave(This)	\
+    ( (This)->lpVtbl -> ExceptionSearchFunctionLeave(This) ) 
+
+#define ICorProfilerCallback9_ExceptionSearchFilterEnter(This,functionId)	\
+    ( (This)->lpVtbl -> ExceptionSearchFilterEnter(This,functionId) ) 
+
+#define ICorProfilerCallback9_ExceptionSearchFilterLeave(This)	\
+    ( (This)->lpVtbl -> ExceptionSearchFilterLeave(This) ) 
+
+#define ICorProfilerCallback9_ExceptionSearchCatcherFound(This,functionId)	\
+    ( (This)->lpVtbl -> ExceptionSearchCatcherFound(This,functionId) ) 
+
+#define ICorProfilerCallback9_ExceptionOSHandlerEnter(This,__unused)	\
+    ( (This)->lpVtbl -> ExceptionOSHandlerEnter(This,__unused) ) 
+
+#define ICorProfilerCallback9_ExceptionOSHandlerLeave(This,__unused)	\
+    ( (This)->lpVtbl -> ExceptionOSHandlerLeave(This,__unused) ) 
+
+#define ICorProfilerCallback9_ExceptionUnwindFunctionEnter(This,functionId)	\
+    ( (This)->lpVtbl -> ExceptionUnwindFunctionEnter(This,functionId) ) 
+
+#define ICorProfilerCallback9_ExceptionUnwindFunctionLeave(This)	\
+    ( (This)->lpVtbl -> ExceptionUnwindFunctionLeave(This) ) 
+
+#define ICorProfilerCallback9_ExceptionUnwindFinallyEnter(This,functionId)	\
+    ( (This)->lpVtbl -> ExceptionUnwindFinallyEnter(This,functionId) ) 
+
+#define ICorProfilerCallback9_ExceptionUnwindFinallyLeave(This)	\
+    ( (This)->lpVtbl -> ExceptionUnwindFinallyLeave(This) ) 
+
+#define ICorProfilerCallback9_ExceptionCatcherEnter(This,functionId,objectId)	\
+    ( (This)->lpVtbl -> ExceptionCatcherEnter(This,functionId,objectId) ) 
+
+#define ICorProfilerCallback9_ExceptionCatcherLeave(This)	\
+    ( (This)->lpVtbl -> ExceptionCatcherLeave(This) ) 
+
+#define ICorProfilerCallback9_COMClassicVTableCreated(This,wrappedClassId,implementedIID,pVTable,cSlots)	\
+    ( (This)->lpVtbl -> COMClassicVTableCreated(This,wrappedClassId,implementedIID,pVTable,cSlots) ) 
+
+#define ICorProfilerCallback9_COMClassicVTableDestroyed(This,wrappedClassId,implementedIID,pVTable)	\
+    ( (This)->lpVtbl -> COMClassicVTableDestroyed(This,wrappedClassId,implementedIID,pVTable) ) 
+
+#define ICorProfilerCallback9_ExceptionCLRCatcherFound(This)	\
+    ( (This)->lpVtbl -> ExceptionCLRCatcherFound(This) ) 
+
+#define ICorProfilerCallback9_ExceptionCLRCatcherExecute(This)	\
+    ( (This)->lpVtbl -> ExceptionCLRCatcherExecute(This) ) 
+
+
+#define ICorProfilerCallback9_ThreadNameChanged(This,threadId,cchName,name)	\
+    ( (This)->lpVtbl -> ThreadNameChanged(This,threadId,cchName,name) ) 
+
+#define ICorProfilerCallback9_GarbageCollectionStarted(This,cGenerations,generationCollected,reason)	\
+    ( (This)->lpVtbl -> GarbageCollectionStarted(This,cGenerations,generationCollected,reason) ) 
+
+#define ICorProfilerCallback9_SurvivingReferences(This,cSurvivingObjectIDRanges,objectIDRangeStart,cObjectIDRangeLength)	\
+    ( (This)->lpVtbl -> SurvivingReferences(This,cSurvivingObjectIDRanges,objectIDRangeStart,cObjectIDRangeLength) ) 
+
+#define ICorProfilerCallback9_GarbageCollectionFinished(This)	\
+    ( (This)->lpVtbl -> GarbageCollectionFinished(This) ) 
+
+#define ICorProfilerCallback9_FinalizeableObjectQueued(This,finalizerFlags,objectID)	\
+    ( (This)->lpVtbl -> FinalizeableObjectQueued(This,finalizerFlags,objectID) ) 
+
+#define ICorProfilerCallback9_RootReferences2(This,cRootRefs,rootRefIds,rootKinds,rootFlags,rootIds)	\
+    ( (This)->lpVtbl -> RootReferences2(This,cRootRefs,rootRefIds,rootKinds,rootFlags,rootIds) ) 
+
+#define ICorProfilerCallback9_HandleCreated(This,handleId,initialObjectId)	\
+    ( (This)->lpVtbl -> HandleCreated(This,handleId,initialObjectId) ) 
+
+#define ICorProfilerCallback9_HandleDestroyed(This,handleId)	\
+    ( (This)->lpVtbl -> HandleDestroyed(This,handleId) ) 
+
+
+#define ICorProfilerCallback9_InitializeForAttach(This,pCorProfilerInfoUnk,pvClientData,cbClientData)	\
+    ( (This)->lpVtbl -> InitializeForAttach(This,pCorProfilerInfoUnk,pvClientData,cbClientData) ) 
+
+#define ICorProfilerCallback9_ProfilerAttachComplete(This)	\
+    ( (This)->lpVtbl -> ProfilerAttachComplete(This) ) 
+
+#define ICorProfilerCallback9_ProfilerDetachSucceeded(This)	\
+    ( (This)->lpVtbl -> ProfilerDetachSucceeded(This) ) 
+
+
+#define ICorProfilerCallback9_ReJITCompilationStarted(This,functionId,rejitId,fIsSafeToBlock)	\
+    ( (This)->lpVtbl -> ReJITCompilationStarted(This,functionId,rejitId,fIsSafeToBlock) ) 
+
+#define ICorProfilerCallback9_GetReJITParameters(This,moduleId,methodId,pFunctionControl)	\
+    ( (This)->lpVtbl -> GetReJITParameters(This,moduleId,methodId,pFunctionControl) ) 
+
+#define ICorProfilerCallback9_ReJITCompilationFinished(This,functionId,rejitId,hrStatus,fIsSafeToBlock)	\
+    ( (This)->lpVtbl -> ReJITCompilationFinished(This,functionId,rejitId,hrStatus,fIsSafeToBlock) ) 
+
+#define ICorProfilerCallback9_ReJITError(This,moduleId,methodId,functionId,hrStatus)	\
+    ( (This)->lpVtbl -> ReJITError(This,moduleId,methodId,functionId,hrStatus) ) 
+
+#define ICorProfilerCallback9_MovedReferences2(This,cMovedObjectIDRanges,oldObjectIDRangeStart,newObjectIDRangeStart,cObjectIDRangeLength)	\
+    ( (This)->lpVtbl -> MovedReferences2(This,cMovedObjectIDRanges,oldObjectIDRangeStart,newObjectIDRangeStart,cObjectIDRangeLength) ) 
+
+#define ICorProfilerCallback9_SurvivingReferences2(This,cSurvivingObjectIDRanges,objectIDRangeStart,cObjectIDRangeLength)	\
+    ( (This)->lpVtbl -> SurvivingReferences2(This,cSurvivingObjectIDRanges,objectIDRangeStart,cObjectIDRangeLength) ) 
+
+
+#define ICorProfilerCallback9_ConditionalWeakTableElementReferences(This,cRootRefs,keyRefIds,valueRefIds,rootIds)	\
+    ( (This)->lpVtbl -> ConditionalWeakTableElementReferences(This,cRootRefs,keyRefIds,valueRefIds,rootIds) ) 
+
+
+#define ICorProfilerCallback9_GetAssemblyReferences(This,wszAssemblyPath,pAsmRefProvider)	\
+    ( (This)->lpVtbl -> GetAssemblyReferences(This,wszAssemblyPath,pAsmRefProvider) ) 
+
+
+#define ICorProfilerCallback9_ModuleInMemorySymbolsUpdated(This,moduleId)	\
+    ( (This)->lpVtbl -> ModuleInMemorySymbolsUpdated(This,moduleId) ) 
+
+
+#define ICorProfilerCallback9_DynamicMethodJITCompilationStarted(This,functionId,fIsSafeToBlock,pILHeader,cbILHeader)	\
+    ( (This)->lpVtbl -> DynamicMethodJITCompilationStarted(This,functionId,fIsSafeToBlock,pILHeader,cbILHeader) ) 
+
+#define ICorProfilerCallback9_DynamicMethodJITCompilationFinished(This,functionId,hrStatus,fIsSafeToBlock)	\
+    ( (This)->lpVtbl -> DynamicMethodJITCompilationFinished(This,functionId,hrStatus,fIsSafeToBlock) ) 
+
+
+#define ICorProfilerCallback9_DynamicMethodUnloaded(This,functionId)	\
+    ( (This)->lpVtbl -> DynamicMethodUnloaded(This,functionId) ) 
+
+#endif /* COBJMACROS */
+
+
+#endif 	/* C style interface */
+
+
+
+
+#endif 	/* __ICorProfilerCallback9_INTERFACE_DEFINED__ */
+
+
+/* interface __MIDL_itf_corprof_0000_0009 */
 /* [local] */ 
 
 typedef /* [public] */ 
-enum __MIDL___MIDL_itf_corprof_0000_0008_0001
+enum __MIDL___MIDL_itf_corprof_0000_0009_0001
     {
         COR_PRF_CODEGEN_DISABLE_INLINING	= 0x1,
         COR_PRF_CODEGEN_DISABLE_ALL_OPTIMIZATIONS	= 0x2
@@ -6623,8 +7454,8 @@ enum __MIDL___MIDL_itf_corprof_0000_0008_0001
 
 
 
-extern RPC_IF_HANDLE __MIDL_itf_corprof_0000_0008_v0_0_c_ifspec;
-extern RPC_IF_HANDLE __MIDL_itf_corprof_0000_0008_v0_0_s_ifspec;
+extern RPC_IF_HANDLE __MIDL_itf_corprof_0000_0009_v0_0_c_ifspec;
+extern RPC_IF_HANDLE __MIDL_itf_corprof_0000_0009_v0_0_s_ifspec;
 
 #ifndef __ICorProfilerInfo_INTERFACE_DEFINED__
 #define __ICorProfilerInfo_INTERFACE_DEFINED__
@@ -13412,6 +14243,1918 @@ EXTERN_C const IID IID_ICorProfilerInfo8;
 
 
 #endif 	/* __ICorProfilerInfo8_INTERFACE_DEFINED__ */
+
+
+#ifndef __ICorProfilerInfo9_INTERFACE_DEFINED__
+#define __ICorProfilerInfo9_INTERFACE_DEFINED__
+
+/* interface ICorProfilerInfo9 */
+/* [local][unique][uuid][object] */ 
+
+
+EXTERN_C const IID IID_ICorProfilerInfo9;
+
+#if defined(__cplusplus) && !defined(CINTERFACE)
+    
+    MIDL_INTERFACE("008170DB-F8CC-4796-9A51-DC8AA0B47012")
+    ICorProfilerInfo9 : public ICorProfilerInfo8
+    {
+    public:
+        virtual HRESULT STDMETHODCALLTYPE GetNativeCodeStartAddresses( 
+            FunctionID functionID,
+            ReJITID reJitId,
+            ULONG32 cCodeStartAddresses,
+            ULONG32 *pcCodeStartAddresses,
+            UINT_PTR codeStartAddresses[  ]) = 0;
+        
+        virtual HRESULT STDMETHODCALLTYPE GetILToNativeMapping3( 
+            UINT_PTR pNativeCodeStartAddress,
+            ULONG32 cMap,
+            ULONG32 *pcMap,
+            COR_DEBUG_IL_TO_NATIVE_MAP map[  ]) = 0;
+        
+        virtual HRESULT STDMETHODCALLTYPE GetCodeInfo4( 
+            UINT_PTR pNativeCodeStartAddress,
+            ULONG32 cCodeInfos,
+            ULONG32 *pcCodeInfos,
+            COR_PRF_CODE_INFO codeInfos[  ]) = 0;
+        
+    };
+    
+    
+#else 	/* C style interface */
+
+    typedef struct ICorProfilerInfo9Vtbl
+    {
+        BEGIN_INTERFACE
+        
+        HRESULT ( STDMETHODCALLTYPE *QueryInterface )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ REFIID riid,
+            /* [annotation][iid_is][out] */ 
+            _COM_Outptr_  void **ppvObject);
+        
+        ULONG ( STDMETHODCALLTYPE *AddRef )( 
+            ICorProfilerInfo9 * This);
+        
+        ULONG ( STDMETHODCALLTYPE *Release )( 
+            ICorProfilerInfo9 * This);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetClassFromObject )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ObjectID objectId,
+            /* [out] */ ClassID *pClassId);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetClassFromToken )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ModuleID moduleId,
+            /* [in] */ mdTypeDef typeDef,
+            /* [out] */ ClassID *pClassId);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetCodeInfo )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ FunctionID functionId,
+            /* [out] */ LPCBYTE *pStart,
+            /* [out] */ ULONG *pcSize);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetEventMask )( 
+            ICorProfilerInfo9 * This,
+            /* [out] */ DWORD *pdwEvents);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetFunctionFromIP )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ LPCBYTE ip,
+            /* [out] */ FunctionID *pFunctionId);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetFunctionFromToken )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ModuleID moduleId,
+            /* [in] */ mdToken token,
+            /* [out] */ FunctionID *pFunctionId);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetHandleFromThread )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ThreadID threadId,
+            /* [out] */ HANDLE *phThread);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetObjectSize )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ObjectID objectId,
+            /* [out] */ ULONG *pcSize);
+        
+        HRESULT ( STDMETHODCALLTYPE *IsArrayClass )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ClassID classId,
+            /* [out] */ CorElementType *pBaseElemType,
+            /* [out] */ ClassID *pBaseClassId,
+            /* [out] */ ULONG *pcRank);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetThreadInfo )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ThreadID threadId,
+            /* [out] */ DWORD *pdwWin32ThreadId);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetCurrentThreadID )( 
+            ICorProfilerInfo9 * This,
+            /* [out] */ ThreadID *pThreadId);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetClassIDInfo )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ClassID classId,
+            /* [out] */ ModuleID *pModuleId,
+            /* [out] */ mdTypeDef *pTypeDefToken);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetFunctionInfo )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ FunctionID functionId,
+            /* [out] */ ClassID *pClassId,
+            /* [out] */ ModuleID *pModuleId,
+            /* [out] */ mdToken *pToken);
+        
+        HRESULT ( STDMETHODCALLTYPE *SetEventMask )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ DWORD dwEvents);
+        
+        HRESULT ( STDMETHODCALLTYPE *SetEnterLeaveFunctionHooks )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ FunctionEnter *pFuncEnter,
+            /* [in] */ FunctionLeave *pFuncLeave,
+            /* [in] */ FunctionTailcall *pFuncTailcall);
+        
+        HRESULT ( STDMETHODCALLTYPE *SetFunctionIDMapper )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ FunctionIDMapper *pFunc);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetTokenAndMetaDataFromFunction )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ FunctionID functionId,
+            /* [in] */ REFIID riid,
+            /* [out] */ IUnknown **ppImport,
+            /* [out] */ mdToken *pToken);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetModuleInfo )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ModuleID moduleId,
+            /* [out] */ LPCBYTE *ppBaseLoadAddress,
+            /* [in] */ ULONG cchName,
+            /* [out] */ ULONG *pcchName,
+            /* [annotation][out] */ 
+            _Out_writes_to_(cchName, *pcchName)  WCHAR szName[  ],
+            /* [out] */ AssemblyID *pAssemblyId);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetModuleMetaData )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ModuleID moduleId,
+            /* [in] */ DWORD dwOpenFlags,
+            /* [in] */ REFIID riid,
+            /* [out] */ IUnknown **ppOut);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetILFunctionBody )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ModuleID moduleId,
+            /* [in] */ mdMethodDef methodId,
+            /* [out] */ LPCBYTE *ppMethodHeader,
+            /* [out] */ ULONG *pcbMethodSize);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetILFunctionBodyAllocator )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ModuleID moduleId,
+            /* [out] */ IMethodMalloc **ppMalloc);
+        
+        HRESULT ( STDMETHODCALLTYPE *SetILFunctionBody )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ModuleID moduleId,
+            /* [in] */ mdMethodDef methodid,
+            /* [in] */ LPCBYTE pbNewILMethodHeader);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetAppDomainInfo )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ AppDomainID appDomainId,
+            /* [in] */ ULONG cchName,
+            /* [out] */ ULONG *pcchName,
+            /* [annotation][out] */ 
+            _Out_writes_to_(cchName, *pcchName)  WCHAR szName[  ],
+            /* [out] */ ProcessID *pProcessId);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetAssemblyInfo )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ AssemblyID assemblyId,
+            /* [in] */ ULONG cchName,
+            /* [out] */ ULONG *pcchName,
+            /* [annotation][out] */ 
+            _Out_writes_to_(cchName, *pcchName)  WCHAR szName[  ],
+            /* [out] */ AppDomainID *pAppDomainId,
+            /* [out] */ ModuleID *pModuleId);
+        
+        HRESULT ( STDMETHODCALLTYPE *SetFunctionReJIT )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ FunctionID functionId);
+        
+        HRESULT ( STDMETHODCALLTYPE *ForceGC )( 
+            ICorProfilerInfo9 * This);
+        
+        HRESULT ( STDMETHODCALLTYPE *SetILInstrumentedCodeMap )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ FunctionID functionId,
+            /* [in] */ BOOL fStartJit,
+            /* [in] */ ULONG cILMapEntries,
+            /* [size_is][in] */ COR_IL_MAP rgILMapEntries[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetInprocInspectionInterface )( 
+            ICorProfilerInfo9 * This,
+            /* [out] */ IUnknown **ppicd);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetInprocInspectionIThisThread )( 
+            ICorProfilerInfo9 * This,
+            /* [out] */ IUnknown **ppicd);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetThreadContext )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ThreadID threadId,
+            /* [out] */ ContextID *pContextId);
+        
+        HRESULT ( STDMETHODCALLTYPE *BeginInprocDebugging )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ BOOL fThisThreadOnly,
+            /* [out] */ DWORD *pdwProfilerContext);
+        
+        HRESULT ( STDMETHODCALLTYPE *EndInprocDebugging )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ DWORD dwProfilerContext);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetILToNativeMapping )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ FunctionID functionId,
+            /* [in] */ ULONG32 cMap,
+            /* [out] */ ULONG32 *pcMap,
+            /* [length_is][size_is][out] */ COR_DEBUG_IL_TO_NATIVE_MAP map[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *DoStackSnapshot )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ThreadID thread,
+            /* [in] */ StackSnapshotCallback *callback,
+            /* [in] */ ULONG32 infoFlags,
+            /* [in] */ void *clientData,
+            /* [size_is][in] */ BYTE context[  ],
+            /* [in] */ ULONG32 contextSize);
+        
+        HRESULT ( STDMETHODCALLTYPE *SetEnterLeaveFunctionHooks2 )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ FunctionEnter2 *pFuncEnter,
+            /* [in] */ FunctionLeave2 *pFuncLeave,
+            /* [in] */ FunctionTailcall2 *pFuncTailcall);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetFunctionInfo2 )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ FunctionID funcId,
+            /* [in] */ COR_PRF_FRAME_INFO frameInfo,
+            /* [out] */ ClassID *pClassId,
+            /* [out] */ ModuleID *pModuleId,
+            /* [out] */ mdToken *pToken,
+            /* [in] */ ULONG32 cTypeArgs,
+            /* [out] */ ULONG32 *pcTypeArgs,
+            /* [out] */ ClassID typeArgs[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetStringLayout )( 
+            ICorProfilerInfo9 * This,
+            /* [out] */ ULONG *pBufferLengthOffset,
+            /* [out] */ ULONG *pStringLengthOffset,
+            /* [out] */ ULONG *pBufferOffset);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetClassLayout )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ClassID classID,
+            /* [out][in] */ COR_FIELD_OFFSET rFieldOffset[  ],
+            /* [in] */ ULONG cFieldOffset,
+            /* [out] */ ULONG *pcFieldOffset,
+            /* [out] */ ULONG *pulClassSize);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetClassIDInfo2 )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ClassID classId,
+            /* [out] */ ModuleID *pModuleId,
+            /* [out] */ mdTypeDef *pTypeDefToken,
+            /* [out] */ ClassID *pParentClassId,
+            /* [in] */ ULONG32 cNumTypeArgs,
+            /* [out] */ ULONG32 *pcNumTypeArgs,
+            /* [out] */ ClassID typeArgs[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetCodeInfo2 )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ FunctionID functionID,
+            /* [in] */ ULONG32 cCodeInfos,
+            /* [out] */ ULONG32 *pcCodeInfos,
+            /* [length_is][size_is][out] */ COR_PRF_CODE_INFO codeInfos[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetClassFromTokenAndTypeArgs )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ModuleID moduleID,
+            /* [in] */ mdTypeDef typeDef,
+            /* [in] */ ULONG32 cTypeArgs,
+            /* [size_is][in] */ ClassID typeArgs[  ],
+            /* [out] */ ClassID *pClassID);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetFunctionFromTokenAndTypeArgs )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ModuleID moduleID,
+            /* [in] */ mdMethodDef funcDef,
+            /* [in] */ ClassID classId,
+            /* [in] */ ULONG32 cTypeArgs,
+            /* [size_is][in] */ ClassID typeArgs[  ],
+            /* [out] */ FunctionID *pFunctionID);
+        
+        HRESULT ( STDMETHODCALLTYPE *EnumModuleFrozenObjects )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ModuleID moduleID,
+            /* [out] */ ICorProfilerObjectEnum **ppEnum);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetArrayObjectInfo )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ObjectID objectId,
+            /* [in] */ ULONG32 cDimensions,
+            /* [size_is][out] */ ULONG32 pDimensionSizes[  ],
+            /* [size_is][out] */ int pDimensionLowerBounds[  ],
+            /* [out] */ BYTE **ppData);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetBoxClassLayout )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ClassID classId,
+            /* [out] */ ULONG32 *pBufferOffset);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetThreadAppDomain )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ThreadID threadId,
+            /* [out] */ AppDomainID *pAppDomainId);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetRVAStaticAddress )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ClassID classId,
+            /* [in] */ mdFieldDef fieldToken,
+            /* [out] */ void **ppAddress);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetAppDomainStaticAddress )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ClassID classId,
+            /* [in] */ mdFieldDef fieldToken,
+            /* [in] */ AppDomainID appDomainId,
+            /* [out] */ void **ppAddress);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetThreadStaticAddress )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ClassID classId,
+            /* [in] */ mdFieldDef fieldToken,
+            /* [in] */ ThreadID threadId,
+            /* [out] */ void **ppAddress);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetContextStaticAddress )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ClassID classId,
+            /* [in] */ mdFieldDef fieldToken,
+            /* [in] */ ContextID contextId,
+            /* [out] */ void **ppAddress);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetStaticFieldInfo )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ClassID classId,
+            /* [in] */ mdFieldDef fieldToken,
+            /* [out] */ COR_PRF_STATIC_TYPE *pFieldInfo);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetGenerationBounds )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ULONG cObjectRanges,
+            /* [out] */ ULONG *pcObjectRanges,
+            /* [length_is][size_is][out] */ COR_PRF_GC_GENERATION_RANGE ranges[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetObjectGeneration )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ObjectID objectId,
+            /* [out] */ COR_PRF_GC_GENERATION_RANGE *range);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetNotifiedExceptionClauseInfo )( 
+            ICorProfilerInfo9 * This,
+            /* [out] */ COR_PRF_EX_CLAUSE_INFO *pinfo);
+        
+        HRESULT ( STDMETHODCALLTYPE *EnumJITedFunctions )( 
+            ICorProfilerInfo9 * This,
+            /* [out] */ ICorProfilerFunctionEnum **ppEnum);
+        
+        HRESULT ( STDMETHODCALLTYPE *RequestProfilerDetach )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ DWORD dwExpectedCompletionMilliseconds);
+        
+        HRESULT ( STDMETHODCALLTYPE *SetFunctionIDMapper2 )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ FunctionIDMapper2 *pFunc,
+            /* [in] */ void *clientData);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetStringLayout2 )( 
+            ICorProfilerInfo9 * This,
+            /* [out] */ ULONG *pStringLengthOffset,
+            /* [out] */ ULONG *pBufferOffset);
+        
+        HRESULT ( STDMETHODCALLTYPE *SetEnterLeaveFunctionHooks3 )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ FunctionEnter3 *pFuncEnter3,
+            /* [in] */ FunctionLeave3 *pFuncLeave3,
+            /* [in] */ FunctionTailcall3 *pFuncTailcall3);
+        
+        HRESULT ( STDMETHODCALLTYPE *SetEnterLeaveFunctionHooks3WithInfo )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ FunctionEnter3WithInfo *pFuncEnter3WithInfo,
+            /* [in] */ FunctionLeave3WithInfo *pFuncLeave3WithInfo,
+            /* [in] */ FunctionTailcall3WithInfo *pFuncTailcall3WithInfo);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetFunctionEnter3Info )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ FunctionID functionId,
+            /* [in] */ COR_PRF_ELT_INFO eltInfo,
+            /* [out] */ COR_PRF_FRAME_INFO *pFrameInfo,
+            /* [out][in] */ ULONG *pcbArgumentInfo,
+            /* [size_is][out] */ COR_PRF_FUNCTION_ARGUMENT_INFO *pArgumentInfo);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetFunctionLeave3Info )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ FunctionID functionId,
+            /* [in] */ COR_PRF_ELT_INFO eltInfo,
+            /* [out] */ COR_PRF_FRAME_INFO *pFrameInfo,
+            /* [out] */ COR_PRF_FUNCTION_ARGUMENT_RANGE *pRetvalRange);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetFunctionTailcall3Info )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ FunctionID functionId,
+            /* [in] */ COR_PRF_ELT_INFO eltInfo,
+            /* [out] */ COR_PRF_FRAME_INFO *pFrameInfo);
+        
+        HRESULT ( STDMETHODCALLTYPE *EnumModules )( 
+            ICorProfilerInfo9 * This,
+            /* [out] */ ICorProfilerModuleEnum **ppEnum);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetRuntimeInformation )( 
+            ICorProfilerInfo9 * This,
+            /* [out] */ USHORT *pClrInstanceId,
+            /* [out] */ COR_PRF_RUNTIME_TYPE *pRuntimeType,
+            /* [out] */ USHORT *pMajorVersion,
+            /* [out] */ USHORT *pMinorVersion,
+            /* [out] */ USHORT *pBuildNumber,
+            /* [out] */ USHORT *pQFEVersion,
+            /* [in] */ ULONG cchVersionString,
+            /* [out] */ ULONG *pcchVersionString,
+            /* [annotation][out] */ 
+            _Out_writes_to_(cchVersionString, *pcchVersionString)  WCHAR szVersionString[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetThreadStaticAddress2 )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ClassID classId,
+            /* [in] */ mdFieldDef fieldToken,
+            /* [in] */ AppDomainID appDomainId,
+            /* [in] */ ThreadID threadId,
+            /* [out] */ void **ppAddress);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetAppDomainsContainingModule )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ModuleID moduleId,
+            /* [in] */ ULONG32 cAppDomainIds,
+            /* [out] */ ULONG32 *pcAppDomainIds,
+            /* [length_is][size_is][out] */ AppDomainID appDomainIds[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetModuleInfo2 )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ModuleID moduleId,
+            /* [out] */ LPCBYTE *ppBaseLoadAddress,
+            /* [in] */ ULONG cchName,
+            /* [out] */ ULONG *pcchName,
+            /* [annotation][out] */ 
+            _Out_writes_to_(cchName, *pcchName)  WCHAR szName[  ],
+            /* [out] */ AssemblyID *pAssemblyId,
+            /* [out] */ DWORD *pdwModuleFlags);
+        
+        HRESULT ( STDMETHODCALLTYPE *EnumThreads )( 
+            ICorProfilerInfo9 * This,
+            /* [out] */ ICorProfilerThreadEnum **ppEnum);
+        
+        HRESULT ( STDMETHODCALLTYPE *InitializeCurrentThread )( 
+            ICorProfilerInfo9 * This);
+        
+        HRESULT ( STDMETHODCALLTYPE *RequestReJIT )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ULONG cFunctions,
+            /* [size_is][in] */ ModuleID moduleIds[  ],
+            /* [size_is][in] */ mdMethodDef methodIds[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *RequestRevert )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ULONG cFunctions,
+            /* [size_is][in] */ ModuleID moduleIds[  ],
+            /* [size_is][in] */ mdMethodDef methodIds[  ],
+            /* [size_is][out] */ HRESULT status[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetCodeInfo3 )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ FunctionID functionID,
+            /* [in] */ ReJITID reJitId,
+            /* [in] */ ULONG32 cCodeInfos,
+            /* [out] */ ULONG32 *pcCodeInfos,
+            /* [length_is][size_is][out] */ COR_PRF_CODE_INFO codeInfos[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetFunctionFromIP2 )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ LPCBYTE ip,
+            /* [out] */ FunctionID *pFunctionId,
+            /* [out] */ ReJITID *pReJitId);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetReJITIDs )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ FunctionID functionId,
+            /* [in] */ ULONG cReJitIds,
+            /* [out] */ ULONG *pcReJitIds,
+            /* [length_is][size_is][out] */ ReJITID reJitIds[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetILToNativeMapping2 )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ FunctionID functionId,
+            /* [in] */ ReJITID reJitId,
+            /* [in] */ ULONG32 cMap,
+            /* [out] */ ULONG32 *pcMap,
+            /* [length_is][size_is][out] */ COR_DEBUG_IL_TO_NATIVE_MAP map[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *EnumJITedFunctions2 )( 
+            ICorProfilerInfo9 * This,
+            /* [out] */ ICorProfilerFunctionEnum **ppEnum);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetObjectSize2 )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ObjectID objectId,
+            /* [out] */ SIZE_T *pcSize);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetEventMask2 )( 
+            ICorProfilerInfo9 * This,
+            /* [out] */ DWORD *pdwEventsLow,
+            /* [out] */ DWORD *pdwEventsHigh);
+        
+        HRESULT ( STDMETHODCALLTYPE *SetEventMask2 )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ DWORD dwEventsLow,
+            /* [in] */ DWORD dwEventsHigh);
+        
+        HRESULT ( STDMETHODCALLTYPE *EnumNgenModuleMethodsInliningThisMethod )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ModuleID inlinersModuleId,
+            /* [in] */ ModuleID inlineeModuleId,
+            /* [in] */ mdMethodDef inlineeMethodId,
+            /* [out] */ BOOL *incompleteData,
+            /* [out] */ ICorProfilerMethodEnum **ppEnum);
+        
+        HRESULT ( STDMETHODCALLTYPE *ApplyMetaData )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ModuleID moduleId);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetInMemorySymbolsLength )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ModuleID moduleId,
+            /* [out] */ DWORD *pCountSymbolBytes);
+        
+        HRESULT ( STDMETHODCALLTYPE *ReadInMemorySymbols )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ ModuleID moduleId,
+            /* [in] */ DWORD symbolsReadOffset,
+            /* [out] */ BYTE *pSymbolBytes,
+            /* [in] */ DWORD countSymbolBytes,
+            /* [out] */ DWORD *pCountSymbolBytesRead);
+        
+        HRESULT ( STDMETHODCALLTYPE *IsFunctionDynamic )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ FunctionID functionId,
+            /* [out] */ BOOL *isDynamic);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetFunctionFromIP3 )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ LPCBYTE ip,
+            /* [out] */ FunctionID *functionId,
+            /* [out] */ ReJITID *pReJitId);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetDynamicFunctionInfo )( 
+            ICorProfilerInfo9 * This,
+            /* [in] */ FunctionID functionId,
+            /* [out] */ ModuleID *moduleId,
+            /* [out] */ PCCOR_SIGNATURE *ppvSig,
+            /* [out] */ ULONG *pbSig,
+            /* [in] */ ULONG cchName,
+            /* [out] */ ULONG *pcchName,
+            /* [out] */ WCHAR wszName[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetNativeCodeStartAddresses )( 
+            ICorProfilerInfo9 * This,
+            FunctionID functionID,
+            ReJITID reJitId,
+            ULONG32 cCodeStartAddresses,
+            ULONG32 *pcCodeStartAddresses,
+            UINT_PTR codeStartAddresses[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetILToNativeMapping3 )( 
+            ICorProfilerInfo9 * This,
+            UINT_PTR pNativeCodeStartAddress,
+            ULONG32 cMap,
+            ULONG32 *pcMap,
+            COR_DEBUG_IL_TO_NATIVE_MAP map[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetCodeInfo4 )( 
+            ICorProfilerInfo9 * This,
+            UINT_PTR pNativeCodeStartAddress,
+            ULONG32 cCodeInfos,
+            ULONG32 *pcCodeInfos,
+            COR_PRF_CODE_INFO codeInfos[  ]);
+        
+        END_INTERFACE
+    } ICorProfilerInfo9Vtbl;
+
+    interface ICorProfilerInfo9
+    {
+        CONST_VTBL struct ICorProfilerInfo9Vtbl *lpVtbl;
+    };
+
+    
+
+#ifdef COBJMACROS
+
+
+#define ICorProfilerInfo9_QueryInterface(This,riid,ppvObject)	\
+    ( (This)->lpVtbl -> QueryInterface(This,riid,ppvObject) ) 
+
+#define ICorProfilerInfo9_AddRef(This)	\
+    ( (This)->lpVtbl -> AddRef(This) ) 
+
+#define ICorProfilerInfo9_Release(This)	\
+    ( (This)->lpVtbl -> Release(This) ) 
+
+
+#define ICorProfilerInfo9_GetClassFromObject(This,objectId,pClassId)	\
+    ( (This)->lpVtbl -> GetClassFromObject(This,objectId,pClassId) ) 
+
+#define ICorProfilerInfo9_GetClassFromToken(This,moduleId,typeDef,pClassId)	\
+    ( (This)->lpVtbl -> GetClassFromToken(This,moduleId,typeDef,pClassId) ) 
+
+#define ICorProfilerInfo9_GetCodeInfo(This,functionId,pStart,pcSize)	\
+    ( (This)->lpVtbl -> GetCodeInfo(This,functionId,pStart,pcSize) ) 
+
+#define ICorProfilerInfo9_GetEventMask(This,pdwEvents)	\
+    ( (This)->lpVtbl -> GetEventMask(This,pdwEvents) ) 
+
+#define ICorProfilerInfo9_GetFunctionFromIP(This,ip,pFunctionId)	\
+    ( (This)->lpVtbl -> GetFunctionFromIP(This,ip,pFunctionId) ) 
+
+#define ICorProfilerInfo9_GetFunctionFromToken(This,moduleId,token,pFunctionId)	\
+    ( (This)->lpVtbl -> GetFunctionFromToken(This,moduleId,token,pFunctionId) ) 
+
+#define ICorProfilerInfo9_GetHandleFromThread(This,threadId,phThread)	\
+    ( (This)->lpVtbl -> GetHandleFromThread(This,threadId,phThread) ) 
+
+#define ICorProfilerInfo9_GetObjectSize(This,objectId,pcSize)	\
+    ( (This)->lpVtbl -> GetObjectSize(This,objectId,pcSize) ) 
+
+#define ICorProfilerInfo9_IsArrayClass(This,classId,pBaseElemType,pBaseClassId,pcRank)	\
+    ( (This)->lpVtbl -> IsArrayClass(This,classId,pBaseElemType,pBaseClassId,pcRank) ) 
+
+#define ICorProfilerInfo9_GetThreadInfo(This,threadId,pdwWin32ThreadId)	\
+    ( (This)->lpVtbl -> GetThreadInfo(This,threadId,pdwWin32ThreadId) ) 
+
+#define ICorProfilerInfo9_GetCurrentThreadID(This,pThreadId)	\
+    ( (This)->lpVtbl -> GetCurrentThreadID(This,pThreadId) ) 
+
+#define ICorProfilerInfo9_GetClassIDInfo(This,classId,pModuleId,pTypeDefToken)	\
+    ( (This)->lpVtbl -> GetClassIDInfo(This,classId,pModuleId,pTypeDefToken) ) 
+
+#define ICorProfilerInfo9_GetFunctionInfo(This,functionId,pClassId,pModuleId,pToken)	\
+    ( (This)->lpVtbl -> GetFunctionInfo(This,functionId,pClassId,pModuleId,pToken) ) 
+
+#define ICorProfilerInfo9_SetEventMask(This,dwEvents)	\
+    ( (This)->lpVtbl -> SetEventMask(This,dwEvents) ) 
+
+#define ICorProfilerInfo9_SetEnterLeaveFunctionHooks(This,pFuncEnter,pFuncLeave,pFuncTailcall)	\
+    ( (This)->lpVtbl -> SetEnterLeaveFunctionHooks(This,pFuncEnter,pFuncLeave,pFuncTailcall) ) 
+
+#define ICorProfilerInfo9_SetFunctionIDMapper(This,pFunc)	\
+    ( (This)->lpVtbl -> SetFunctionIDMapper(This,pFunc) ) 
+
+#define ICorProfilerInfo9_GetTokenAndMetaDataFromFunction(This,functionId,riid,ppImport,pToken)	\
+    ( (This)->lpVtbl -> GetTokenAndMetaDataFromFunction(This,functionId,riid,ppImport,pToken) ) 
+
+#define ICorProfilerInfo9_GetModuleInfo(This,moduleId,ppBaseLoadAddress,cchName,pcchName,szName,pAssemblyId)	\
+    ( (This)->lpVtbl -> GetModuleInfo(This,moduleId,ppBaseLoadAddress,cchName,pcchName,szName,pAssemblyId) ) 
+
+#define ICorProfilerInfo9_GetModuleMetaData(This,moduleId,dwOpenFlags,riid,ppOut)	\
+    ( (This)->lpVtbl -> GetModuleMetaData(This,moduleId,dwOpenFlags,riid,ppOut) ) 
+
+#define ICorProfilerInfo9_GetILFunctionBody(This,moduleId,methodId,ppMethodHeader,pcbMethodSize)	\
+    ( (This)->lpVtbl -> GetILFunctionBody(This,moduleId,methodId,ppMethodHeader,pcbMethodSize) ) 
+
+#define ICorProfilerInfo9_GetILFunctionBodyAllocator(This,moduleId,ppMalloc)	\
+    ( (This)->lpVtbl -> GetILFunctionBodyAllocator(This,moduleId,ppMalloc) ) 
+
+#define ICorProfilerInfo9_SetILFunctionBody(This,moduleId,methodid,pbNewILMethodHeader)	\
+    ( (This)->lpVtbl -> SetILFunctionBody(This,moduleId,methodid,pbNewILMethodHeader) ) 
+
+#define ICorProfilerInfo9_GetAppDomainInfo(This,appDomainId,cchName,pcchName,szName,pProcessId)	\
+    ( (This)->lpVtbl -> GetAppDomainInfo(This,appDomainId,cchName,pcchName,szName,pProcessId) ) 
+
+#define ICorProfilerInfo9_GetAssemblyInfo(This,assemblyId,cchName,pcchName,szName,pAppDomainId,pModuleId)	\
+    ( (This)->lpVtbl -> GetAssemblyInfo(This,assemblyId,cchName,pcchName,szName,pAppDomainId,pModuleId) ) 
+
+#define ICorProfilerInfo9_SetFunctionReJIT(This,functionId)	\
+    ( (This)->lpVtbl -> SetFunctionReJIT(This,functionId) ) 
+
+#define ICorProfilerInfo9_ForceGC(This)	\
+    ( (This)->lpVtbl -> ForceGC(This) ) 
+
+#define ICorProfilerInfo9_SetILInstrumentedCodeMap(This,functionId,fStartJit,cILMapEntries,rgILMapEntries)	\
+    ( (This)->lpVtbl -> SetILInstrumentedCodeMap(This,functionId,fStartJit,cILMapEntries,rgILMapEntries) ) 
+
+#define ICorProfilerInfo9_GetInprocInspectionInterface(This,ppicd)	\
+    ( (This)->lpVtbl -> GetInprocInspectionInterface(This,ppicd) ) 
+
+#define ICorProfilerInfo9_GetInprocInspectionIThisThread(This,ppicd)	\
+    ( (This)->lpVtbl -> GetInprocInspectionIThisThread(This,ppicd) ) 
+
+#define ICorProfilerInfo9_GetThreadContext(This,threadId,pContextId)	\
+    ( (This)->lpVtbl -> GetThreadContext(This,threadId,pContextId) ) 
+
+#define ICorProfilerInfo9_BeginInprocDebugging(This,fThisThreadOnly,pdwProfilerContext)	\
+    ( (This)->lpVtbl -> BeginInprocDebugging(This,fThisThreadOnly,pdwProfilerContext) ) 
+
+#define ICorProfilerInfo9_EndInprocDebugging(This,dwProfilerContext)	\
+    ( (This)->lpVtbl -> EndInprocDebugging(This,dwProfilerContext) ) 
+
+#define ICorProfilerInfo9_GetILToNativeMapping(This,functionId,cMap,pcMap,map)	\
+    ( (This)->lpVtbl -> GetILToNativeMapping(This,functionId,cMap,pcMap,map) ) 
+
+
+#define ICorProfilerInfo9_DoStackSnapshot(This,thread,callback,infoFlags,clientData,context,contextSize)	\
+    ( (This)->lpVtbl -> DoStackSnapshot(This,thread,callback,infoFlags,clientData,context,contextSize) ) 
+
+#define ICorProfilerInfo9_SetEnterLeaveFunctionHooks2(This,pFuncEnter,pFuncLeave,pFuncTailcall)	\
+    ( (This)->lpVtbl -> SetEnterLeaveFunctionHooks2(This,pFuncEnter,pFuncLeave,pFuncTailcall) ) 
+
+#define ICorProfilerInfo9_GetFunctionInfo2(This,funcId,frameInfo,pClassId,pModuleId,pToken,cTypeArgs,pcTypeArgs,typeArgs)	\
+    ( (This)->lpVtbl -> GetFunctionInfo2(This,funcId,frameInfo,pClassId,pModuleId,pToken,cTypeArgs,pcTypeArgs,typeArgs) ) 
+
+#define ICorProfilerInfo9_GetStringLayout(This,pBufferLengthOffset,pStringLengthOffset,pBufferOffset)	\
+    ( (This)->lpVtbl -> GetStringLayout(This,pBufferLengthOffset,pStringLengthOffset,pBufferOffset) ) 
+
+#define ICorProfilerInfo9_GetClassLayout(This,classID,rFieldOffset,cFieldOffset,pcFieldOffset,pulClassSize)	\
+    ( (This)->lpVtbl -> GetClassLayout(This,classID,rFieldOffset,cFieldOffset,pcFieldOffset,pulClassSize) ) 
+
+#define ICorProfilerInfo9_GetClassIDInfo2(This,classId,pModuleId,pTypeDefToken,pParentClassId,cNumTypeArgs,pcNumTypeArgs,typeArgs)	\
+    ( (This)->lpVtbl -> GetClassIDInfo2(This,classId,pModuleId,pTypeDefToken,pParentClassId,cNumTypeArgs,pcNumTypeArgs,typeArgs) ) 
+
+#define ICorProfilerInfo9_GetCodeInfo2(This,functionID,cCodeInfos,pcCodeInfos,codeInfos)	\
+    ( (This)->lpVtbl -> GetCodeInfo2(This,functionID,cCodeInfos,pcCodeInfos,codeInfos) ) 
+
+#define ICorProfilerInfo9_GetClassFromTokenAndTypeArgs(This,moduleID,typeDef,cTypeArgs,typeArgs,pClassID)	\
+    ( (This)->lpVtbl -> GetClassFromTokenAndTypeArgs(This,moduleID,typeDef,cTypeArgs,typeArgs,pClassID) ) 
+
+#define ICorProfilerInfo9_GetFunctionFromTokenAndTypeArgs(This,moduleID,funcDef,classId,cTypeArgs,typeArgs,pFunctionID)	\
+    ( (This)->lpVtbl -> GetFunctionFromTokenAndTypeArgs(This,moduleID,funcDef,classId,cTypeArgs,typeArgs,pFunctionID) ) 
+
+#define ICorProfilerInfo9_EnumModuleFrozenObjects(This,moduleID,ppEnum)	\
+    ( (This)->lpVtbl -> EnumModuleFrozenObjects(This,moduleID,ppEnum) ) 
+
+#define ICorProfilerInfo9_GetArrayObjectInfo(This,objectId,cDimensions,pDimensionSizes,pDimensionLowerBounds,ppData)	\
+    ( (This)->lpVtbl -> GetArrayObjectInfo(This,objectId,cDimensions,pDimensionSizes,pDimensionLowerBounds,ppData) ) 
+
+#define ICorProfilerInfo9_GetBoxClassLayout(This,classId,pBufferOffset)	\
+    ( (This)->lpVtbl -> GetBoxClassLayout(This,classId,pBufferOffset) ) 
+
+#define ICorProfilerInfo9_GetThreadAppDomain(This,threadId,pAppDomainId)	\
+    ( (This)->lpVtbl -> GetThreadAppDomain(This,threadId,pAppDomainId) ) 
+
+#define ICorProfilerInfo9_GetRVAStaticAddress(This,classId,fieldToken,ppAddress)	\
+    ( (This)->lpVtbl -> GetRVAStaticAddress(This,classId,fieldToken,ppAddress) ) 
+
+#define ICorProfilerInfo9_GetAppDomainStaticAddress(This,classId,fieldToken,appDomainId,ppAddress)	\
+    ( (This)->lpVtbl -> GetAppDomainStaticAddress(This,classId,fieldToken,appDomainId,ppAddress) ) 
+
+#define ICorProfilerInfo9_GetThreadStaticAddress(This,classId,fieldToken,threadId,ppAddress)	\
+    ( (This)->lpVtbl -> GetThreadStaticAddress(This,classId,fieldToken,threadId,ppAddress) ) 
+
+#define ICorProfilerInfo9_GetContextStaticAddress(This,classId,fieldToken,contextId,ppAddress)	\
+    ( (This)->lpVtbl -> GetContextStaticAddress(This,classId,fieldToken,contextId,ppAddress) ) 
+
+#define ICorProfilerInfo9_GetStaticFieldInfo(This,classId,fieldToken,pFieldInfo)	\
+    ( (This)->lpVtbl -> GetStaticFieldInfo(This,classId,fieldToken,pFieldInfo) ) 
+
+#define ICorProfilerInfo9_GetGenerationBounds(This,cObjectRanges,pcObjectRanges,ranges)	\
+    ( (This)->lpVtbl -> GetGenerationBounds(This,cObjectRanges,pcObjectRanges,ranges) ) 
+
+#define ICorProfilerInfo9_GetObjectGeneration(This,objectId,range)	\
+    ( (This)->lpVtbl -> GetObjectGeneration(This,objectId,range) ) 
+
+#define ICorProfilerInfo9_GetNotifiedExceptionClauseInfo(This,pinfo)	\
+    ( (This)->lpVtbl -> GetNotifiedExceptionClauseInfo(This,pinfo) ) 
+
+
+#define ICorProfilerInfo9_EnumJITedFunctions(This,ppEnum)	\
+    ( (This)->lpVtbl -> EnumJITedFunctions(This,ppEnum) ) 
+
+#define ICorProfilerInfo9_RequestProfilerDetach(This,dwExpectedCompletionMilliseconds)	\
+    ( (This)->lpVtbl -> RequestProfilerDetach(This,dwExpectedCompletionMilliseconds) ) 
+
+#define ICorProfilerInfo9_SetFunctionIDMapper2(This,pFunc,clientData)	\
+    ( (This)->lpVtbl -> SetFunctionIDMapper2(This,pFunc,clientData) ) 
+
+#define ICorProfilerInfo9_GetStringLayout2(This,pStringLengthOffset,pBufferOffset)	\
+    ( (This)->lpVtbl -> GetStringLayout2(This,pStringLengthOffset,pBufferOffset) ) 
+
+#define ICorProfilerInfo9_SetEnterLeaveFunctionHooks3(This,pFuncEnter3,pFuncLeave3,pFuncTailcall3)	\
+    ( (This)->lpVtbl -> SetEnterLeaveFunctionHooks3(This,pFuncEnter3,pFuncLeave3,pFuncTailcall3) ) 
+
+#define ICorProfilerInfo9_SetEnterLeaveFunctionHooks3WithInfo(This,pFuncEnter3WithInfo,pFuncLeave3WithInfo,pFuncTailcall3WithInfo)	\
+    ( (This)->lpVtbl -> SetEnterLeaveFunctionHooks3WithInfo(This,pFuncEnter3WithInfo,pFuncLeave3WithInfo,pFuncTailcall3WithInfo) ) 
+
+#define ICorProfilerInfo9_GetFunctionEnter3Info(This,functionId,eltInfo,pFrameInfo,pcbArgumentInfo,pArgumentInfo)	\
+    ( (This)->lpVtbl -> GetFunctionEnter3Info(This,functionId,eltInfo,pFrameInfo,pcbArgumentInfo,pArgumentInfo) ) 
+
+#define ICorProfilerInfo9_GetFunctionLeave3Info(This,functionId,eltInfo,pFrameInfo,pRetvalRange)	\
+    ( (This)->lpVtbl -> GetFunctionLeave3Info(This,functionId,eltInfo,pFrameInfo,pRetvalRange) ) 
+
+#define ICorProfilerInfo9_GetFunctionTailcall3Info(This,functionId,eltInfo,pFrameInfo)	\
+    ( (This)->lpVtbl -> GetFunctionTailcall3Info(This,functionId,eltInfo,pFrameInfo) ) 
+
+#define ICorProfilerInfo9_EnumModules(This,ppEnum)	\
+    ( (This)->lpVtbl -> EnumModules(This,ppEnum) ) 
+
+#define ICorProfilerInfo9_GetRuntimeInformation(This,pClrInstanceId,pRuntimeType,pMajorVersion,pMinorVersion,pBuildNumber,pQFEVersion,cchVersionString,pcchVersionString,szVersionString)	\
+    ( (This)->lpVtbl -> GetRuntimeInformation(This,pClrInstanceId,pRuntimeType,pMajorVersion,pMinorVersion,pBuildNumber,pQFEVersion,cchVersionString,pcchVersionString,szVersionString) ) 
+
+#define ICorProfilerInfo9_GetThreadStaticAddress2(This,classId,fieldToken,appDomainId,threadId,ppAddress)	\
+    ( (This)->lpVtbl -> GetThreadStaticAddress2(This,classId,fieldToken,appDomainId,threadId,ppAddress) ) 
+
+#define ICorProfilerInfo9_GetAppDomainsContainingModule(This,moduleId,cAppDomainIds,pcAppDomainIds,appDomainIds)	\
+    ( (This)->lpVtbl -> GetAppDomainsContainingModule(This,moduleId,cAppDomainIds,pcAppDomainIds,appDomainIds) ) 
+
+#define ICorProfilerInfo9_GetModuleInfo2(This,moduleId,ppBaseLoadAddress,cchName,pcchName,szName,pAssemblyId,pdwModuleFlags)	\
+    ( (This)->lpVtbl -> GetModuleInfo2(This,moduleId,ppBaseLoadAddress,cchName,pcchName,szName,pAssemblyId,pdwModuleFlags) ) 
+
+
+#define ICorProfilerInfo9_EnumThreads(This,ppEnum)	\
+    ( (This)->lpVtbl -> EnumThreads(This,ppEnum) ) 
+
+#define ICorProfilerInfo9_InitializeCurrentThread(This)	\
+    ( (This)->lpVtbl -> InitializeCurrentThread(This) ) 
+
+#define ICorProfilerInfo9_RequestReJIT(This,cFunctions,moduleIds,methodIds)	\
+    ( (This)->lpVtbl -> RequestReJIT(This,cFunctions,moduleIds,methodIds) ) 
+
+#define ICorProfilerInfo9_RequestRevert(This,cFunctions,moduleIds,methodIds,status)	\
+    ( (This)->lpVtbl -> RequestRevert(This,cFunctions,moduleIds,methodIds,status) ) 
+
+#define ICorProfilerInfo9_GetCodeInfo3(This,functionID,reJitId,cCodeInfos,pcCodeInfos,codeInfos)	\
+    ( (This)->lpVtbl -> GetCodeInfo3(This,functionID,reJitId,cCodeInfos,pcCodeInfos,codeInfos) ) 
+
+#define ICorProfilerInfo9_GetFunctionFromIP2(This,ip,pFunctionId,pReJitId)	\
+    ( (This)->lpVtbl -> GetFunctionFromIP2(This,ip,pFunctionId,pReJitId) ) 
+
+#define ICorProfilerInfo9_GetReJITIDs(This,functionId,cReJitIds,pcReJitIds,reJitIds)	\
+    ( (This)->lpVtbl -> GetReJITIDs(This,functionId,cReJitIds,pcReJitIds,reJitIds) ) 
+
+#define ICorProfilerInfo9_GetILToNativeMapping2(This,functionId,reJitId,cMap,pcMap,map)	\
+    ( (This)->lpVtbl -> GetILToNativeMapping2(This,functionId,reJitId,cMap,pcMap,map) ) 
+
+#define ICorProfilerInfo9_EnumJITedFunctions2(This,ppEnum)	\
+    ( (This)->lpVtbl -> EnumJITedFunctions2(This,ppEnum) ) 
+
+#define ICorProfilerInfo9_GetObjectSize2(This,objectId,pcSize)	\
+    ( (This)->lpVtbl -> GetObjectSize2(This,objectId,pcSize) ) 
+
+
+#define ICorProfilerInfo9_GetEventMask2(This,pdwEventsLow,pdwEventsHigh)	\
+    ( (This)->lpVtbl -> GetEventMask2(This,pdwEventsLow,pdwEventsHigh) ) 
+
+#define ICorProfilerInfo9_SetEventMask2(This,dwEventsLow,dwEventsHigh)	\
+    ( (This)->lpVtbl -> SetEventMask2(This,dwEventsLow,dwEventsHigh) ) 
+
+
+#define ICorProfilerInfo9_EnumNgenModuleMethodsInliningThisMethod(This,inlinersModuleId,inlineeModuleId,inlineeMethodId,incompleteData,ppEnum)	\
+    ( (This)->lpVtbl -> EnumNgenModuleMethodsInliningThisMethod(This,inlinersModuleId,inlineeModuleId,inlineeMethodId,incompleteData,ppEnum) ) 
+
+
+#define ICorProfilerInfo9_ApplyMetaData(This,moduleId)	\
+    ( (This)->lpVtbl -> ApplyMetaData(This,moduleId) ) 
+
+#define ICorProfilerInfo9_GetInMemorySymbolsLength(This,moduleId,pCountSymbolBytes)	\
+    ( (This)->lpVtbl -> GetInMemorySymbolsLength(This,moduleId,pCountSymbolBytes) ) 
+
+#define ICorProfilerInfo9_ReadInMemorySymbols(This,moduleId,symbolsReadOffset,pSymbolBytes,countSymbolBytes,pCountSymbolBytesRead)	\
+    ( (This)->lpVtbl -> ReadInMemorySymbols(This,moduleId,symbolsReadOffset,pSymbolBytes,countSymbolBytes,pCountSymbolBytesRead) ) 
+
+
+#define ICorProfilerInfo9_IsFunctionDynamic(This,functionId,isDynamic)	\
+    ( (This)->lpVtbl -> IsFunctionDynamic(This,functionId,isDynamic) ) 
+
+#define ICorProfilerInfo9_GetFunctionFromIP3(This,ip,functionId,pReJitId)	\
+    ( (This)->lpVtbl -> GetFunctionFromIP3(This,ip,functionId,pReJitId) ) 
+
+#define ICorProfilerInfo9_GetDynamicFunctionInfo(This,functionId,moduleId,ppvSig,pbSig,cchName,pcchName,wszName)	\
+    ( (This)->lpVtbl -> GetDynamicFunctionInfo(This,functionId,moduleId,ppvSig,pbSig,cchName,pcchName,wszName) ) 
+
+
+#define ICorProfilerInfo9_GetNativeCodeStartAddresses(This,functionID,reJitId,cCodeStartAddresses,pcCodeStartAddresses,codeStartAddresses)	\
+    ( (This)->lpVtbl -> GetNativeCodeStartAddresses(This,functionID,reJitId,cCodeStartAddresses,pcCodeStartAddresses,codeStartAddresses) ) 
+
+#define ICorProfilerInfo9_GetILToNativeMapping3(This,pNativeCodeStartAddress,cMap,pcMap,map)	\
+    ( (This)->lpVtbl -> GetILToNativeMapping3(This,pNativeCodeStartAddress,cMap,pcMap,map) ) 
+
+#define ICorProfilerInfo9_GetCodeInfo4(This,pNativeCodeStartAddress,cCodeInfos,pcCodeInfos,codeInfos)	\
+    ( (This)->lpVtbl -> GetCodeInfo4(This,pNativeCodeStartAddress,cCodeInfos,pcCodeInfos,codeInfos) ) 
+
+#endif /* COBJMACROS */
+
+
+#endif 	/* C style interface */
+
+
+
+
+#endif 	/* __ICorProfilerInfo9_INTERFACE_DEFINED__ */
+
+
+#ifndef __ICorProfilerInfo10_INTERFACE_DEFINED__
+#define __ICorProfilerInfo10_INTERFACE_DEFINED__
+
+/* interface ICorProfilerInfo10 */
+/* [local][unique][uuid][object] */ 
+
+
+EXTERN_C const IID IID_ICorProfilerInfo10;
+
+#if defined(__cplusplus) && !defined(CINTERFACE)
+    
+    MIDL_INTERFACE("2F1B5152-C869-40C9-AA5F-3ABE026BD720")
+    ICorProfilerInfo10 : public ICorProfilerInfo9
+    {
+    public:
+        virtual HRESULT STDMETHODCALLTYPE EnumerateObjectReferences( 
+            ObjectID objectId,
+            ObjectReferenceCallback callback,
+            void *clientData) = 0;
+        
+        virtual HRESULT STDMETHODCALLTYPE IsFrozenObject( 
+            ObjectID objectId,
+            BOOL *pbFrozen) = 0;
+        
+        virtual HRESULT STDMETHODCALLTYPE GetLOHObjectSizeThreshold( 
+            DWORD *pThreshold) = 0;
+        
+        virtual HRESULT STDMETHODCALLTYPE RequestReJITWithInliners( 
+            /* [in] */ DWORD dwRejitFlags,
+            /* [in] */ ULONG cFunctions,
+            /* [size_is][in] */ ModuleID moduleIds[  ],
+            /* [size_is][in] */ mdMethodDef methodIds[  ]) = 0;
+        
+        virtual HRESULT STDMETHODCALLTYPE SuspendRuntime( void) = 0;
+        
+        virtual HRESULT STDMETHODCALLTYPE ResumeRuntime( void) = 0;
+        
+    };
+    
+    
+#else 	/* C style interface */
+
+    typedef struct ICorProfilerInfo10Vtbl
+    {
+        BEGIN_INTERFACE
+        
+        HRESULT ( STDMETHODCALLTYPE *QueryInterface )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ REFIID riid,
+            /* [annotation][iid_is][out] */ 
+            _COM_Outptr_  void **ppvObject);
+        
+        ULONG ( STDMETHODCALLTYPE *AddRef )( 
+            ICorProfilerInfo10 * This);
+        
+        ULONG ( STDMETHODCALLTYPE *Release )( 
+            ICorProfilerInfo10 * This);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetClassFromObject )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ObjectID objectId,
+            /* [out] */ ClassID *pClassId);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetClassFromToken )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ModuleID moduleId,
+            /* [in] */ mdTypeDef typeDef,
+            /* [out] */ ClassID *pClassId);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetCodeInfo )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ FunctionID functionId,
+            /* [out] */ LPCBYTE *pStart,
+            /* [out] */ ULONG *pcSize);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetEventMask )( 
+            ICorProfilerInfo10 * This,
+            /* [out] */ DWORD *pdwEvents);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetFunctionFromIP )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ LPCBYTE ip,
+            /* [out] */ FunctionID *pFunctionId);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetFunctionFromToken )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ModuleID moduleId,
+            /* [in] */ mdToken token,
+            /* [out] */ FunctionID *pFunctionId);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetHandleFromThread )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ThreadID threadId,
+            /* [out] */ HANDLE *phThread);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetObjectSize )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ObjectID objectId,
+            /* [out] */ ULONG *pcSize);
+        
+        HRESULT ( STDMETHODCALLTYPE *IsArrayClass )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ClassID classId,
+            /* [out] */ CorElementType *pBaseElemType,
+            /* [out] */ ClassID *pBaseClassId,
+            /* [out] */ ULONG *pcRank);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetThreadInfo )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ThreadID threadId,
+            /* [out] */ DWORD *pdwWin32ThreadId);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetCurrentThreadID )( 
+            ICorProfilerInfo10 * This,
+            /* [out] */ ThreadID *pThreadId);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetClassIDInfo )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ClassID classId,
+            /* [out] */ ModuleID *pModuleId,
+            /* [out] */ mdTypeDef *pTypeDefToken);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetFunctionInfo )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ FunctionID functionId,
+            /* [out] */ ClassID *pClassId,
+            /* [out] */ ModuleID *pModuleId,
+            /* [out] */ mdToken *pToken);
+        
+        HRESULT ( STDMETHODCALLTYPE *SetEventMask )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ DWORD dwEvents);
+        
+        HRESULT ( STDMETHODCALLTYPE *SetEnterLeaveFunctionHooks )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ FunctionEnter *pFuncEnter,
+            /* [in] */ FunctionLeave *pFuncLeave,
+            /* [in] */ FunctionTailcall *pFuncTailcall);
+        
+        HRESULT ( STDMETHODCALLTYPE *SetFunctionIDMapper )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ FunctionIDMapper *pFunc);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetTokenAndMetaDataFromFunction )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ FunctionID functionId,
+            /* [in] */ REFIID riid,
+            /* [out] */ IUnknown **ppImport,
+            /* [out] */ mdToken *pToken);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetModuleInfo )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ModuleID moduleId,
+            /* [out] */ LPCBYTE *ppBaseLoadAddress,
+            /* [in] */ ULONG cchName,
+            /* [out] */ ULONG *pcchName,
+            /* [annotation][out] */ 
+            _Out_writes_to_(cchName, *pcchName)  WCHAR szName[  ],
+            /* [out] */ AssemblyID *pAssemblyId);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetModuleMetaData )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ModuleID moduleId,
+            /* [in] */ DWORD dwOpenFlags,
+            /* [in] */ REFIID riid,
+            /* [out] */ IUnknown **ppOut);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetILFunctionBody )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ModuleID moduleId,
+            /* [in] */ mdMethodDef methodId,
+            /* [out] */ LPCBYTE *ppMethodHeader,
+            /* [out] */ ULONG *pcbMethodSize);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetILFunctionBodyAllocator )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ModuleID moduleId,
+            /* [out] */ IMethodMalloc **ppMalloc);
+        
+        HRESULT ( STDMETHODCALLTYPE *SetILFunctionBody )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ModuleID moduleId,
+            /* [in] */ mdMethodDef methodid,
+            /* [in] */ LPCBYTE pbNewILMethodHeader);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetAppDomainInfo )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ AppDomainID appDomainId,
+            /* [in] */ ULONG cchName,
+            /* [out] */ ULONG *pcchName,
+            /* [annotation][out] */ 
+            _Out_writes_to_(cchName, *pcchName)  WCHAR szName[  ],
+            /* [out] */ ProcessID *pProcessId);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetAssemblyInfo )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ AssemblyID assemblyId,
+            /* [in] */ ULONG cchName,
+            /* [out] */ ULONG *pcchName,
+            /* [annotation][out] */ 
+            _Out_writes_to_(cchName, *pcchName)  WCHAR szName[  ],
+            /* [out] */ AppDomainID *pAppDomainId,
+            /* [out] */ ModuleID *pModuleId);
+        
+        HRESULT ( STDMETHODCALLTYPE *SetFunctionReJIT )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ FunctionID functionId);
+        
+        HRESULT ( STDMETHODCALLTYPE *ForceGC )( 
+            ICorProfilerInfo10 * This);
+        
+        HRESULT ( STDMETHODCALLTYPE *SetILInstrumentedCodeMap )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ FunctionID functionId,
+            /* [in] */ BOOL fStartJit,
+            /* [in] */ ULONG cILMapEntries,
+            /* [size_is][in] */ COR_IL_MAP rgILMapEntries[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetInprocInspectionInterface )( 
+            ICorProfilerInfo10 * This,
+            /* [out] */ IUnknown **ppicd);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetInprocInspectionIThisThread )( 
+            ICorProfilerInfo10 * This,
+            /* [out] */ IUnknown **ppicd);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetThreadContext )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ThreadID threadId,
+            /* [out] */ ContextID *pContextId);
+        
+        HRESULT ( STDMETHODCALLTYPE *BeginInprocDebugging )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ BOOL fThisThreadOnly,
+            /* [out] */ DWORD *pdwProfilerContext);
+        
+        HRESULT ( STDMETHODCALLTYPE *EndInprocDebugging )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ DWORD dwProfilerContext);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetILToNativeMapping )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ FunctionID functionId,
+            /* [in] */ ULONG32 cMap,
+            /* [out] */ ULONG32 *pcMap,
+            /* [length_is][size_is][out] */ COR_DEBUG_IL_TO_NATIVE_MAP map[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *DoStackSnapshot )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ThreadID thread,
+            /* [in] */ StackSnapshotCallback *callback,
+            /* [in] */ ULONG32 infoFlags,
+            /* [in] */ void *clientData,
+            /* [size_is][in] */ BYTE context[  ],
+            /* [in] */ ULONG32 contextSize);
+        
+        HRESULT ( STDMETHODCALLTYPE *SetEnterLeaveFunctionHooks2 )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ FunctionEnter2 *pFuncEnter,
+            /* [in] */ FunctionLeave2 *pFuncLeave,
+            /* [in] */ FunctionTailcall2 *pFuncTailcall);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetFunctionInfo2 )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ FunctionID funcId,
+            /* [in] */ COR_PRF_FRAME_INFO frameInfo,
+            /* [out] */ ClassID *pClassId,
+            /* [out] */ ModuleID *pModuleId,
+            /* [out] */ mdToken *pToken,
+            /* [in] */ ULONG32 cTypeArgs,
+            /* [out] */ ULONG32 *pcTypeArgs,
+            /* [out] */ ClassID typeArgs[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetStringLayout )( 
+            ICorProfilerInfo10 * This,
+            /* [out] */ ULONG *pBufferLengthOffset,
+            /* [out] */ ULONG *pStringLengthOffset,
+            /* [out] */ ULONG *pBufferOffset);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetClassLayout )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ClassID classID,
+            /* [out][in] */ COR_FIELD_OFFSET rFieldOffset[  ],
+            /* [in] */ ULONG cFieldOffset,
+            /* [out] */ ULONG *pcFieldOffset,
+            /* [out] */ ULONG *pulClassSize);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetClassIDInfo2 )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ClassID classId,
+            /* [out] */ ModuleID *pModuleId,
+            /* [out] */ mdTypeDef *pTypeDefToken,
+            /* [out] */ ClassID *pParentClassId,
+            /* [in] */ ULONG32 cNumTypeArgs,
+            /* [out] */ ULONG32 *pcNumTypeArgs,
+            /* [out] */ ClassID typeArgs[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetCodeInfo2 )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ FunctionID functionID,
+            /* [in] */ ULONG32 cCodeInfos,
+            /* [out] */ ULONG32 *pcCodeInfos,
+            /* [length_is][size_is][out] */ COR_PRF_CODE_INFO codeInfos[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetClassFromTokenAndTypeArgs )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ModuleID moduleID,
+            /* [in] */ mdTypeDef typeDef,
+            /* [in] */ ULONG32 cTypeArgs,
+            /* [size_is][in] */ ClassID typeArgs[  ],
+            /* [out] */ ClassID *pClassID);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetFunctionFromTokenAndTypeArgs )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ModuleID moduleID,
+            /* [in] */ mdMethodDef funcDef,
+            /* [in] */ ClassID classId,
+            /* [in] */ ULONG32 cTypeArgs,
+            /* [size_is][in] */ ClassID typeArgs[  ],
+            /* [out] */ FunctionID *pFunctionID);
+        
+        HRESULT ( STDMETHODCALLTYPE *EnumModuleFrozenObjects )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ModuleID moduleID,
+            /* [out] */ ICorProfilerObjectEnum **ppEnum);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetArrayObjectInfo )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ObjectID objectId,
+            /* [in] */ ULONG32 cDimensions,
+            /* [size_is][out] */ ULONG32 pDimensionSizes[  ],
+            /* [size_is][out] */ int pDimensionLowerBounds[  ],
+            /* [out] */ BYTE **ppData);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetBoxClassLayout )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ClassID classId,
+            /* [out] */ ULONG32 *pBufferOffset);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetThreadAppDomain )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ThreadID threadId,
+            /* [out] */ AppDomainID *pAppDomainId);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetRVAStaticAddress )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ClassID classId,
+            /* [in] */ mdFieldDef fieldToken,
+            /* [out] */ void **ppAddress);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetAppDomainStaticAddress )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ClassID classId,
+            /* [in] */ mdFieldDef fieldToken,
+            /* [in] */ AppDomainID appDomainId,
+            /* [out] */ void **ppAddress);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetThreadStaticAddress )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ClassID classId,
+            /* [in] */ mdFieldDef fieldToken,
+            /* [in] */ ThreadID threadId,
+            /* [out] */ void **ppAddress);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetContextStaticAddress )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ClassID classId,
+            /* [in] */ mdFieldDef fieldToken,
+            /* [in] */ ContextID contextId,
+            /* [out] */ void **ppAddress);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetStaticFieldInfo )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ClassID classId,
+            /* [in] */ mdFieldDef fieldToken,
+            /* [out] */ COR_PRF_STATIC_TYPE *pFieldInfo);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetGenerationBounds )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ULONG cObjectRanges,
+            /* [out] */ ULONG *pcObjectRanges,
+            /* [length_is][size_is][out] */ COR_PRF_GC_GENERATION_RANGE ranges[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetObjectGeneration )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ObjectID objectId,
+            /* [out] */ COR_PRF_GC_GENERATION_RANGE *range);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetNotifiedExceptionClauseInfo )( 
+            ICorProfilerInfo10 * This,
+            /* [out] */ COR_PRF_EX_CLAUSE_INFO *pinfo);
+        
+        HRESULT ( STDMETHODCALLTYPE *EnumJITedFunctions )( 
+            ICorProfilerInfo10 * This,
+            /* [out] */ ICorProfilerFunctionEnum **ppEnum);
+        
+        HRESULT ( STDMETHODCALLTYPE *RequestProfilerDetach )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ DWORD dwExpectedCompletionMilliseconds);
+        
+        HRESULT ( STDMETHODCALLTYPE *SetFunctionIDMapper2 )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ FunctionIDMapper2 *pFunc,
+            /* [in] */ void *clientData);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetStringLayout2 )( 
+            ICorProfilerInfo10 * This,
+            /* [out] */ ULONG *pStringLengthOffset,
+            /* [out] */ ULONG *pBufferOffset);
+        
+        HRESULT ( STDMETHODCALLTYPE *SetEnterLeaveFunctionHooks3 )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ FunctionEnter3 *pFuncEnter3,
+            /* [in] */ FunctionLeave3 *pFuncLeave3,
+            /* [in] */ FunctionTailcall3 *pFuncTailcall3);
+        
+        HRESULT ( STDMETHODCALLTYPE *SetEnterLeaveFunctionHooks3WithInfo )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ FunctionEnter3WithInfo *pFuncEnter3WithInfo,
+            /* [in] */ FunctionLeave3WithInfo *pFuncLeave3WithInfo,
+            /* [in] */ FunctionTailcall3WithInfo *pFuncTailcall3WithInfo);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetFunctionEnter3Info )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ FunctionID functionId,
+            /* [in] */ COR_PRF_ELT_INFO eltInfo,
+            /* [out] */ COR_PRF_FRAME_INFO *pFrameInfo,
+            /* [out][in] */ ULONG *pcbArgumentInfo,
+            /* [size_is][out] */ COR_PRF_FUNCTION_ARGUMENT_INFO *pArgumentInfo);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetFunctionLeave3Info )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ FunctionID functionId,
+            /* [in] */ COR_PRF_ELT_INFO eltInfo,
+            /* [out] */ COR_PRF_FRAME_INFO *pFrameInfo,
+            /* [out] */ COR_PRF_FUNCTION_ARGUMENT_RANGE *pRetvalRange);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetFunctionTailcall3Info )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ FunctionID functionId,
+            /* [in] */ COR_PRF_ELT_INFO eltInfo,
+            /* [out] */ COR_PRF_FRAME_INFO *pFrameInfo);
+        
+        HRESULT ( STDMETHODCALLTYPE *EnumModules )( 
+            ICorProfilerInfo10 * This,
+            /* [out] */ ICorProfilerModuleEnum **ppEnum);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetRuntimeInformation )( 
+            ICorProfilerInfo10 * This,
+            /* [out] */ USHORT *pClrInstanceId,
+            /* [out] */ COR_PRF_RUNTIME_TYPE *pRuntimeType,
+            /* [out] */ USHORT *pMajorVersion,
+            /* [out] */ USHORT *pMinorVersion,
+            /* [out] */ USHORT *pBuildNumber,
+            /* [out] */ USHORT *pQFEVersion,
+            /* [in] */ ULONG cchVersionString,
+            /* [out] */ ULONG *pcchVersionString,
+            /* [annotation][out] */ 
+            _Out_writes_to_(cchVersionString, *pcchVersionString)  WCHAR szVersionString[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetThreadStaticAddress2 )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ClassID classId,
+            /* [in] */ mdFieldDef fieldToken,
+            /* [in] */ AppDomainID appDomainId,
+            /* [in] */ ThreadID threadId,
+            /* [out] */ void **ppAddress);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetAppDomainsContainingModule )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ModuleID moduleId,
+            /* [in] */ ULONG32 cAppDomainIds,
+            /* [out] */ ULONG32 *pcAppDomainIds,
+            /* [length_is][size_is][out] */ AppDomainID appDomainIds[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetModuleInfo2 )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ModuleID moduleId,
+            /* [out] */ LPCBYTE *ppBaseLoadAddress,
+            /* [in] */ ULONG cchName,
+            /* [out] */ ULONG *pcchName,
+            /* [annotation][out] */ 
+            _Out_writes_to_(cchName, *pcchName)  WCHAR szName[  ],
+            /* [out] */ AssemblyID *pAssemblyId,
+            /* [out] */ DWORD *pdwModuleFlags);
+        
+        HRESULT ( STDMETHODCALLTYPE *EnumThreads )( 
+            ICorProfilerInfo10 * This,
+            /* [out] */ ICorProfilerThreadEnum **ppEnum);
+        
+        HRESULT ( STDMETHODCALLTYPE *InitializeCurrentThread )( 
+            ICorProfilerInfo10 * This);
+        
+        HRESULT ( STDMETHODCALLTYPE *RequestReJIT )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ULONG cFunctions,
+            /* [size_is][in] */ ModuleID moduleIds[  ],
+            /* [size_is][in] */ mdMethodDef methodIds[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *RequestRevert )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ULONG cFunctions,
+            /* [size_is][in] */ ModuleID moduleIds[  ],
+            /* [size_is][in] */ mdMethodDef methodIds[  ],
+            /* [size_is][out] */ HRESULT status[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetCodeInfo3 )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ FunctionID functionID,
+            /* [in] */ ReJITID reJitId,
+            /* [in] */ ULONG32 cCodeInfos,
+            /* [out] */ ULONG32 *pcCodeInfos,
+            /* [length_is][size_is][out] */ COR_PRF_CODE_INFO codeInfos[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetFunctionFromIP2 )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ LPCBYTE ip,
+            /* [out] */ FunctionID *pFunctionId,
+            /* [out] */ ReJITID *pReJitId);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetReJITIDs )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ FunctionID functionId,
+            /* [in] */ ULONG cReJitIds,
+            /* [out] */ ULONG *pcReJitIds,
+            /* [length_is][size_is][out] */ ReJITID reJitIds[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetILToNativeMapping2 )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ FunctionID functionId,
+            /* [in] */ ReJITID reJitId,
+            /* [in] */ ULONG32 cMap,
+            /* [out] */ ULONG32 *pcMap,
+            /* [length_is][size_is][out] */ COR_DEBUG_IL_TO_NATIVE_MAP map[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *EnumJITedFunctions2 )( 
+            ICorProfilerInfo10 * This,
+            /* [out] */ ICorProfilerFunctionEnum **ppEnum);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetObjectSize2 )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ObjectID objectId,
+            /* [out] */ SIZE_T *pcSize);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetEventMask2 )( 
+            ICorProfilerInfo10 * This,
+            /* [out] */ DWORD *pdwEventsLow,
+            /* [out] */ DWORD *pdwEventsHigh);
+        
+        HRESULT ( STDMETHODCALLTYPE *SetEventMask2 )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ DWORD dwEventsLow,
+            /* [in] */ DWORD dwEventsHigh);
+        
+        HRESULT ( STDMETHODCALLTYPE *EnumNgenModuleMethodsInliningThisMethod )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ModuleID inlinersModuleId,
+            /* [in] */ ModuleID inlineeModuleId,
+            /* [in] */ mdMethodDef inlineeMethodId,
+            /* [out] */ BOOL *incompleteData,
+            /* [out] */ ICorProfilerMethodEnum **ppEnum);
+        
+        HRESULT ( STDMETHODCALLTYPE *ApplyMetaData )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ModuleID moduleId);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetInMemorySymbolsLength )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ModuleID moduleId,
+            /* [out] */ DWORD *pCountSymbolBytes);
+        
+        HRESULT ( STDMETHODCALLTYPE *ReadInMemorySymbols )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ ModuleID moduleId,
+            /* [in] */ DWORD symbolsReadOffset,
+            /* [out] */ BYTE *pSymbolBytes,
+            /* [in] */ DWORD countSymbolBytes,
+            /* [out] */ DWORD *pCountSymbolBytesRead);
+        
+        HRESULT ( STDMETHODCALLTYPE *IsFunctionDynamic )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ FunctionID functionId,
+            /* [out] */ BOOL *isDynamic);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetFunctionFromIP3 )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ LPCBYTE ip,
+            /* [out] */ FunctionID *functionId,
+            /* [out] */ ReJITID *pReJitId);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetDynamicFunctionInfo )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ FunctionID functionId,
+            /* [out] */ ModuleID *moduleId,
+            /* [out] */ PCCOR_SIGNATURE *ppvSig,
+            /* [out] */ ULONG *pbSig,
+            /* [in] */ ULONG cchName,
+            /* [out] */ ULONG *pcchName,
+            /* [out] */ WCHAR wszName[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetNativeCodeStartAddresses )( 
+            ICorProfilerInfo10 * This,
+            FunctionID functionID,
+            ReJITID reJitId,
+            ULONG32 cCodeStartAddresses,
+            ULONG32 *pcCodeStartAddresses,
+            UINT_PTR codeStartAddresses[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetILToNativeMapping3 )( 
+            ICorProfilerInfo10 * This,
+            UINT_PTR pNativeCodeStartAddress,
+            ULONG32 cMap,
+            ULONG32 *pcMap,
+            COR_DEBUG_IL_TO_NATIVE_MAP map[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetCodeInfo4 )( 
+            ICorProfilerInfo10 * This,
+            UINT_PTR pNativeCodeStartAddress,
+            ULONG32 cCodeInfos,
+            ULONG32 *pcCodeInfos,
+            COR_PRF_CODE_INFO codeInfos[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *EnumerateObjectReferences )( 
+            ICorProfilerInfo10 * This,
+            ObjectID objectId,
+            ObjectReferenceCallback callback,
+            void *clientData);
+        
+        HRESULT ( STDMETHODCALLTYPE *IsFrozenObject )( 
+            ICorProfilerInfo10 * This,
+            ObjectID objectId,
+            BOOL *pbFrozen);
+        
+        HRESULT ( STDMETHODCALLTYPE *GetLOHObjectSizeThreshold )( 
+            ICorProfilerInfo10 * This,
+            DWORD *pThreshold);
+        
+        HRESULT ( STDMETHODCALLTYPE *RequestReJITWithInliners )( 
+            ICorProfilerInfo10 * This,
+            /* [in] */ DWORD dwRejitFlags,
+            /* [in] */ ULONG cFunctions,
+            /* [size_is][in] */ ModuleID moduleIds[  ],
+            /* [size_is][in] */ mdMethodDef methodIds[  ]);
+        
+        HRESULT ( STDMETHODCALLTYPE *SuspendRuntime )( 
+            ICorProfilerInfo10 * This);
+        
+        HRESULT ( STDMETHODCALLTYPE *ResumeRuntime )( 
+            ICorProfilerInfo10 * This);
+        
+        END_INTERFACE
+    } ICorProfilerInfo10Vtbl;
+
+    interface ICorProfilerInfo10
+    {
+        CONST_VTBL struct ICorProfilerInfo10Vtbl *lpVtbl;
+    };
+
+    
+
+#ifdef COBJMACROS
+
+
+#define ICorProfilerInfo10_QueryInterface(This,riid,ppvObject)	\
+    ( (This)->lpVtbl -> QueryInterface(This,riid,ppvObject) ) 
+
+#define ICorProfilerInfo10_AddRef(This)	\
+    ( (This)->lpVtbl -> AddRef(This) ) 
+
+#define ICorProfilerInfo10_Release(This)	\
+    ( (This)->lpVtbl -> Release(This) ) 
+
+
+#define ICorProfilerInfo10_GetClassFromObject(This,objectId,pClassId)	\
+    ( (This)->lpVtbl -> GetClassFromObject(This,objectId,pClassId) ) 
+
+#define ICorProfilerInfo10_GetClassFromToken(This,moduleId,typeDef,pClassId)	\
+    ( (This)->lpVtbl -> GetClassFromToken(This,moduleId,typeDef,pClassId) ) 
+
+#define ICorProfilerInfo10_GetCodeInfo(This,functionId,pStart,pcSize)	\
+    ( (This)->lpVtbl -> GetCodeInfo(This,functionId,pStart,pcSize) ) 
+
+#define ICorProfilerInfo10_GetEventMask(This,pdwEvents)	\
+    ( (This)->lpVtbl -> GetEventMask(This,pdwEvents) ) 
+
+#define ICorProfilerInfo10_GetFunctionFromIP(This,ip,pFunctionId)	\
+    ( (This)->lpVtbl -> GetFunctionFromIP(This,ip,pFunctionId) ) 
+
+#define ICorProfilerInfo10_GetFunctionFromToken(This,moduleId,token,pFunctionId)	\
+    ( (This)->lpVtbl -> GetFunctionFromToken(This,moduleId,token,pFunctionId) ) 
+
+#define ICorProfilerInfo10_GetHandleFromThread(This,threadId,phThread)	\
+    ( (This)->lpVtbl -> GetHandleFromThread(This,threadId,phThread) ) 
+
+#define ICorProfilerInfo10_GetObjectSize(This,objectId,pcSize)	\
+    ( (This)->lpVtbl -> GetObjectSize(This,objectId,pcSize) ) 
+
+#define ICorProfilerInfo10_IsArrayClass(This,classId,pBaseElemType,pBaseClassId,pcRank)	\
+    ( (This)->lpVtbl -> IsArrayClass(This,classId,pBaseElemType,pBaseClassId,pcRank) ) 
+
+#define ICorProfilerInfo10_GetThreadInfo(This,threadId,pdwWin32ThreadId)	\
+    ( (This)->lpVtbl -> GetThreadInfo(This,threadId,pdwWin32ThreadId) ) 
+
+#define ICorProfilerInfo10_GetCurrentThreadID(This,pThreadId)	\
+    ( (This)->lpVtbl -> GetCurrentThreadID(This,pThreadId) ) 
+
+#define ICorProfilerInfo10_GetClassIDInfo(This,classId,pModuleId,pTypeDefToken)	\
+    ( (This)->lpVtbl -> GetClassIDInfo(This,classId,pModuleId,pTypeDefToken) ) 
+
+#define ICorProfilerInfo10_GetFunctionInfo(This,functionId,pClassId,pModuleId,pToken)	\
+    ( (This)->lpVtbl -> GetFunctionInfo(This,functionId,pClassId,pModuleId,pToken) ) 
+
+#define ICorProfilerInfo10_SetEventMask(This,dwEvents)	\
+    ( (This)->lpVtbl -> SetEventMask(This,dwEvents) ) 
+
+#define ICorProfilerInfo10_SetEnterLeaveFunctionHooks(This,pFuncEnter,pFuncLeave,pFuncTailcall)	\
+    ( (This)->lpVtbl -> SetEnterLeaveFunctionHooks(This,pFuncEnter,pFuncLeave,pFuncTailcall) ) 
+
+#define ICorProfilerInfo10_SetFunctionIDMapper(This,pFunc)	\
+    ( (This)->lpVtbl -> SetFunctionIDMapper(This,pFunc) ) 
+
+#define ICorProfilerInfo10_GetTokenAndMetaDataFromFunction(This,functionId,riid,ppImport,pToken)	\
+    ( (This)->lpVtbl -> GetTokenAndMetaDataFromFunction(This,functionId,riid,ppImport,pToken) ) 
+
+#define ICorProfilerInfo10_GetModuleInfo(This,moduleId,ppBaseLoadAddress,cchName,pcchName,szName,pAssemblyId)	\
+    ( (This)->lpVtbl -> GetModuleInfo(This,moduleId,ppBaseLoadAddress,cchName,pcchName,szName,pAssemblyId) ) 
+
+#define ICorProfilerInfo10_GetModuleMetaData(This,moduleId,dwOpenFlags,riid,ppOut)	\
+    ( (This)->lpVtbl -> GetModuleMetaData(This,moduleId,dwOpenFlags,riid,ppOut) ) 
+
+#define ICorProfilerInfo10_GetILFunctionBody(This,moduleId,methodId,ppMethodHeader,pcbMethodSize)	\
+    ( (This)->lpVtbl -> GetILFunctionBody(This,moduleId,methodId,ppMethodHeader,pcbMethodSize) ) 
+
+#define ICorProfilerInfo10_GetILFunctionBodyAllocator(This,moduleId,ppMalloc)	\
+    ( (This)->lpVtbl -> GetILFunctionBodyAllocator(This,moduleId,ppMalloc) ) 
+
+#define ICorProfilerInfo10_SetILFunctionBody(This,moduleId,methodid,pbNewILMethodHeader)	\
+    ( (This)->lpVtbl -> SetILFunctionBody(This,moduleId,methodid,pbNewILMethodHeader) ) 
+
+#define ICorProfilerInfo10_GetAppDomainInfo(This,appDomainId,cchName,pcchName,szName,pProcessId)	\
+    ( (This)->lpVtbl -> GetAppDomainInfo(This,appDomainId,cchName,pcchName,szName,pProcessId) ) 
+
+#define ICorProfilerInfo10_GetAssemblyInfo(This,assemblyId,cchName,pcchName,szName,pAppDomainId,pModuleId)	\
+    ( (This)->lpVtbl -> GetAssemblyInfo(This,assemblyId,cchName,pcchName,szName,pAppDomainId,pModuleId) ) 
+
+#define ICorProfilerInfo10_SetFunctionReJIT(This,functionId)	\
+    ( (This)->lpVtbl -> SetFunctionReJIT(This,functionId) ) 
+
+#define ICorProfilerInfo10_ForceGC(This)	\
+    ( (This)->lpVtbl -> ForceGC(This) ) 
+
+#define ICorProfilerInfo10_SetILInstrumentedCodeMap(This,functionId,fStartJit,cILMapEntries,rgILMapEntries)	\
+    ( (This)->lpVtbl -> SetILInstrumentedCodeMap(This,functionId,fStartJit,cILMapEntries,rgILMapEntries) ) 
+
+#define ICorProfilerInfo10_GetInprocInspectionInterface(This,ppicd)	\
+    ( (This)->lpVtbl -> GetInprocInspectionInterface(This,ppicd) ) 
+
+#define ICorProfilerInfo10_GetInprocInspectionIThisThread(This,ppicd)	\
+    ( (This)->lpVtbl -> GetInprocInspectionIThisThread(This,ppicd) ) 
+
+#define ICorProfilerInfo10_GetThreadContext(This,threadId,pContextId)	\
+    ( (This)->lpVtbl -> GetThreadContext(This,threadId,pContextId) ) 
+
+#define ICorProfilerInfo10_BeginInprocDebugging(This,fThisThreadOnly,pdwProfilerContext)	\
+    ( (This)->lpVtbl -> BeginInprocDebugging(This,fThisThreadOnly,pdwProfilerContext) ) 
+
+#define ICorProfilerInfo10_EndInprocDebugging(This,dwProfilerContext)	\
+    ( (This)->lpVtbl -> EndInprocDebugging(This,dwProfilerContext) ) 
+
+#define ICorProfilerInfo10_GetILToNativeMapping(This,functionId,cMap,pcMap,map)	\
+    ( (This)->lpVtbl -> GetILToNativeMapping(This,functionId,cMap,pcMap,map) ) 
+
+
+#define ICorProfilerInfo10_DoStackSnapshot(This,thread,callback,infoFlags,clientData,context,contextSize)	\
+    ( (This)->lpVtbl -> DoStackSnapshot(This,thread,callback,infoFlags,clientData,context,contextSize) ) 
+
+#define ICorProfilerInfo10_SetEnterLeaveFunctionHooks2(This,pFuncEnter,pFuncLeave,pFuncTailcall)	\
+    ( (This)->lpVtbl -> SetEnterLeaveFunctionHooks2(This,pFuncEnter,pFuncLeave,pFuncTailcall) ) 
+
+#define ICorProfilerInfo10_GetFunctionInfo2(This,funcId,frameInfo,pClassId,pModuleId,pToken,cTypeArgs,pcTypeArgs,typeArgs)	\
+    ( (This)->lpVtbl -> GetFunctionInfo2(This,funcId,frameInfo,pClassId,pModuleId,pToken,cTypeArgs,pcTypeArgs,typeArgs) ) 
+
+#define ICorProfilerInfo10_GetStringLayout(This,pBufferLengthOffset,pStringLengthOffset,pBufferOffset)	\
+    ( (This)->lpVtbl -> GetStringLayout(This,pBufferLengthOffset,pStringLengthOffset,pBufferOffset) ) 
+
+#define ICorProfilerInfo10_GetClassLayout(This,classID,rFieldOffset,cFieldOffset,pcFieldOffset,pulClassSize)	\
+    ( (This)->lpVtbl -> GetClassLayout(This,classID,rFieldOffset,cFieldOffset,pcFieldOffset,pulClassSize) ) 
+
+#define ICorProfilerInfo10_GetClassIDInfo2(This,classId,pModuleId,pTypeDefToken,pParentClassId,cNumTypeArgs,pcNumTypeArgs,typeArgs)	\
+    ( (This)->lpVtbl -> GetClassIDInfo2(This,classId,pModuleId,pTypeDefToken,pParentClassId,cNumTypeArgs,pcNumTypeArgs,typeArgs) ) 
+
+#define ICorProfilerInfo10_GetCodeInfo2(This,functionID,cCodeInfos,pcCodeInfos,codeInfos)	\
+    ( (This)->lpVtbl -> GetCodeInfo2(This,functionID,cCodeInfos,pcCodeInfos,codeInfos) ) 
+
+#define ICorProfilerInfo10_GetClassFromTokenAndTypeArgs(This,moduleID,typeDef,cTypeArgs,typeArgs,pClassID)	\
+    ( (This)->lpVtbl -> GetClassFromTokenAndTypeArgs(This,moduleID,typeDef,cTypeArgs,typeArgs,pClassID) ) 
+
+#define ICorProfilerInfo10_GetFunctionFromTokenAndTypeArgs(This,moduleID,funcDef,classId,cTypeArgs,typeArgs,pFunctionID)	\
+    ( (This)->lpVtbl -> GetFunctionFromTokenAndTypeArgs(This,moduleID,funcDef,classId,cTypeArgs,typeArgs,pFunctionID) ) 
+
+#define ICorProfilerInfo10_EnumModuleFrozenObjects(This,moduleID,ppEnum)	\
+    ( (This)->lpVtbl -> EnumModuleFrozenObjects(This,moduleID,ppEnum) ) 
+
+#define ICorProfilerInfo10_GetArrayObjectInfo(This,objectId,cDimensions,pDimensionSizes,pDimensionLowerBounds,ppData)	\
+    ( (This)->lpVtbl -> GetArrayObjectInfo(This,objectId,cDimensions,pDimensionSizes,pDimensionLowerBounds,ppData) ) 
+
+#define ICorProfilerInfo10_GetBoxClassLayout(This,classId,pBufferOffset)	\
+    ( (This)->lpVtbl -> GetBoxClassLayout(This,classId,pBufferOffset) ) 
+
+#define ICorProfilerInfo10_GetThreadAppDomain(This,threadId,pAppDomainId)	\
+    ( (This)->lpVtbl -> GetThreadAppDomain(This,threadId,pAppDomainId) ) 
+
+#define ICorProfilerInfo10_GetRVAStaticAddress(This,classId,fieldToken,ppAddress)	\
+    ( (This)->lpVtbl -> GetRVAStaticAddress(This,classId,fieldToken,ppAddress) ) 
+
+#define ICorProfilerInfo10_GetAppDomainStaticAddress(This,classId,fieldToken,appDomainId,ppAddress)	\
+    ( (This)->lpVtbl -> GetAppDomainStaticAddress(This,classId,fieldToken,appDomainId,ppAddress) ) 
+
+#define ICorProfilerInfo10_GetThreadStaticAddress(This,classId,fieldToken,threadId,ppAddress)	\
+    ( (This)->lpVtbl -> GetThreadStaticAddress(This,classId,fieldToken,threadId,ppAddress) ) 
+
+#define ICorProfilerInfo10_GetContextStaticAddress(This,classId,fieldToken,contextId,ppAddress)	\
+    ( (This)->lpVtbl -> GetContextStaticAddress(This,classId,fieldToken,contextId,ppAddress) ) 
+
+#define ICorProfilerInfo10_GetStaticFieldInfo(This,classId,fieldToken,pFieldInfo)	\
+    ( (This)->lpVtbl -> GetStaticFieldInfo(This,classId,fieldToken,pFieldInfo) ) 
+
+#define ICorProfilerInfo10_GetGenerationBounds(This,cObjectRanges,pcObjectRanges,ranges)	\
+    ( (This)->lpVtbl -> GetGenerationBounds(This,cObjectRanges,pcObjectRanges,ranges) ) 
+
+#define ICorProfilerInfo10_GetObjectGeneration(This,objectId,range)	\
+    ( (This)->lpVtbl -> GetObjectGeneration(This,objectId,range) ) 
+
+#define ICorProfilerInfo10_GetNotifiedExceptionClauseInfo(This,pinfo)	\
+    ( (This)->lpVtbl -> GetNotifiedExceptionClauseInfo(This,pinfo) ) 
+
+
+#define ICorProfilerInfo10_EnumJITedFunctions(This,ppEnum)	\
+    ( (This)->lpVtbl -> EnumJITedFunctions(This,ppEnum) ) 
+
+#define ICorProfilerInfo10_RequestProfilerDetach(This,dwExpectedCompletionMilliseconds)	\
+    ( (This)->lpVtbl -> RequestProfilerDetach(This,dwExpectedCompletionMilliseconds) ) 
+
+#define ICorProfilerInfo10_SetFunctionIDMapper2(This,pFunc,clientData)	\
+    ( (This)->lpVtbl -> SetFunctionIDMapper2(This,pFunc,clientData) ) 
+
+#define ICorProfilerInfo10_GetStringLayout2(This,pStringLengthOffset,pBufferOffset)	\
+    ( (This)->lpVtbl -> GetStringLayout2(This,pStringLengthOffset,pBufferOffset) ) 
+
+#define ICorProfilerInfo10_SetEnterLeaveFunctionHooks3(This,pFuncEnter3,pFuncLeave3,pFuncTailcall3)	\
+    ( (This)->lpVtbl -> SetEnterLeaveFunctionHooks3(This,pFuncEnter3,pFuncLeave3,pFuncTailcall3) ) 
+
+#define ICorProfilerInfo10_SetEnterLeaveFunctionHooks3WithInfo(This,pFuncEnter3WithInfo,pFuncLeave3WithInfo,pFuncTailcall3WithInfo)	\
+    ( (This)->lpVtbl -> SetEnterLeaveFunctionHooks3WithInfo(This,pFuncEnter3WithInfo,pFuncLeave3WithInfo,pFuncTailcall3WithInfo) ) 
+
+#define ICorProfilerInfo10_GetFunctionEnter3Info(This,functionId,eltInfo,pFrameInfo,pcbArgumentInfo,pArgumentInfo)	\
+    ( (This)->lpVtbl -> GetFunctionEnter3Info(This,functionId,eltInfo,pFrameInfo,pcbArgumentInfo,pArgumentInfo) ) 
+
+#define ICorProfilerInfo10_GetFunctionLeave3Info(This,functionId,eltInfo,pFrameInfo,pRetvalRange)	\
+    ( (This)->lpVtbl -> GetFunctionLeave3Info(This,functionId,eltInfo,pFrameInfo,pRetvalRange) ) 
+
+#define ICorProfilerInfo10_GetFunctionTailcall3Info(This,functionId,eltInfo,pFrameInfo)	\
+    ( (This)->lpVtbl -> GetFunctionTailcall3Info(This,functionId,eltInfo,pFrameInfo) ) 
+
+#define ICorProfilerInfo10_EnumModules(This,ppEnum)	\
+    ( (This)->lpVtbl -> EnumModules(This,ppEnum) ) 
+
+#define ICorProfilerInfo10_GetRuntimeInformation(This,pClrInstanceId,pRuntimeType,pMajorVersion,pMinorVersion,pBuildNumber,pQFEVersion,cchVersionString,pcchVersionString,szVersionString)	\
+    ( (This)->lpVtbl -> GetRuntimeInformation(This,pClrInstanceId,pRuntimeType,pMajorVersion,pMinorVersion,pBuildNumber,pQFEVersion,cchVersionString,pcchVersionString,szVersionString) ) 
+
+#define ICorProfilerInfo10_GetThreadStaticAddress2(This,classId,fieldToken,appDomainId,threadId,ppAddress)	\
+    ( (This)->lpVtbl -> GetThreadStaticAddress2(This,classId,fieldToken,appDomainId,threadId,ppAddress) ) 
+
+#define ICorProfilerInfo10_GetAppDomainsContainingModule(This,moduleId,cAppDomainIds,pcAppDomainIds,appDomainIds)	\
+    ( (This)->lpVtbl -> GetAppDomainsContainingModule(This,moduleId,cAppDomainIds,pcAppDomainIds,appDomainIds) ) 
+
+#define ICorProfilerInfo10_GetModuleInfo2(This,moduleId,ppBaseLoadAddress,cchName,pcchName,szName,pAssemblyId,pdwModuleFlags)	\
+    ( (This)->lpVtbl -> GetModuleInfo2(This,moduleId,ppBaseLoadAddress,cchName,pcchName,szName,pAssemblyId,pdwModuleFlags) ) 
+
+
+#define ICorProfilerInfo10_EnumThreads(This,ppEnum)	\
+    ( (This)->lpVtbl -> EnumThreads(This,ppEnum) ) 
+
+#define ICorProfilerInfo10_InitializeCurrentThread(This)	\
+    ( (This)->lpVtbl -> InitializeCurrentThread(This) ) 
+
+#define ICorProfilerInfo10_RequestReJIT(This,cFunctions,moduleIds,methodIds)	\
+    ( (This)->lpVtbl -> RequestReJIT(This,cFunctions,moduleIds,methodIds) ) 
+
+#define ICorProfilerInfo10_RequestRevert(This,cFunctions,moduleIds,methodIds,status)	\
+    ( (This)->lpVtbl -> RequestRevert(This,cFunctions,moduleIds,methodIds,status) ) 
+
+#define ICorProfilerInfo10_GetCodeInfo3(This,functionID,reJitId,cCodeInfos,pcCodeInfos,codeInfos)	\
+    ( (This)->lpVtbl -> GetCodeInfo3(This,functionID,reJitId,cCodeInfos,pcCodeInfos,codeInfos) ) 
+
+#define ICorProfilerInfo10_GetFunctionFromIP2(This,ip,pFunctionId,pReJitId)	\
+    ( (This)->lpVtbl -> GetFunctionFromIP2(This,ip,pFunctionId,pReJitId) ) 
+
+#define ICorProfilerInfo10_GetReJITIDs(This,functionId,cReJitIds,pcReJitIds,reJitIds)	\
+    ( (This)->lpVtbl -> GetReJITIDs(This,functionId,cReJitIds,pcReJitIds,reJitIds) ) 
+
+#define ICorProfilerInfo10_GetILToNativeMapping2(This,functionId,reJitId,cMap,pcMap,map)	\
+    ( (This)->lpVtbl -> GetILToNativeMapping2(This,functionId,reJitId,cMap,pcMap,map) ) 
+
+#define ICorProfilerInfo10_EnumJITedFunctions2(This,ppEnum)	\
+    ( (This)->lpVtbl -> EnumJITedFunctions2(This,ppEnum) ) 
+
+#define ICorProfilerInfo10_GetObjectSize2(This,objectId,pcSize)	\
+    ( (This)->lpVtbl -> GetObjectSize2(This,objectId,pcSize) ) 
+
+
+#define ICorProfilerInfo10_GetEventMask2(This,pdwEventsLow,pdwEventsHigh)	\
+    ( (This)->lpVtbl -> GetEventMask2(This,pdwEventsLow,pdwEventsHigh) ) 
+
+#define ICorProfilerInfo10_SetEventMask2(This,dwEventsLow,dwEventsHigh)	\
+    ( (This)->lpVtbl -> SetEventMask2(This,dwEventsLow,dwEventsHigh) ) 
+
+
+#define ICorProfilerInfo10_EnumNgenModuleMethodsInliningThisMethod(This,inlinersModuleId,inlineeModuleId,inlineeMethodId,incompleteData,ppEnum)	\
+    ( (This)->lpVtbl -> EnumNgenModuleMethodsInliningThisMethod(This,inlinersModuleId,inlineeModuleId,inlineeMethodId,incompleteData,ppEnum) ) 
+
+
+#define ICorProfilerInfo10_ApplyMetaData(This,moduleId)	\
+    ( (This)->lpVtbl -> ApplyMetaData(This,moduleId) ) 
+
+#define ICorProfilerInfo10_GetInMemorySymbolsLength(This,moduleId,pCountSymbolBytes)	\
+    ( (This)->lpVtbl -> GetInMemorySymbolsLength(This,moduleId,pCountSymbolBytes) ) 
+
+#define ICorProfilerInfo10_ReadInMemorySymbols(This,moduleId,symbolsReadOffset,pSymbolBytes,countSymbolBytes,pCountSymbolBytesRead)	\
+    ( (This)->lpVtbl -> ReadInMemorySymbols(This,moduleId,symbolsReadOffset,pSymbolBytes,countSymbolBytes,pCountSymbolBytesRead) ) 
+
+
+#define ICorProfilerInfo10_IsFunctionDynamic(This,functionId,isDynamic)	\
+    ( (This)->lpVtbl -> IsFunctionDynamic(This,functionId,isDynamic) ) 
+
+#define ICorProfilerInfo10_GetFunctionFromIP3(This,ip,functionId,pReJitId)	\
+    ( (This)->lpVtbl -> GetFunctionFromIP3(This,ip,functionId,pReJitId) ) 
+
+#define ICorProfilerInfo10_GetDynamicFunctionInfo(This,functionId,moduleId,ppvSig,pbSig,cchName,pcchName,wszName)	\
+    ( (This)->lpVtbl -> GetDynamicFunctionInfo(This,functionId,moduleId,ppvSig,pbSig,cchName,pcchName,wszName) ) 
+
+
+#define ICorProfilerInfo10_GetNativeCodeStartAddresses(This,functionID,reJitId,cCodeStartAddresses,pcCodeStartAddresses,codeStartAddresses)	\
+    ( (This)->lpVtbl -> GetNativeCodeStartAddresses(This,functionID,reJitId,cCodeStartAddresses,pcCodeStartAddresses,codeStartAddresses) ) 
+
+#define ICorProfilerInfo10_GetILToNativeMapping3(This,pNativeCodeStartAddress,cMap,pcMap,map)	\
+    ( (This)->lpVtbl -> GetILToNativeMapping3(This,pNativeCodeStartAddress,cMap,pcMap,map) ) 
+
+#define ICorProfilerInfo10_GetCodeInfo4(This,pNativeCodeStartAddress,cCodeInfos,pcCodeInfos,codeInfos)	\
+    ( (This)->lpVtbl -> GetCodeInfo4(This,pNativeCodeStartAddress,cCodeInfos,pcCodeInfos,codeInfos) ) 
+
+
+#define ICorProfilerInfo10_EnumerateObjectReferences(This,objectId,callback,clientData)	\
+    ( (This)->lpVtbl -> EnumerateObjectReferences(This,objectId,callback,clientData) ) 
+
+#define ICorProfilerInfo10_IsFrozenObject(This,objectId,pbFrozen)	\
+    ( (This)->lpVtbl -> IsFrozenObject(This,objectId,pbFrozen) ) 
+
+#define ICorProfilerInfo10_GetLOHObjectSizeThreshold(This,pThreshold)	\
+    ( (This)->lpVtbl -> GetLOHObjectSizeThreshold(This,pThreshold) ) 
+
+#define ICorProfilerInfo10_RequestReJITWithInliners(This,dwRejitFlags,cFunctions,moduleIds,methodIds)	\
+    ( (This)->lpVtbl -> RequestReJITWithInliners(This,dwRejitFlags,cFunctions,moduleIds,methodIds) ) 
+
+#define ICorProfilerInfo10_SuspendRuntime(This)	\
+    ( (This)->lpVtbl -> SuspendRuntime(This) ) 
+
+#define ICorProfilerInfo10_ResumeRuntime(This)	\
+    ( (This)->lpVtbl -> ResumeRuntime(This) ) 
+
+#endif /* COBJMACROS */
+
+
+#endif 	/* C style interface */
+
+
+
+
+#endif 	/* __ICorProfilerInfo10_INTERFACE_DEFINED__ */
 
 
 #ifndef __ICorProfilerMethodEnum_INTERFACE_DEFINED__

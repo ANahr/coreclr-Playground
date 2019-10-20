@@ -16,7 +16,6 @@
 #include "ceeload.h"
 #include "class.h"
 #include "dllimport.h"
-#include "mdaassistants.h"
 
 enum UMThunkStubFlags
 {
@@ -205,16 +204,32 @@ public:
     Stub *CompileNExportThunk(LoaderHeap *pLoaderHeap, PInvokeStaticSigInfo* pSigInfo, MetaSig *pMetaSig, BOOL fNoStub);
 #endif // _TARGET_X86_ && !FEATURE_STUBS_AS_IL
 
+#if defined(_TARGET_X86_) && defined(FEATURE_STUBS_AS_IL)
+    struct ArgumentRegisters
+    {
+        UINT32 Ecx;
+        UINT32 Edx;
+    };
+
+    VOID SetupArguments(char *pSrc, ArgumentRegisters *pArgRegs, char *pDst);
+#endif // _TARGET_X86_ && FEATURE_STUBS_AS_IL
+
 private:
     PCODE             m_pILStub;            // IL stub for marshaling 
                                             // On x86, NULL for no-marshal signatures
                                             // On non-x86, the managed entrypoint for no-delegate no-marshal signatures
     UINT32            m_cbActualArgSize;    // caches m_pSig.SizeOfFrameArgumentArray()
-#if defined(_TARGET_X86_) && !defined(FEATURE_STUBS_AS_IL)
-    Stub*             m_pExecStub;          // UMEntryThunk jumps directly here
+                                            // On x86/Linux we have to augment with numRegistersUsed * STACK_ELEM_SIZE
+#if defined(_TARGET_X86_)
     UINT16            m_cbRetPop;           // stack bytes popped by callee (for UpdateRegDisplay)
+#if defined(FEATURE_STUBS_AS_IL)
+    UINT32            m_cbStackArgSize;     // stack bytes pushed for managed code
+#else
+    Stub*             m_pExecStub;          // UMEntryThunk jumps directly here
     UINT16            m_callConv;           // unmanaged calling convention and flags (CorPinvokeMap)
-#endif
+#endif // FEATURE_STUBS_AS_IL
+#endif // _TARGET_X86_
+
     MethodDesc *      m_pMD;                // maybe null
     Module *          m_pModule;
     Signature         m_sig;
@@ -234,6 +249,7 @@ class UMEntryThunk
 {
     friend class CheckAsmOffsets;
     friend class NDirectStubLinker;
+    friend class UMEntryThunkFreeList;
 
 private:
 #ifdef _DEBUG
@@ -269,8 +285,7 @@ public:
     VOID LoadTimeInit(PCODE                   pManagedTarget,
                       OBJECTHANDLE            pObjectHandle,
                       UMThunkMarshInfo       *pUMThunkMarshInfo,
-                      MethodDesc             *pMD,
-                      ADID                    dwDomainId)
+                      MethodDesc             *pMD)
     {
         CONTRACTL
         {
@@ -285,7 +300,6 @@ public:
         m_pManagedTarget = pManagedTarget;
         m_pObjectHandle     = pObjectHandle;
         m_pUMThunkMarshInfo = pUMThunkMarshInfo;
-        m_dwDomainId        = dwDomainId;
 
         m_pMD = pMD;    // For debugging and profiling, so they can identify the target
 
@@ -310,15 +324,9 @@ public:
         {
             DestroyLongWeakHandle(GetObjectHandle());
         }
-
-#ifdef _DEBUG
-        FillMemory(this, sizeof(*this), 0xcc);
-#endif
     }
 
     void Terminate();
-
-    void OnADUnload();
 
     VOID RunTimeInit()
     {
@@ -411,13 +419,7 @@ public:
             MODE_ANY;
             SUPPORTS_DAC;
             PRECONDITION(m_state == kRunTimeInited || m_state == kLoadTimeInited);
-#ifdef MDA_SUPPORTED
-            // We can return NULL here if the CollectedDelegate probe is on because
-            // a collected delegate will have set this field to NULL.
-            POSTCONDITION(g_pDebugInterface->ThisIsHelperThread() || MDA_GET_ASSISTANT(CallbackOnCollectedDelegate) || CheckPointer(RETVAL));
-#else
             POSTCONDITION(CheckPointer(RETVAL));
-#endif
         }
         CONTRACT_END;
     
@@ -462,20 +464,6 @@ public:
         RETURN m_pMD;
     }
 
-    ADID GetDomainId() const
-    {
-        CONTRACT (ADID)
-        {
-            NOTHROW;
-            GC_NOTRIGGER;
-            MODE_ANY;
-            PRECONDITION(m_state == kRunTimeInited || m_state == kLoadTimeInited);
-        }
-        CONTRACT_END;
-
-        RETURN m_dwDomainId;
-    }
-
     static DWORD GetOffsetOfMethodDesc()
     {
         LIMITED_METHOD_CONTRACT;
@@ -490,14 +478,7 @@ public:
 
     static UMEntryThunk* Decode(LPVOID pCallback);
 
-#ifdef MDA_SUPPORTED
-    BOOL IsCollected() const
-    {
-        LIMITED_METHOD_CONTRACT;
-        _ASSERTE(m_pMD != NULL && m_pMD->IsEEImpl());
-        return m_pObjectHandle == NULL;
-    }
-#endif
+    static VOID __fastcall ReportViolation(UMEntryThunk* p);
 
 private:
     // The start of the managed code.
@@ -512,10 +493,14 @@ private:
     // Field is NULL for a static method.
     OBJECTHANDLE            m_pObjectHandle;
 
-    // Pointer to the shared structure containing everything else
-    PTR_UMThunkMarshInfo    m_pUMThunkMarshInfo;
+    union
+    {
+        // Pointer to the shared structure containing everything else
+        PTR_UMThunkMarshInfo    m_pUMThunkMarshInfo;
+        // Pointer to the next UMEntryThunk in the free list. Used when it is freed.
+        UMEntryThunk *m_pNextFreeThunk;
+    };
 
-    ADID                    m_dwDomainId;   // appdomain of module (cached for fast access)
 #ifdef _DEBUG
     DWORD                   m_state;        // the initialization state
 #endif
@@ -579,10 +564,10 @@ Stub *GenerateUMThunkPrestub();
 //-------------------------------------------------------------------------
 // NExport stub
 //-------------------------------------------------------------------------
-#if  !defined(_WIN64) && !defined(DACCESS_COMPILE) && !defined(CROSS_COMPILE)
+#if  !defined(BIT64) && !defined(DACCESS_COMPILE) && !defined(CROSS_COMPILE)
 EXCEPTION_HANDLER_DECL(FastNExportExceptHandler);
 EXCEPTION_HANDLER_DECL(UMThunkPrestubHandler);
-#endif // _WIN64
+#endif // BIT64
 
 extern "C" void TheUMEntryPrestub(void);
 extern "C" PCODE TheUMEntryPrestubWorker(UMEntryThunk * pUMEntryThunk);
@@ -592,9 +577,5 @@ EXTERN_C void UMThunkStub(void);
 #ifdef _DEBUG
 void STDCALL LogUMTransition(UMEntryThunk* thunk);
 #endif
-
-#ifdef MDA_SUPPORTED
-EXTERN_C void __fastcall CallbackOnCollectedDelegateHelper(UMEntryThunk *pEntryThunk);
-#endif // MDA_SUPPORTED
 
 #endif //__dllimportcallback_h__

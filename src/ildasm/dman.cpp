@@ -232,8 +232,9 @@ void DumpAssembly(void* GUICookie, BOOL fFullDump)
             if(IsAfPA_NoPlatform(dwFlags)) strcat_s(szString,SZSTRING_SIZE,KEYWORD("noplatform "));
             if(IsAfPA_MSIL(dwFlags)) strcat_s(szString,SZSTRING_SIZE,KEYWORD("cil "));
             if(IsAfPA_x86(dwFlags)) strcat_s(szString,SZSTRING_SIZE,KEYWORD("x86 "));
-            if(IsAfPA_IA64(dwFlags)) strcat_s(szString,SZSTRING_SIZE,KEYWORD("ia64 "));
             if(IsAfPA_AMD64(dwFlags)) strcat_s(szString,SZSTRING_SIZE,KEYWORD("amd64 "));
+            if(IsAfPA_ARM(dwFlags)) strcat_s(szString,SZSTRING_SIZE,KEYWORD("arm "));
+            if(IsAfPA_ARM64(dwFlags)) strcat_s(szString,SZSTRING_SIZE,KEYWORD("arm64 "));
 
 
             wzName[ulNameLen] = 0;
@@ -355,8 +356,9 @@ void DumpAssemblyRefs(void* GUICookie)
                     if(IsAfContentType_WindowsRuntime(dwFlags)) strcat_s(szString,SZSTRING_SIZE,KEYWORD("windowsruntime "));
                     if(IsAfPA_MSIL(dwFlags)) strcat_s(szString,SZSTRING_SIZE,KEYWORD("cil "));
                     if(IsAfPA_x86(dwFlags)) strcat_s(szString,SZSTRING_SIZE,KEYWORD("x86 "));
-                    if(IsAfPA_IA64(dwFlags)) strcat_s(szString,SZSTRING_SIZE,KEYWORD("ia64 "));
                     if(IsAfPA_AMD64(dwFlags)) strcat_s(szString,SZSTRING_SIZE,KEYWORD("amd64 "));
+                    if(IsAfPA_ARM(dwFlags)) strcat_s(szString,SZSTRING_SIZE,KEYWORD("arm "));
+                    if(IsAfPA_ARM64(dwFlags)) strcat_s(szString,SZSTRING_SIZE,KEYWORD("arm64 "));
 
                     {
                         char* sz = new char[3*ulNameLen+32];
@@ -990,14 +992,14 @@ IMetaDataAssemblyImport* GetAssemblyImport(void* GUICookie)
             if(pdwSize && *pdwSize)
             {
                 pbManifest += sizeof(DWORD);
-                if (SUCCEEDED(hr = getMetaDataInternalInterface(
+                if (SUCCEEDED(hr = GetMetaDataInternalInterface(
                     pbManifest,
                     VAL32(*pdwSize),
                     ofRead,
                     IID_IMDInternalImport,
                     (LPVOID *)&pParam->pImport)))
                 {
-                    if (FAILED(hr = getMetaDataPublicInterfaceFromInternal(
+                    if (FAILED(hr = GetMetaDataPublicInterfaceFromInternal(
                         pParam->pImport,
                         IID_IMetaDataAssemblyImport,
                         (LPVOID *)&pParam->pAssemblyImport)))

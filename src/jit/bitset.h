@@ -30,7 +30,7 @@ public:
     {
         unsigned res = 0;
         // We process "u" in 4-bit nibbles, hence the "*2" below.
-        for (int i = 0; i < sizeof(T) * 2; i++)
+        for (unsigned int i = 0; i < sizeof(T) * 2; i++)
         {
             res += BitCountTable[u & 0xf];
             u >>= 4;
@@ -40,7 +40,7 @@ public:
 
 #ifdef DEBUG
     // This runs the "TestSuite" method for a few important instantiations of BitSet.
-    static void TestSuite(IAllocator* env);
+    static void TestSuite(CompAllocator env);
 #endif
 
     enum Operation
@@ -132,7 +132,7 @@ FORCEINLINE unsigned BitSetSupport::CountBitsInIntegral<unsigned>(unsigned c)
 //
 //    typename BitSetTraits:
 //      An "adapter" class that provides methods that retrieves things from the Env:
-//        static IAllocator* GetAllococator(Env):   yields an "IAllocator*" that the BitSet implementation can use.
+//        static void* Alloc(Env, size_t byteSize): Allocates memory the BitSet implementation can use.
 //        static unsigned    GetSize(Env):          the current size (= # of bits) of this bitset type.
 //        static unsigned    GetArrSize(Env, unsigned elemSize):  The number of "elemSize" chunks sufficient to hold
 //                                                                "GetSize". A given BitSet implementation must call
@@ -202,12 +202,7 @@ class BitSetOps
     // be copied into the lhs.
     static void AssignNoCopy(Env env, BitSetType& lhs, BitSetValueArgType rhs);
 
-    // Destructively set "bs" to be the empty set.  This method is unique, in that it does *not*
-    // require "bs" to be a bitset of the current epoch.  It ensures that it is after, however.
-    // (If the representation is indirect, this requires allocating a new, empty representation.
-    // If this is a performance issue, we could provide a new version of ClearD that assumes/asserts
-    // that the rep is for the current epoch -- this would be useful if a given bitset were repeatedly
-    // cleared within an epoch.)
+    // Destructively set "bs" to be the empty set.
     static void ClearD(Env env, BitSetType& bs);
 
     // Returns a copy of "bs".  If the representation of "bs" involves a level of indirection, the data
@@ -219,6 +214,9 @@ class BitSetOps
 
     // Returns the number of members in "bs".
     static unsigned Count(Env env, BitSetValueArgType bs);
+
+    // Return true if the union of bs1 and bs2 is empty.
+    static bool IsEmptyUnion(Env env, BitSetValueArgType bs1, BitSetValueArgType bs2);
 
     // Returns "true" iff "i" is a member of "bs".
     static bool IsMember(Env env, const BitSetValueArgType bs, unsigned i);
@@ -248,8 +246,13 @@ class BitSetOps
 
     // Destructively modify "bs1" to be the set difference of "bs1" and "bs2".
     static void DiffD(Env env, BitSetType& bs1, BitSetValueArgType bs2);
+    
     // Returns a new BitSet that is the set difference of "bs1" and "bs2".
     static BitSetValueRetType Diff(Env env, BitSetValueArgType bs1, BitSetValueArgType bs2);
+
+    // Compute the live_in set. Variable is alive if there is use or it is out set, but not in def.
+    // in = use | (out & ~def)
+    static void LivenessD(Env env, BitSetType& in, BitSetValueArgType def, BitSetValueArgType use, BitSetValueArgType out);
 
     // Returns true iff "bs2" is a subset of "bs1."
     static bool IsSubset(Env env, BitSetValueArgType bs1, BitSetValueArgType bs2);
@@ -267,7 +270,7 @@ class BitSetOps
     class Iter {
       public:
         Iter(Env env, BitSetValueArgType bs) {}
-        bool NextElem(Env env, unsigned* pElem) { return false; }
+        bool NextElem(unsigned* pElem) { return false; }
     };
 
     typename ValArgType;
@@ -427,16 +430,17 @@ public:
     class Iter
     {
         BaseIter m_iter;
+        Env      m_env;
 
     public:
-        Iter(Env env, BitSetValueArgType bs) : m_iter(env, bs)
+        Iter(Env env, BitSetValueArgType bs) : m_iter(env, bs), m_env(env)
         {
         }
 
-        bool NextElem(Env env, unsigned* pElem)
+        bool NextElem(unsigned* pElem)
         {
-            BitSetTraits::GetOpCounter(env)->RecordOp(BitSetSupport::BSOP_NextBit);
-            return m_iter.NextElem(env, pElem);
+            BitSetTraits::GetOpCounter(m_env)->RecordOp(BitSetSupport::BSOP_NextBit);
+            return m_iter.NextElem(pElem);
         }
     };
 };

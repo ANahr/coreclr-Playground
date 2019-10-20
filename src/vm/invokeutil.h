@@ -66,14 +66,6 @@ public:
     virtual MethodDesc* GetCallerMethod();
     virtual Assembly* GetCallerAssembly();
     virtual bool IsCalledFromInterop();
-
-    // The caller will be computed lazily by the reflection system.
-    virtual bool IsCallerCritical()
-    {
-        LIMITED_METHOD_CONTRACT;
-        
-        return false;
-    }
     
     AccessCheckOptions::AccessCheckType GetAccessCheckType() const
     {
@@ -113,7 +105,7 @@ public:
     // Given a type, this routine will convert an return value representing that
     //  type into an ObjectReference.  If the type is a primitive, the 
     //  value is wrapped in one of the Value classes.
-    static OBJECTREF CreateObject(TypeHandle th, void * pValue);
+    static OBJECTREF CreateObjectAfterInvoke(TypeHandle th, void * pValue);
 
     // This is a special purpose Exception creation function.  It
     //  creates the TargetInvocationExeption placing the passed
@@ -237,9 +229,6 @@ public:
                                MethodTable*     pInstanceMT,
                                FieldDesc*       pTargetField);
 
-    // If a method has a linktime demand attached, perform it.
-    static void CheckLinktimeDemand(RefSecContext *pCtx, MethodDesc *pMeth);
-
     //
     // Check to see if the target of a reflection operation is on a remote object
     //
@@ -268,13 +257,7 @@ public:
         return FALSE;
     }
 
-    static BOOL IsCriticalWithConversionToFullDemand(MethodTable* pMT);
-    static BOOL IsCriticalWithConversionToFullDemand(MethodDesc* pMD, MethodTable* pInstanceMT);
-    static BOOL IsCriticalWithConversionToFullDemand(FieldDesc* pFD, MethodTable* pInstanceMT);
-
     static AccessCheckOptions::AccessCheckType GetInvocationAccessCheckType(BOOL targetRemoted = FALSE);
-
-    static bool IsDangerousMethod(MethodDesc *pMD);
 
 private:
     // Check accessability of a type or nested type.

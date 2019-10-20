@@ -30,6 +30,8 @@
 #include "gentree.h"
 // Defines the type ValueNum.
 #include "valuenumtype.h"
+// Defines the type SmallHashTable.
+#include "smallhash.h"
 
 // A "ValueNumStore" represents the "universe" of value numbers used in a single
 // compilation.
@@ -45,10 +47,9 @@ enum VNFunc
     VNF_COUNT
 };
 
-// Given an "oper" and associated flags with it, transform the oper into a
-// more accurate oper that can be used in evaluation. For example, (GT_ADD, unsigned)
-// transforms to GT_ADD_UN.
-VNFunc GetVNFuncForOper(genTreeOps oper, bool isUnsigned);
+// Given a GenTree node return the VNFunc that should be used when value numbering
+//
+VNFunc GetVNFuncForNode(GenTree* node);
 
 // An instance of this struct represents an application of the function symbol
 // "m_func" to the first "m_arity" (<= 4) argument values in "m_args."
@@ -79,10 +80,9 @@ struct VNFuncApp
     }
 };
 
-// A unique prefix character to use when dumping a tree's gtVN in the tree dumps
-// We use this together with string concatenation to put this in printf format strings
-// static const char* const VN_DumpPrefix = "$";
-#define STR_VN "$"
+// We use a unique prefix character when printing value numbers in dumps:  i.e.  $1c0
+// This define is used with string concatenation to put this in printf format strings
+#define FMT_VN "$%x"
 
 class ValueNumStore
 {
@@ -97,26 +97,26 @@ public:
     // VNMap - map from something to ValueNum, where something is typically a constant value or a VNFunc
     //         This class has two purposes - to abstract the implementation and to validate the ValueNums
     //         being stored or retrieved.
-    template <class fromType, class keyfuncs = LargePrimitiveKeyFuncs<fromType>>
-    class VNMap : public SimplerHashTable<fromType, keyfuncs, ValueNum, JitSimplerHashBehavior>
+    template <class fromType, class keyfuncs = JitLargePrimitiveKeyFuncs<fromType>>
+    class VNMap : public JitHashTable<fromType, keyfuncs, ValueNum>
     {
     public:
-        VNMap(IAllocator* alloc) : SimplerHashTable<fromType, keyfuncs, ValueNum, JitSimplerHashBehavior>(alloc)
+        VNMap(CompAllocator alloc) : JitHashTable<fromType, keyfuncs, ValueNum>(alloc)
         {
         }
         ~VNMap()
         {
-            ~VNMap<fromType, keyfuncs>::SimplerHashTable();
+            ~VNMap<fromType, keyfuncs>::JitHashTable();
         }
 
         bool Set(fromType k, ValueNum val)
         {
             assert(val != RecursiveVN);
-            return SimplerHashTable<fromType, keyfuncs, ValueNum, JitSimplerHashBehavior>::Set(k, val);
+            return JitHashTable<fromType, keyfuncs, ValueNum>::Set(k, val);
         }
         bool Lookup(fromType k, ValueNum* pVal = nullptr) const
         {
-            bool result = SimplerHashTable<fromType, keyfuncs, ValueNum, JitSimplerHashBehavior>::Lookup(k, pVal);
+            bool result = JitHashTable<fromType, keyfuncs, ValueNum>::Lookup(k, pVal);
             assert(!result || *pVal != RecursiveVN);
             return result;
         }
@@ -126,7 +126,7 @@ private:
     Compiler* m_pComp;
 
     // For allocations.  (Other things?)
-    IAllocator* m_alloc;
+    CompAllocator m_alloc;
 
     // TODO-Cleanup: should transform "attribs" into a struct with bit fields.  That would be simpler...
 
@@ -171,25 +171,25 @@ private:
     // Returns "true" iff "vnf" can be evaluated for constant arguments.
     static bool CanEvalForConstantArgs(VNFunc vnf);
 
+    // Returns "true" iff "vnf" should be folded by evaluating the func with constant arguments.
+    bool VNEvalShouldFold(var_types typ, VNFunc func, ValueNum arg0VN, ValueNum arg1VN);
+
     // return vnf(v0)
     template <typename T>
     static T EvalOp(VNFunc vnf, T v0);
 
-    // If vnf(v0, v1) would raise an exception, sets *pExcSet to the singleton set containing the exception, and
-    // returns (T)0. Otherwise, returns vnf(v0, v1).
+    // returns vnf(v0, v1).
     template <typename T>
-    T EvalOp(VNFunc vnf, T v0, T v1, ValueNum* pExcSet);
+    T EvalOp(VNFunc vnf, T v0, T v1);
+
+    // return vnf(v0) or vnf(v0, v1), respectively (must, of course be unary/binary ops, respectively.)
+    template <typename T>
+    static T EvalOpSpecialized(VNFunc vnf, T v0);
+    template <typename T>
+    T EvalOpSpecialized(VNFunc vnf, T v0, T v1);
 
     template <typename T>
     static int EvalComparison(VNFunc vnf, T v0, T v1);
-    template <typename T>
-    static int EvalOrderedComparisonFloat(VNFunc vnf, T v0, T v1);
-    // return vnf(v0) or vnf(v0, v1), respectively (must, of course be unary/binary ops, respectively.)
-    // Should only be instantiated for integral types.
-    template <typename T>
-    static T EvalOpIntegral(VNFunc vnf, T v0);
-    template <typename T>
-    T EvalOpIntegral(VNFunc vnf, T v0, T v1, ValueNum* pExcSet);
 
     // Should only instantiate (in a non-trivial way) for "int" and "INT64".  Returns true iff dividing "v0" by "v1"
     // would produce integer overflow (an ArithmeticException -- *not* division by zero, which is separate.)
@@ -216,23 +216,21 @@ private:
     ValueNum EvalFuncForConstantFPArgs(var_types typ, VNFunc vnf, ValueNum vn0, ValueNum vn1);
     ValueNum EvalCastForConstantArgs(var_types typ, VNFunc vnf, ValueNum vn0, ValueNum vn1);
 
-#ifdef DEBUG
-    // This helps test some performance pathologies related to "evaluation" of VNF_MapSelect terms,
-    // especially relating to GcHeap/ByrefExposed.  We count the number of applications of such terms we consider,
-    // and if this exceeds a limit, indicated by a COMPlus_ variable, we assert.
-    unsigned m_numMapSels;
-#endif
+    ValueNum EvalUsingMathIdentity(var_types typ, VNFunc vnf, ValueNum vn0, ValueNum vn1);
+
+// This is the constant value used for the default value of m_mapSelectBudget
+#define DEFAULT_MAP_SELECT_BUDGET 100 // used by JitVNMapSelBudget
 
     // This is the maximum number of MapSelect terms that can be "considered" as part of evaluation of a top-level
     // MapSelect application.
-    unsigned m_mapSelectBudget;
+    int m_mapSelectBudget;
 
 public:
     // Initializes any static variables of ValueNumStore.
     static void InitValueNumStoreStatics();
 
     // Initialize an empty ValueNumStore.
-    ValueNumStore(Compiler* comp, IAllocator* allocator);
+    ValueNumStore(Compiler* comp, CompAllocator allocator);
 
     // Returns "true" iff "vnf" (which may have been created by a cast from an integral value) represents
     // a legal value number function.
@@ -264,7 +262,7 @@ public:
     ValueNum VNForLongCon(INT64 cnsVal);
     ValueNum VNForFloatCon(float cnsVal);
     ValueNum VNForDoubleCon(double cnsVal);
-    ValueNum VNForByrefCon(INT64 byrefVal);
+    ValueNum VNForByrefCon(size_t byrefVal);
 
 #ifdef _TARGET_64BIT_
     ValueNum VNForPtrSizeIntCon(INT64 cnsVal)
@@ -338,16 +336,33 @@ public:
     // It returns NoVN for a "typ" that has no one value, such as TYP_REF.
     ValueNum VNOneForType(var_types typ);
 
-    // Return the value number representing the singleton exception set containing the exception value "x".
+    // Create or return the existimg value number representing a singleton exception set
+    // for the the exception value "x".
     ValueNum VNExcSetSingleton(ValueNum x);
     ValueNumPair VNPExcSetSingleton(ValueNumPair x);
 
+    // Returns true if the current pair of items are in ascending order and they are not duplicates.
+    // Used to verify that exception sets are in ascending order when processing them.
+    bool VNCheckAscending(ValueNum item, ValueNum xs1);
+
     // Returns the VN representing the union of the two exception sets "xs0" and "xs1".
     // These must be VNForEmtpyExcSet() or applications of VNF_ExcSetCons, obeying
-    // the ascending order invariant (which is preserved in the result.)
-    ValueNum VNExcSetUnion(ValueNum xs0, ValueNum xs1 DEBUGARG(bool topLevel = true));
+    // the ascending order invariant. (which is preserved in the result)
+    ValueNum VNExcSetUnion(ValueNum xs0, ValueNum xs1);
 
     ValueNumPair VNPExcSetUnion(ValueNumPair xs0vnp, ValueNumPair xs1vnp);
+
+    // Returns the VN representing the intersection of the two exception sets "xs0" and "xs1".
+    // These must be applications of VNF_ExcSetCons or the empty set. (i.e VNForEmptyExcSet())
+    // and also must be in ascending order.
+    ValueNum VNExcSetIntersection(ValueNum xs0, ValueNum xs1);
+
+    ValueNumPair VNPExcSetIntersection(ValueNumPair xs0vnp, ValueNumPair xs1vnp);
+
+    // Returns true if every exeception singleton in the vnCandidateSet is also present
+    // in the vnFullSet.
+    // Both arguments must be either VNForEmptyExcSet() or applications of VNF_ExcSetCons.
+    bool VNExcIsSubset(ValueNum vnFullSet, ValueNum vnCandidateSet);
 
     // Returns "true" iff "vn" is an application of "VNF_ValWithExc".
     bool VNHasExc(ValueNum vn)
@@ -356,28 +371,67 @@ public:
         return GetVNFunc(vn, &funcApp) && funcApp.m_func == VNF_ValWithExc;
     }
 
-    // Requires that "vn" is *not* a "VNF_ValWithExc" appliation.
-    // If vn "excSet" is not "VNForEmptyExcSet()", return "VNF_ValWithExc(vn, excSet)".  Otherwise,
-    // just return "vn".
+    // If vn "excSet" is "VNForEmptyExcSet()" we just return "vn"
+    // otherwise we use VNExcSetUnion to combine the exception sets of both "vn" and "excSet"
+    // and return that ValueNum
     ValueNum VNWithExc(ValueNum vn, ValueNum excSet);
 
     ValueNumPair VNPWithExc(ValueNumPair vnp, ValueNumPair excSetVNP);
 
-    // If "vnWx" is a "VNF_ValWithExc(normal, excSet)" application, sets "*pvn" to "normal", and
-    // "*pvnx" to "excSet".  Otherwise, just sets "*pvn" to "normal".
+    // This sets "*pvn" to the Normal value and sets "*pvnx" to Exception set value.
+    // "pvnx" represents the set of all exceptions that can happen for the expression
     void VNUnpackExc(ValueNum vnWx, ValueNum* pvn, ValueNum* pvnx);
 
     void VNPUnpackExc(ValueNumPair vnWx, ValueNumPair* pvn, ValueNumPair* pvnx);
 
+    // This returns the Union of exceptions from vnWx and vnExcSet
+    ValueNum VNUnionExcSet(ValueNum vnWx, ValueNum vnExcSet);
+
+    // This returns the Union of exceptions from vnpWx and vnpExcSet
+    ValueNumPair VNPUnionExcSet(ValueNumPair vnpWx, ValueNumPair vnpExcSet);
+
+    // Sets the normal value to a new unique ValueNum
+    // Keeps any Exception set values
+    ValueNum VNMakeNormalUnique(ValueNum vn);
+
+    // Sets the liberal & conservative
+    // Keeps any Exception set values
+    ValueNumPair VNPMakeNormalUniquePair(ValueNumPair vnp);
+
     // If "vn" is a "VNF_ValWithExc(norm, excSet)" value, returns the "norm" argument; otherwise,
     // just returns "vn".
-    ValueNum VNNormVal(ValueNum vn);
-    ValueNumPair VNPNormVal(ValueNumPair vn);
+    // The Normal value is the value number of the expression when no exceptions occurred
+    ValueNum VNNormalValue(ValueNum vn);
+
+    // Given a "vnp", get the ValueNum kind based upon vnk,
+    // then call VNNormalValue on that ValueNum
+    // The Normal value is the value number of the expression when no exceptions occurred
+    ValueNum VNNormalValue(ValueNumPair vnp, ValueNumKind vnk);
+
+    // Given a "vnp", get the NormalValuew for the VNK_Liberal part of that ValueNum
+    // The Normal value is the value number of the expression when no exceptions occurred
+    inline ValueNum VNLiberalNormalValue(ValueNumPair vnp)
+    {
+        return VNNormalValue(vnp, VNK_Liberal);
+    }
+
+    // Given a "vnp", get the NormalValuew for the VNK_Conservative part of that ValueNum
+    // The Normal value is the value number of the expression when no exceptions occurred
+    inline ValueNum VNConservativeNormalValue(ValueNumPair vnp)
+    {
+        return VNNormalValue(vnp, VNK_Conservative);
+    }
+
+    // Given a "vnp", get the Normal values for both the liberal and conservative parts of "vnp"
+    // The Normal value is the value number of the expression when no exceptions occurred
+    ValueNumPair VNPNormalPair(ValueNumPair vnp);
 
     // If "vn" is a "VNF_ValWithExc(norm, excSet)" value, returns the "excSet" argument; otherwise,
-    // just returns "EmptyExcSet()".
-    ValueNum VNExcVal(ValueNum vn);
-    ValueNumPair VNPExcVal(ValueNumPair vn);
+    // we return a special Value Number representing the empty exception set.
+    // The exeception set value is the value number of the set of possible exceptions.
+    ValueNum VNExceptionSet(ValueNum vn);
+
+    ValueNumPair VNPExceptionSet(ValueNumPair vn);
 
     // True "iff" vn is a value known to be non-null.  (For example, the result of an allocation...)
     bool IsKnownNonNull(ValueNum vn);
@@ -385,15 +439,14 @@ public:
     // True "iff" vn is a value returned by a call to a shared static helper.
     bool IsSharedStatic(ValueNum vn);
 
-    // VN's for functions of other values.
-    // Four overloads, for arities 0, 1, 2, and 3.  If we need other arities, we'll consider it.
+    // VNForFunc: We have five overloads, for arities 0, 1, 2, 3 and 4
     ValueNum VNForFunc(var_types typ, VNFunc func);
     ValueNum VNForFunc(var_types typ, VNFunc func, ValueNum opVNwx);
     // This must not be used for VNF_MapSelect applications; instead use VNForMapSelect, below.
     ValueNum VNForFunc(var_types typ, VNFunc func, ValueNum op1VNwx, ValueNum op2VNwx);
     ValueNum VNForFunc(var_types typ, VNFunc func, ValueNum op1VNwx, ValueNum op2VNwx, ValueNum op3VNwx);
 
-    // The following four op VNForFunc is only used for VNF_PtrToArrElem, elemTypeEqVN, arrVN, inxVN, fldSeqVN
+    // The following four-op VNForFunc is used for VNF_PtrToArrElem, elemTypeEqVN, arrVN, inxVN, fldSeqVN
     ValueNum VNForFunc(
         var_types typ, VNFunc func, ValueNum op1VNwx, ValueNum op2VNwx, ValueNum op3VNwx, ValueNum op4VNwx);
 
@@ -404,7 +457,7 @@ public:
 
     // A method that does the work for VNForMapSelect and may call itself recursively.
     ValueNum VNForMapSelectWork(
-        ValueNumKind vnk, var_types typ, ValueNum op1VN, ValueNum op2VN, unsigned* pBudget, bool* pUsedRecursiveVN);
+        ValueNumKind vnk, var_types typ, ValueNum op1VN, ValueNum op2VN, int* pBudget, bool* pUsedRecursiveVN);
 
     // A specialized version of VNForFunc that is used for VNF_MapStore and provides some logging when verbose is set
     ValueNum VNForMapStore(var_types typ, ValueNum arg0VN, ValueNum arg1VN, ValueNum arg2VN);
@@ -515,10 +568,10 @@ public:
 
     // If "opA" has a PtrToLoc, PtrToArrElem, or PtrToStatic application as its value numbers, and "opB" is an integer
     // with a "fieldSeq", returns the VN for the pointer form extended with the field sequence; or else NoVN.
-    ValueNum ExtendPtrVN(GenTreePtr opA, GenTreePtr opB);
+    ValueNum ExtendPtrVN(GenTree* opA, GenTree* opB);
     // If "opA" has a PtrToLoc, PtrToArrElem, or PtrToStatic application as its value numbers, returns the VN for the
     // pointer form extended with "fieldSeq"; or else NoVN.
-    ValueNum ExtendPtrVN(GenTreePtr opA, FieldSeqNode* fieldSeq);
+    ValueNum ExtendPtrVN(GenTree* opA, FieldSeqNode* fieldSeq);
 
     // Queries on value numbers.
     // All queries taking value numbers require that those value numbers are valid, that is, that
@@ -537,16 +590,39 @@ public:
     // Returns true iff the VN represents an integeral constant.
     bool IsVNInt32Constant(ValueNum vn);
 
-    struct ArrLenArithBoundInfo
+    typedef SmallHashTable<ValueNum, bool, 8U> CheckedBoundVNSet;
+
+    // Returns true if the VN is known or likely to appear as the conservative value number
+    // of the length argument to a GT_ARR_BOUNDS_CHECK node.
+    bool IsVNCheckedBound(ValueNum vn);
+
+    // Record that a VN is known to appear as the conservative value number of the length
+    // argument to a GT_ARR_BOUNDS_CHECK node.
+    void SetVNIsCheckedBound(ValueNum vn);
+
+    // Information about the individual components of a value number representing an unsigned
+    // comparison of some value against a checked bound VN.
+    struct UnsignedCompareCheckedBoundInfo
     {
-        // (vnArr.len - 1) > vnOp
-        // (vnArr.len arrOper arrOp) cmpOper cmpOp
-        ValueNum vnArray;
+        unsigned cmpOper;
+        ValueNum vnIdx;
+        ValueNum vnBound;
+
+        UnsignedCompareCheckedBoundInfo() : cmpOper(GT_NONE), vnIdx(NoVN), vnBound(NoVN)
+        {
+        }
+    };
+
+    struct CompareCheckedBoundArithInfo
+    {
+        // (vnBound - 1) > vnOp
+        // (vnBound arrOper arrOp) cmpOper cmpOp
+        ValueNum vnBound;
         unsigned arrOper;
         ValueNum arrOp;
         unsigned cmpOper;
         ValueNum cmpOp;
-        ArrLenArithBoundInfo() : vnArray(NoVN), arrOper(GT_NONE), arrOp(NoVN), cmpOper(GT_NONE), cmpOp(NoVN)
+        CompareCheckedBoundArithInfo() : vnBound(NoVN), arrOper(GT_NONE), arrOp(NoVN), cmpOper(GT_NONE), cmpOp(NoVN)
         {
         }
 #ifdef DEBUG
@@ -556,7 +632,7 @@ public:
             printf(" ");
             printf(vnStore->VNFuncName((VNFunc)cmpOper));
             printf(" ");
-            vnStore->vnDump(vnStore->m_pComp, vnArray);
+            vnStore->vnDump(vnStore->m_pComp, vnBound);
             if (arrOper != GT_NONE)
             {
                 printf(vnStore->VNFuncName((VNFunc)arrOper));
@@ -607,23 +683,26 @@ public:
     // If "vn" is constant bound, then populate the "info" fields for constVal, cmpOp, cmpOper.
     void GetConstantBoundInfo(ValueNum vn, ConstantBoundInfo* info);
 
-    // If "vn" is of the form "var < a.len" or "a.len <= var" return true.
-    bool IsVNArrLenBound(ValueNum vn);
+    // If "vn" is of the form "(uint)var < (uint)len" (or equivalent) return true.
+    bool IsVNUnsignedCompareCheckedBound(ValueNum vn, UnsignedCompareCheckedBoundInfo* info);
 
-    // If "vn" is arr len bound, then populate the "info" fields for the arrVn, cmpOp, cmpOper.
-    void GetArrLenBoundInfo(ValueNum vn, ArrLenArithBoundInfo* info);
+    // If "vn" is of the form "var < len" or "len <= var" return true.
+    bool IsVNCompareCheckedBound(ValueNum vn);
 
-    // If "vn" is of the form "a.len +/- var" return true.
-    bool IsVNArrLenArith(ValueNum vn);
+    // If "vn" is checked bound, then populate the "info" fields for the boundVn, cmpOp, cmpOper.
+    void GetCompareCheckedBound(ValueNum vn, CompareCheckedBoundArithInfo* info);
 
-    // If "vn" is arr len arith, then populate the "info" fields for arrOper, arrVn, arrOp.
-    void GetArrLenArithInfo(ValueNum vn, ArrLenArithBoundInfo* info);
+    // If "vn" is of the form "len +/- var" return true.
+    bool IsVNCheckedBoundArith(ValueNum vn);
 
-    // If "vn" is of the form "var < a.len +/- k" return true.
-    bool IsVNArrLenArithBound(ValueNum vn);
+    // If "vn" is checked bound arith, then populate the "info" fields for arrOper, arrVn, arrOp.
+    void GetCheckedBoundArithInfo(ValueNum vn, CompareCheckedBoundArithInfo* info);
 
-    // If "vn" is arr len arith bound, then populate the "info" fields for cmpOp, cmpOper.
-    void GetArrLenArithBoundInfo(ValueNum vn, ArrLenArithBoundInfo* info);
+    // If "vn" is of the form "var < len +/- k" return true.
+    bool IsVNCompareCheckedBoundArith(ValueNum vn);
+
+    // If "vn" is checked bound arith, then populate the "info" fields for cmpOp, cmpOper.
+    void GetCompareCheckedBoundArithInfo(ValueNum vn, CompareCheckedBoundArithInfo* info);
 
     // Returns the flags on the current handle. GTF_ICON_SCOPE_HDL for example.
     unsigned GetHandleFlags(ValueNum vn);
@@ -664,9 +743,13 @@ private:
                 __fallthrough;
 
             case TYP_BYREF:
-#ifndef PLATFORM_UNIX
+
+#ifdef _MSC_VER
+
                 assert(&typeid(T) == &typeid(size_t)); // We represent ref/byref constants as size_t's.
-#endif                                                 // PLATFORM_UNIX
+
+#endif // _MSC_VER
+
                 __fallthrough;
 
             case TYP_INT:
@@ -728,10 +811,6 @@ public:
         return ConstantValueInternal<T>(vn DEBUGARG(true));
     }
 
-    // Given a value number "vn", go through the list of VNs that are handles
-    // to find if it is present, if so, return "true", else "false."
-    bool IsHandle(ValueNum vn);
-
     // Requires "mthFunc" to be an intrinsic math function (one of the allowable values for the "gtMath" field
     // of a GenTreeMath node).  For unary ops, return the value number for the application of this function to
     // "arg0VN". For binary ops, return the value number for the application of this function to "arg0VN" and
@@ -789,6 +868,14 @@ public:
     // Prints a representation of a MapStore operation on standard out.
     void vnDumpMapStore(Compiler* comp, VNFuncApp* mapStore);
 
+    // Requires "valWithExc" to be a value with an exeception set VNFuncApp.
+    // Prints a representation of the exeception set on standard out.
+    void vnDumpValWithExc(Compiler* comp, VNFuncApp* valWithExc);
+
+    // Requires "excSeq" to be a ExcSetCons sequence.
+    // Prints a representation of the set of exceptions on standard out.
+    void vnDumpExcSeq(Compiler* comp, VNFuncApp* excSeq, bool isHead);
+
     // Returns the string name of "vnf".
     static const char* VNFuncName(VNFunc vnf);
     // Used in the implementation of the above.
@@ -801,18 +888,6 @@ public:
 
     // Returns true if "vn" is a reserved value number
     static bool isReservedVN(ValueNum);
-
-#define VALUENUM_SUPPORT_MERGE 0
-#if VALUENUM_SUPPORT_MERGE
-    // If we're going to support the Merge operation, and do it right, we really need to use an entire
-    // egraph data structure, so that we can do congruence closure, and discover congruences implied
-    // by the eq-class merge.
-
-    // It may be that we provisionally give two expressions distinct value numbers, then later discover
-    // that the values of the expressions are provably equal.  We allow the two value numbers to be
-    // "merged" -- after the merge, they represent the same abstract value.
-    void MergeVNs(ValueNum vn1, ValueNum vn2);
-#endif
 
 private:
     // We will allocate value numbers in "chunks".  Each chunk will have the same type and "constness".
@@ -840,20 +915,19 @@ private:
     // The base VN of the next chunk to be allocated.  Should always be a multiple of ChunkSize.
     ValueNum m_nextChunkBase;
 
-    DECLARE_TYPED_ENUM(ChunkExtraAttribs, BYTE)
+    enum ChunkExtraAttribs : BYTE
     {
-        CEA_None,          // No extra attributes.
-            CEA_Const,     // This chunk contains constant values.
-            CEA_Handle,    // This chunk contains handle constants.
-            CEA_NotAField, // This chunk contains "not a field" values.
-            CEA_Func0,     // Represents functions of arity 0.
-            CEA_Func1,     // ...arity 1.
-            CEA_Func2,     // ...arity 2.
-            CEA_Func3,     // ...arity 3.
-            CEA_Func4,     // ...arity 4.
-            CEA_Count
-    }
-    END_DECLARE_TYPED_ENUM(ChunkExtraAttribs, BYTE);
+        CEA_None,      // No extra attributes.
+        CEA_Const,     // This chunk contains constant values.
+        CEA_Handle,    // This chunk contains handle constants.
+        CEA_NotAField, // This chunk contains "not a field" values.
+        CEA_Func0,     // Represents functions of arity 0.
+        CEA_Func1,     // ...arity 1.
+        CEA_Func2,     // ...arity 2.
+        CEA_Func3,     // ...arity 3.
+        CEA_Func4,     // ...arity 4.
+        CEA_Count
+    };
 
     // A "Chunk" holds "ChunkSize" value numbers, starting at "m_baseVN".  All of these share the same
     // "m_typ" and "m_attribs".  These properties determine the interpretation of "m_defs", as discussed below.
@@ -876,7 +950,7 @@ private:
         // Initialize a chunk, starting at "*baseVN", for the given "typ", "attribs", and "loopNum" (using "alloc" for
         // allocations).
         // (Increments "*baseVN" by ChunkSize.)
-        Chunk(IAllocator*            alloc,
+        Chunk(CompAllocator          alloc,
               ValueNum*              baseVN,
               var_types              typ,
               ChunkExtraAttribs      attribs,
@@ -897,7 +971,7 @@ private:
         };
     };
 
-    struct VNHandle : public KeyFuncsDefEquals<VNHandle>
+    struct VNHandle : public JitKeyFuncsDefEquals<VNHandle>
     {
         ssize_t  m_cnsVal;
         unsigned m_flags;
@@ -1011,7 +1085,7 @@ private:
     // So we have to be careful about breaking infinite recursion.  We can ignore "recursive" results -- if all the
     // non-recursive results are the same, the recursion indicates that the loop structure didn't alter the result.
     // This stack represents the set of outer phis such that select(phi, ind) is being evaluated.
-    ExpandArrayStack<VNDefFunc2Arg> m_fixedPointMapSels;
+    JitExpandArrayStack<VNDefFunc2Arg> m_fixedPointMapSels;
 
 #ifdef DEBUG
     // Returns "true" iff "m_fixedPointMapSels" is non-empty, and it's top element is
@@ -1022,8 +1096,11 @@ private:
     // Returns true if "sel(map, ind)" is a member of "m_fixedPointMapSels".
     bool SelectIsBeingEvaluatedRecursively(ValueNum map, ValueNum ind);
 
+    // This is the set of value numbers that have been flagged as arguments to bounds checks, in the length position.
+    CheckedBoundVNSet m_checkedBoundVNs;
+
     // This is a map from "chunk number" to the attributes of the chunk.
-    ExpandArrayStack<Chunk*> m_chunks;
+    JitExpandArrayStack<Chunk*> m_chunks;
 
     // These entries indicate the current allocation chunk, if any, for each valid combination of <var_types,
     // ChunkExtraAttribute, loopNumber>.  Valid combinations require attribs==CEA_None or loopNum==MAX_LOOP_NUM.
@@ -1109,7 +1186,7 @@ private:
         return m_handleMap;
     }
 
-    struct LargePrimitiveKeyFuncsFloat : public LargePrimitiveKeyFuncs<float>
+    struct LargePrimitiveKeyFuncsFloat : public JitLargePrimitiveKeyFuncs<float>
     {
         static bool Equals(float x, float y)
         {
@@ -1129,7 +1206,7 @@ private:
     }
 
     // In the JIT we need to distinguish -0.0 and 0.0 for optimizations.
-    struct LargePrimitiveKeyFuncsDouble : public LargePrimitiveKeyFuncs<double>
+    struct LargePrimitiveKeyFuncsDouble : public JitLargePrimitiveKeyFuncs<double>
     {
         static bool Equals(double x, double y)
         {
@@ -1148,17 +1225,18 @@ private:
         return m_doubleCnsMap;
     }
 
-    LongToValueNumMap* m_byrefCnsMap;
-    LongToValueNumMap* GetByrefCnsMap()
+    typedef VNMap<size_t> ByrefToValueNumMap;
+    ByrefToValueNumMap*   m_byrefCnsMap;
+    ByrefToValueNumMap*   GetByrefCnsMap()
     {
         if (m_byrefCnsMap == nullptr)
         {
-            m_byrefCnsMap = new (m_alloc) LongToValueNumMap(m_alloc);
+            m_byrefCnsMap = new (m_alloc) ByrefToValueNumMap(m_alloc);
         }
         return m_byrefCnsMap;
     }
 
-    struct VNDefFunc0ArgKeyFuncs : public KeyFuncsDefEquals<VNDefFunc1Arg>
+    struct VNDefFunc0ArgKeyFuncs : public JitKeyFuncsDefEquals<VNDefFunc1Arg>
     {
         static unsigned GetHashCode(VNDefFunc1Arg val)
         {
@@ -1176,7 +1254,7 @@ private:
         return m_VNFunc0Map;
     }
 
-    struct VNDefFunc1ArgKeyFuncs : public KeyFuncsDefEquals<VNDefFunc1Arg>
+    struct VNDefFunc1ArgKeyFuncs : public JitKeyFuncsDefEquals<VNDefFunc1Arg>
     {
         static unsigned GetHashCode(VNDefFunc1Arg val)
         {
@@ -1194,9 +1272,9 @@ private:
         return m_VNFunc1Map;
     }
 
-    struct VNDefFunc2ArgKeyFuncs : public KeyFuncsDefEquals<VNDefFunc2Arg>
+    struct VNDefFunc2ArgKeyFuncs : public JitKeyFuncsDefEquals<VNDefFunc2Arg>
     {
-        static unsigned GetHashCode(VNDefFunc2Arg val)
+        static unsigned GetHashCode(const VNDefFunc2Arg& val)
         {
             return (val.m_func << 24) + (val.m_arg0 << 8) + val.m_arg1;
         }
@@ -1212,9 +1290,9 @@ private:
         return m_VNFunc2Map;
     }
 
-    struct VNDefFunc3ArgKeyFuncs : public KeyFuncsDefEquals<VNDefFunc3Arg>
+    struct VNDefFunc3ArgKeyFuncs : public JitKeyFuncsDefEquals<VNDefFunc3Arg>
     {
-        static unsigned GetHashCode(VNDefFunc3Arg val)
+        static unsigned GetHashCode(const VNDefFunc3Arg& val)
         {
             return (val.m_func << 24) + (val.m_arg0 << 16) + (val.m_arg1 << 8) + val.m_arg2;
         }
@@ -1230,9 +1308,9 @@ private:
         return m_VNFunc3Map;
     }
 
-    struct VNDefFunc4ArgKeyFuncs : public KeyFuncsDefEquals<VNDefFunc4Arg>
+    struct VNDefFunc4ArgKeyFuncs : public JitKeyFuncsDefEquals<VNDefFunc4Arg>
     {
-        static unsigned GetHashCode(VNDefFunc4Arg val)
+        static unsigned GetHashCode(const VNDefFunc4Arg& val)
         {
             return (val.m_func << 24) + (val.m_arg0 << 16) + (val.m_arg1 << 8) + val.m_arg2 + (val.m_arg3 << 12);
         }
@@ -1263,6 +1341,13 @@ private:
     // be carried by the distinct value numbers.
     static class Object* s_specialRefConsts[SRC_NumSpecialRefConsts];
     static class Object* s_nullConst;
+
+#ifdef DEBUG
+    // This helps test some performance pathologies related to "evaluation" of VNF_MapSelect terms,
+    // especially relating to GcHeap/ByrefExposed.  We count the number of applications of such terms we consider,
+    // and if this exceeds a limit, indicated by a COMPlus_ variable, we assert.
+    unsigned m_numMapSels;
+#endif
 };
 
 template <>
@@ -1292,8 +1377,8 @@ struct ValueNumStore::VarTypConv<TYP_DOUBLE>
 template <>
 struct ValueNumStore::VarTypConv<TYP_BYREF>
 {
-    typedef INT64 Type;
-    typedef void* Lang;
+    typedef size_t Type;
+    typedef void*  Lang;
 };
 template <>
 struct ValueNumStore::VarTypConv<TYP_REF>
@@ -1344,7 +1429,10 @@ inline bool ValueNumStore::VNFuncIsComparison(VNFunc vnf)
 {
     if (vnf >= VNF_Boundary)
     {
-        return false;
+        // For integer types we have unsigned comparisions, and
+        // for floating point types these are the unordered variants.
+        //
+        return ((vnf == VNF_LT_UN) || (vnf == VNF_LE_UN) || (vnf == VNF_GE_UN) || (vnf == VNF_GT_UN));
     }
     genTreeOps gtOp = genTreeOps(vnf);
     return GenTree::OperIsCompare(gtOp) != 0;

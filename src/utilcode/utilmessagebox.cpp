@@ -201,7 +201,6 @@ int UtilMessageBoxNonLocalizedVA(
         // message box style was specified.
         if (!RunningInteractive())
         {
-            HANDLE h;
             StackSString message;
 
             message.Printf(W(".NET Runtime version : %s - "), VER_FILEVERSION_STR_L);
@@ -371,8 +370,8 @@ int UtilMessageBoxCatastrophicVA(
 
     HWND hwnd = NULL;
 
-    // We are already in a catastrophic situation so we can tolerate faults as well as SO & GC mode violations to keep going. 
-    CONTRACT_VIOLATION(FaultNotFatal | GCViolation | ModeViolation | SOToleranceViolation);
+    // We are already in a catastrophic situation so we can tolerate faults as well as GC mode violations to keep going. 
+    CONTRACT_VIOLATION(FaultNotFatal | GCViolation | ModeViolation);
 
     if (!ShouldDisplayMsgBoxOnCriticalFailure())
         return IDABORT;
@@ -399,8 +398,8 @@ int UtilMessageBoxCatastrophicNonLocalizedVA(
 
     HWND hwnd = NULL;
 
-    // We are already in a catastrophic situation so we can tolerate faults as well as SO & GC mode violations to keep going. 
-    CONTRACT_VIOLATION(FaultNotFatal | GCViolation | ModeViolation | SOToleranceViolation);
+    // We are already in a catastrophic situation so we can tolerate faults as well as GC mode violations to keep going. 
+    CONTRACT_VIOLATION(FaultNotFatal | GCViolation | ModeViolation);
 
     if (!ShouldDisplayMsgBoxOnCriticalFailure())
         return IDABORT;

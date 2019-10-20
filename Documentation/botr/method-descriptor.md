@@ -91,7 +91,7 @@ The slot is either in MethodTable or in MethodDesc itself. The location of the s
 
 The slot is stored in MethodTable for methods that require efficient lookup via slot index, e.g. virtual methods or methods on generic types. The MethodDesc contains the slot index to allow fast lookup of the entry point in this case.
 
-Otherwise, the slot is part of the MethodDesc itself. This arrangement improves data locality and saves working set. Also, it is not even always possible to preallocate a slot in a MethodTable upfront for dynamically created MethodDescs, such as for methods added by Edit & Continue, instantiations of generic methods or [dynamic methods](https://github.com/dotnet/coreclr/blob/master/src/mscorlib/src/System/Reflection/Emit/DynamicMethod.cs).
+Otherwise, the slot is part of the MethodDesc itself. This arrangement improves data locality and saves working set. Also, it is not even always possible to preallocate a slot in a MethodTable upfront for dynamically created MethodDescs, such as for methods added by Edit & Continue, instantiations of generic methods or [dynamic methods](https://github.com/dotnet/coreclr/blob/master/src/System.Private.CoreLib/src/System/Reflection/Emit/DynamicMethod.cs).
 
 MethodDesc Chunks
 -----------------
@@ -171,7 +171,7 @@ The precode is a small fragment of code used to implement temporary entry points
 	mov eax,pMethodDesc // Load MethodDesc into scratch register
 	jmp target          // Jump to a target
 
-**Efficient Stub wrappers:** The implementation of certain methods (e.g. P/Invoke, delegate invocation, multi dimensional array setters and getters) is provided by the runtime, typically as hand-written assembly stubs. Precode provides a space-efficient wrapper over stubs, to multiplex them for multiple callers.
+**Efficient Stub wrappers:** The implementation of certain methods (e.g. P/Invoke, delegate invocation, multidimensional array setters and getters) is provided by the runtime, typically as hand-written assembly stubs. Precode provides a space-efficient wrapper over stubs, to multiplex them for multiple callers.
 
 The worker code of the stub is wrapped by a precode fragment that can be mapped to the MethodDesc and that jumps to the worker code of the stub. The worker code of the stub can be shared between multiple methods this way. It is an important optimization used to implement P/Invoke marshalling stubs. It also creates a 1:1 mapping between MethodDescs and entry points, which establishes a simple and efficient low-level system.
 
@@ -289,7 +289,7 @@ Temporary entry points implemented using StubPrecode or FixupPrecode can be patc
 
 Compact entry points cannot be patched to point to the actual code. Jitted code cannot call them directly. They are trading off speed for size. Calls to these entry points are indirected via slots in a table (FuncPtrStubs) that are patched to point to the actual entry point eventually. A request for a multicallable entry point allocates a StubPrecode or FixupPrecode on demand in this case.
 
-The raw speed difference is the cost of an indirect call for a compact entry point vs. the cost of one direct call and one direct jump on the given platform. The the later used to be faster  by a few percent in large server scenario since it can be predicted by the hardware better (2005). It is not always the case on current (2015) hardware.
+The raw speed difference is the cost of an indirect call for a compact entry point vs. the cost of one direct call and one direct jump on the given platform. The later used to be faster by a few percent in large server scenario since it can be predicted by the hardware better (2005). It is not always the case on current (2015) hardware.
 
 The compact entry points have been historically implemented on x86 only. Their additional complexity, space vs. speed trade-off and hardware advancements made them unjustified on other platforms.
 

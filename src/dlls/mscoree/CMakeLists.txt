@@ -12,6 +12,7 @@ set(CLR_SOURCES
 if(WIN32)
 list(APPEND CLR_SOURCES
     comcallunmarshal.cpp
+    delayloadhook.cpp
     Native.rc
 )
 
@@ -22,6 +23,11 @@ else()
 set (DEF_SOURCES
   mscorwks_unixexports.src
 )
+if(FEATURE_GDBJIT)
+  list(APPEND DEF_SOURCES
+    gdbjit_unixexports.src
+  )
+endif(FEATURE_GDBJIT)
 endif(WIN32)
 
 convert_to_absolute_path(DEF_SOURCES ${DEF_SOURCES})

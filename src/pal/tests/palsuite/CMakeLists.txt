@@ -14,8 +14,15 @@ endif()
 
 list(APPEND COMMON_TEST_LIBRARIES coreclrpal)
 
-add_compile_options(-Wno-incompatible-pointer-types-discards-qualifiers)
-add_compile_options(-Wno-int-to-void-pointer-cast)
+if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  add_compile_options(-Wno-incompatible-pointer-types-discards-qualifiers)
+  add_compile_options(-Wno-int-to-void-pointer-cast)
+elseif (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  add_compile_options(-Wno-sign-compare)
+  add_compile_options(-Wno-narrowing)
+  add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fpermissive>)
+  add_compile_options(-Wno-int-to-pointer-cast)
+endif()
 
 # TODO: make these tests compile
 # add_subdirectory(composite)
@@ -31,4 +38,7 @@ add_subdirectory(miscellaneous)
 add_subdirectory(pal_specific)
 add_subdirectory(samples)
 add_subdirectory(threading)
-add_subdirectory($ENV{__IntermediatesDir}/Generated/eventprovider/tests ${CMAKE_CURRENT_BINARY_DIR}/eventprovider )
+
+if(FEATURE_EVENT_TRACE)
+  add_subdirectory(eventprovider)
+endif(FEATURE_EVENT_TRACE)

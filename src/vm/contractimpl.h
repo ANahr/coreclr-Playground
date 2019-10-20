@@ -156,7 +156,7 @@ private:
     // IMPORTANT: This is the ONLY member of this class.
     UINT_PTR     m_token;
 
-#ifndef _WIN64
+#ifndef BIT64
     // NOTE: On 32-bit, we use the uppermost bit to indicate that the
     // token is really a DispatchTokenFat*, and to recover the pointer
     // we just shift left by 1; correspondingly, when storing a
@@ -172,7 +172,7 @@ private:
 #endif // FAT_DISPATCH_TOKENS
 
     static const UINT_PTR INVALID_TOKEN      = 0x7FFFFFFF;
-#else //_WIN64
+#else //BIT64
     static const UINT_PTR MASK_TYPE_ID       = UI64(0x000000007FFFFFFF);
     static const UINT_PTR MASK_SLOT_NUMBER   = UI64(0x000000000000FFFF);
 
@@ -184,7 +184,7 @@ private:
 #endif // FAT_DISPATCH_TOKENS
 
     static const UINT_PTR INVALID_TOKEN      = 0x7FFFFFFFFFFFFFFF;
-#endif //_WIN64
+#endif //BIT64
 
 #ifdef FAT_DISPATCH_TOKENS
     //------------------------------------------------------------------------
@@ -242,7 +242,7 @@ private:
 public:
 
 #ifdef FAT_DISPATCH_TOKENS
-#if !defined(_WIN64)
+#if !defined(BIT64)
     static const UINT32   MAX_TYPE_ID_SMALL  = 0x00007FFF;
 #else
     static const UINT32   MAX_TYPE_ID_SMALL  = 0x7FFFFFFF;
@@ -256,7 +256,7 @@ public:
         m_token = INVALID_TOKEN;
     }
 
-    DispatchToken(UINT_PTR token)
+    explicit DispatchToken(UINT_PTR token)
     {
         CONSISTENCY_CHECK(token != INVALID_TOKEN);
         m_token = token;
@@ -412,7 +412,6 @@ public:
             THROWS;
             GC_NOTRIGGER;
             MODE_ANY;
-            SO_TOLERANT;
             INJECT_FAULT(COMPlusThrowOM());
             PRECONDITION(m_nextID != 0);
             PRECONDITION(m_incSize != 0);
@@ -440,7 +439,6 @@ public:
             THROWS;
             GC_NOTRIGGER;
             MODE_ANY;
-            SO_TOLERANT;
             INJECT_FAULT(COMPlusThrowOM());
             PRECONDITION(m_nextFatID != 0);
             PRECONDITION(m_incSize != 0);
@@ -532,6 +530,12 @@ public:
     // Returns the ID of the type if found. If not found, assigns the ID and
     // returns the new ID.
     UINT32 GetTypeID(PTR_MethodTable pMT);
+
+#ifndef DACCESS_COMPILE
+    //------------------------------------------------------------------------
+    // Remove all types that belong to the passed in LoaderAllocator
+    void RemoveTypes(LoaderAllocator* pLoaderAllocator);
+#endif // DACCESS_COMPILE
 
     //------------------------------------------------------------------------
     inline UINT32 GetCount()

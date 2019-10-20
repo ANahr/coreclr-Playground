@@ -24,10 +24,6 @@
 #include "mscoree.h"
 #include "corhost.h"
 
-#include "clrprivhosting.h"
-
-extern HRESULT TypeNameFactoryCreateObject(REFIID riid, void **ppUnk);
-
 #include <ndpversion.h>
 
 

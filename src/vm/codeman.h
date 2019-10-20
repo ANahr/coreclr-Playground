@@ -68,10 +68,11 @@ Abstract:
 #include "shash.h"
 #include "pedecoder.h"
 #include "gcinfo.h"
+#include "eexcp.h"
 
-#if defined(WIN64EXCEPTIONS) && !defined(USE_INDIRECT_CODEHEADER)
-#error "WIN64EXCEPTIONS requires USE_INDIRECT_CODEHEADER"
-#endif // WIN64EXCEPTIONS && !USE_INDIRECT_CODEHEADER
+#if defined(FEATURE_EH_FUNCLETS) && !defined(USE_INDIRECT_CODEHEADER)
+#error "FEATURE_EH_FUNCLETS requires USE_INDIRECT_CODEHEADER"
+#endif // FEATURE_EH_FUNCLETS && !USE_INDIRECT_CODEHEADER
 
 class MethodDesc;
 class ICorJitCompiler;
@@ -91,10 +92,8 @@ typedef struct
 } EH_CLAUSE_ENUMERATOR;
 class EECodeInfo;
 
-#define PAGE_MASK               (PAGE_SIZE-1)
-#define PAGE_ALIGN              ~(PAGE_MASK)
-#define ROUND_DOWN_TO_PAGE(x)   ( (size_t) (x)              & PAGE_ALIGN)
-#define ROUND_UP_TO_PAGE(x)     (((size_t) (x) + PAGE_MASK) & PAGE_ALIGN)
+#define ROUND_DOWN_TO_PAGE(x)   ( (size_t) (x)                        & ~((size_t)GetOsPageSize()-1))
+#define ROUND_UP_TO_PAGE(x)     (((size_t) (x) + (GetOsPageSize()-1)) & ~((size_t)GetOsPageSize()-1))
 
 enum StubCodeBlockKind : int
 {
@@ -150,10 +149,10 @@ public:
 
     PTR_MethodDesc      phdrMDesc;
 
-#ifdef WIN64EXCEPTIONS
+#ifdef FEATURE_EH_FUNCLETS
     DWORD               nUnwindInfos;
     T_RUNTIME_FUNCTION  unwindInfos[0];
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 
 public:
 #ifndef USE_INDIRECT_CODEHEADER
@@ -325,7 +324,7 @@ public:
         pRealCodeHeader = (PTR_RealCodeHeader)kind;
     }
 
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
     UINT                    GetNumberOfUnwindInfos()
     {
         SUPPORTS_DAC;
@@ -343,7 +342,7 @@ public:
         return dac_cast<PTR_RUNTIME_FUNCTION>(
             PTR_TO_MEMBER_TADDR(RealCodeHeader, pRealCodeHeader, unwindInfos) + iUnwindInfo * sizeof(T_RUNTIME_FUNCTION));
     }
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 
 #ifdef DACCESS_COMPILE
     void EnumMemoryRegions(CLRDataEnumMemoryFlags flags, IJitManager* pJitMan);
@@ -367,10 +366,14 @@ struct CodeHeapRequestInfo
     const BYTE * m_hiAddr;          // hihest address to use to satisfy our request (0 -- don't care)
     size_t       m_requestSize;     // minimum size that must be made available
     size_t       m_reserveSize;     // Amount that VirtualAlloc will reserved
+    size_t       m_reserveForJumpStubs; // Amount to reserve for jump stubs (won't be allocated)
     bool         m_isDynamicDomain;
     bool         m_isCollectible;
-    
+    bool         m_throwOnOutOfMemoryWithinRange;
+
     bool   IsDynamicDomain()                    { return m_isDynamicDomain;    }
+    void   SetDynamicDomain()                   { m_isDynamicDomain = true;    }
+
     bool   IsCollectible()                      { return m_isCollectible;      }
     
     size_t getRequestSize()                     { return m_requestSize;        }
@@ -378,20 +381,26 @@ struct CodeHeapRequestInfo
     
     size_t getReserveSize()                     { return m_reserveSize;        }
     void   setReserveSize(size_t reserveSize)   { m_reserveSize = reserveSize; }
+
+    size_t getReserveForJumpStubs()             { return m_reserveForJumpStubs; }
+    void   setReserveForJumpStubs(size_t size)  { m_reserveForJumpStubs = size; }
+
+    bool   getThrowOnOutOfMemoryWithinRange()   { return m_throwOnOutOfMemoryWithinRange; }
+    void   setThrowOnOutOfMemoryWithinRange(bool value) { m_throwOnOutOfMemoryWithinRange = value; }
         
     void   Init();
     
     CodeHeapRequestInfo(MethodDesc *pMD)
         : m_pMD(pMD), m_pAllocator(0), 
           m_loAddr(0), m_hiAddr(0),
-          m_requestSize(0), m_reserveSize(0)
+          m_requestSize(0), m_reserveSize(0), m_reserveForJumpStubs(0)
     { WRAPPER_NO_CONTRACT;   Init(); }
     
     CodeHeapRequestInfo(MethodDesc *pMD, LoaderAllocator* pAllocator,
                         BYTE * loAddr, BYTE * hiAddr)
         : m_pMD(pMD), m_pAllocator(pAllocator), 
           m_loAddr(loAddr), m_hiAddr(hiAddr),
-          m_requestSize(0), m_reserveSize(0)
+          m_requestSize(0), m_reserveSize(0), m_reserveForJumpStubs(0)
     { WRAPPER_NO_CONTRACT;   Init(); }
 };
 
@@ -433,7 +442,7 @@ public:
 
     // Alloc the specified numbers of bytes for code. Returns NULL if the request does not fit
     // Space for header is reserved immediately before. It is not included in size.
-    virtual void* AllocMemForCode_NoThrow(size_t header, size_t size, DWORD alignment) = 0;
+    virtual void* AllocMemForCode_NoThrow(size_t header, size_t size, DWORD alignment, size_t reserveForJumpStubs) = 0;
 
 #ifdef DACCESS_COMPILE
     virtual void EnumMemoryRegions(CLRDataEnumMemoryFlags flags) = 0;
@@ -463,13 +472,11 @@ typedef struct _HeapList
     TADDR               startAddress;
     TADDR               endAddress;     // the current end of the used portion of the Heap
 
-    TADDR               mapBase;        // "startAddress" rounded down to PAGE_SIZE. pHdrMap is relative to this address
+    TADDR               mapBase;        // "startAddress" rounded down to GetOsPageSize(). pHdrMap is relative to this address
     PTR_DWORD           pHdrMap;        // bit array used to find the start of methods
 
     size_t              maxCodeHeapSize;// Size of the entire contiguous block of memory
-    DWORD               cBlocks;        // Number of allocations
-    bool                bFull;          // Heap is considered full do not use for new allocations
-    bool                bFullForJumpStubs; // Heap is considered full do not use for new allocations of jump stubs
+    size_t              reserveForJumpStubs; // Amount of memory reserved for jump stubs in this block
 
 #if defined(_TARGET_AMD64_)
     BYTE        CLRPersonalityRoutine[JUMP_ALLOCATE_SIZE];                 // jump thunk to personality routine
@@ -482,18 +489,6 @@ typedef struct _HeapList
 
     void SetNext(PTR_HeapList next)
     { hpNext = next; }
-
-    void SetHeapFull() 
-    { VolatileStore(&bFull, true); }
-
-    bool IsHeapFull() 
-    { return VolatileLoad(&bFull); }
-
-    void SetHeapFullForJumpStubs() 
-    { VolatileStore(&bFullForJumpStubs, true); }
-
-    bool IsHeapFullForJumpStubs() 
-    { return VolatileLoad(&bFullForJumpStubs); }
 
 } HeapList;
 
@@ -527,7 +522,7 @@ public:
         WRAPPER_NO_CONTRACT;
     }
 
-    virtual void* AllocMemForCode_NoThrow(size_t header, size_t size, DWORD alignment) DAC_EMPTY_RET(NULL);
+    virtual void* AllocMemForCode_NoThrow(size_t header, size_t size, DWORD alignment, size_t reserveForJumpStubs) DAC_EMPTY_RET(NULL);
 
 #ifdef DACCESS_COMPILE
     virtual void EnumMemoryRegions(CLRDataEnumMemoryFlags flags)
@@ -538,7 +533,7 @@ public:
 #endif
 };
 
-#if defined(_WIN64)
+#if defined(BIT64)
 // On non X86 platforms, the OS defined UnwindInfo (accessed from RUNTIME_FUNCTION
 // structures) to  support the ability unwind the stack.   Unfortunatey the pre-Win8 
 // APIs defined a callback API for publishing this data dynamically that ETW does 
@@ -599,7 +594,7 @@ private:
     int                 cDeletedEntries;    // Number of slots we removed. 
 };
 
-#endif // defined(_WIN64)
+#endif // defined(BIT64)
 
 //-----------------------------------------------------------------------------
 // The ExecutionManager uses RangeSection as the abstraction of a contiguous
@@ -641,9 +636,9 @@ struct RangeSection
     //    PTR_Module      pZapModule;   // valid if RANGE_SECTION_HEAP is not set
     // };
     TADDR           pHeapListOrZapModule;
-#if defined(_WIN64)
+#if defined(BIT64)
     PTR_UnwindInfoTable pUnwindInfoTable; // Points to unwind information for this memory range. 
-#endif // defined(_WIN64)
+#endif // defined(BIT64)
 };
 
 /*****************************************************************************/
@@ -780,7 +775,7 @@ public:
 
     TADDR JitTokenToModuleBase(const METHODTOKEN& MethodToken);
 
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
     virtual PTR_RUNTIME_FUNCTION LazyGetFunctionEntry(EECodeInfo * pCodeInfo) = 0;
 
     // GetFuncletStartAddress returns the starting address of the function or funclet indicated by the EECodeInfo address.
@@ -790,7 +785,7 @@ public:
 
     BOOL IsFunclet(EECodeInfo * pCodeInfo);
     virtual BOOL IsFilterFunclet(EECodeInfo * pCodeInfo);
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 
     virtual StubCodeBlockKind   GetStubCodeBlockKind(RangeSection * pRangeSection, PCODE currentPC) = 0;
 
@@ -800,10 +795,10 @@ public:
 #if defined(DACCESS_COMPILE)
     virtual void EnumMemoryRegions(CLRDataEnumMemoryFlags flags);
     virtual void EnumMemoryRegionsForMethodDebugInfo(CLRDataEnumMemoryFlags flags, MethodDesc * pMD) = 0;
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
     // Enumerate the memory necessary to retrieve the unwind info for a specific method
     virtual void EnumMemoryRegionsForMethodUnwindInfo(CLRDataEnumMemoryFlags flags, EECodeInfo * pCodeInfo) = 0;
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 #endif // DACCESS_COMPILE
 
 #ifndef DACCESS_COMPILE
@@ -1015,8 +1010,8 @@ public:
 
     BOOL                LoadJIT();
 
-    CodeHeader*         allocCode(MethodDesc* pFD, size_t blockSize, CorJitAllocMemFlag flag
-#ifdef WIN64EXCEPTIONS
+    CodeHeader*         allocCode(MethodDesc* pFD, size_t blockSize, size_t reserveForJumpStubs, CorJitAllocMemFlag flag
+#ifdef FEATURE_EH_FUNCLETS
                                   , UINT nUnwindInfos
                                   , TADDR * pModuleBase
 #endif
@@ -1025,7 +1020,8 @@ public:
     EE_ILEXCEPTION*     allocEHInfo(CodeHeader* pCodeHeader, unsigned numClauses, size_t * pAllocationSize);
     JumpStubBlockHeader* allocJumpStubBlock(MethodDesc* pMD, DWORD numJumps, 
                                             BYTE * loAddr, BYTE * hiAddr,
-                                            LoaderAllocator *pLoaderAllocator);
+                                            LoaderAllocator *pLoaderAllocator,
+                                            bool throwOnOutOfMemoryWithinRange);
 
     void *              allocCodeFragmentBlock(size_t blockSize, unsigned alignment, LoaderAllocator *pLoaderAllocator, StubCodeBlockKind kind);
 #endif // !DACCESS_COMPILE && !CROSSGEN_COMPILE
@@ -1034,12 +1030,12 @@ public:
     static CodeHeader * GetCodeHeaderFromStartAddress(TADDR methodStartAddress);
 
 #ifndef CROSSGEN_COMPILE
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
     // Compute function entry lazily. Do not call directly. Use EECodeInfo::GetFunctionEntry instead.
     virtual PTR_RUNTIME_FUNCTION    LazyGetFunctionEntry(EECodeInfo * pCodeInfo);
 
     virtual DWORD                   GetFuncletStartOffsets(const METHODTOKEN& MethodToken, DWORD* pStartFuncletOffsets, DWORD dwLength);
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 
     virtual StubCodeBlockKind       GetStubCodeBlockKind(RangeSection * pRangeSection, PCODE currentPC);
 
@@ -1047,7 +1043,7 @@ public:
     virtual void EnumMemoryRegions(CLRDataEnumMemoryFlags flags);
     virtual void EnumMemoryRegionsForMethodDebugInfo(CLRDataEnumMemoryFlags flags, MethodDesc * pMD);
 #endif // DACCESS_COMPILE
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
     // Enumerate the memory necessary to retrieve the unwind info for a specific method
     virtual void EnumMemoryRegionsForMethodUnwindInfo(CLRDataEnumMemoryFlags flags, EECodeInfo * pCodeInfo)
     {
@@ -1057,7 +1053,7 @@ public:
         // unwind information at dump generation time (since it's dynamic, it will not be otherwise
         // available at debug time).
     }
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 #endif // !CROSSGEN_COMPILE
     
 #ifndef CROSSGEN_COMPILE
@@ -1091,13 +1087,12 @@ private :
 #ifndef DACCESS_COMPILE
 #ifndef CROSSGEN_COMPILE
     HeapList*   NewCodeHeap(CodeHeapRequestInfo *pInfo, DomainCodeHeapList *pADHeapList);
-    HeapList*   GetCodeHeap(CodeHeapRequestInfo *pInfo);
     bool        CanUseCodeHeap(CodeHeapRequestInfo *pInfo, HeapList *pCodeHeap);
     void*       allocCodeRaw(CodeHeapRequestInfo *pInfo, 
                              size_t header, size_t blockSize, unsigned align,
-                             HeapList ** ppCodeHeap /* Writeback, Can be null */ );
+                             HeapList ** ppCodeHeap);
 
-    DomainCodeHeapList *GetCodeHeapList(MethodDesc *pMD, LoaderAllocator *pAllocator, BOOL fDynamicOnly = FALSE);
+    DomainCodeHeapList *GetCodeHeapList(CodeHeapRequestInfo *pInfo, LoaderAllocator *pAllocator, BOOL fDynamicOnly = FALSE);
     DomainCodeHeapList *CreateCodeHeapList(CodeHeapRequestInfo *pInfo);
     LoaderHeap* GetJitMetaHeap(MethodDesc *pMD);
 #endif // !CROSSGEN_COMPILE
@@ -1126,12 +1121,11 @@ public:
         CrstHolder m_lockHolder;
         HeapList *m_pHeapList;
         LoaderAllocator *m_pLoaderAllocator;
-        BaseDomain *m_pDomain;
         MethodSectionIterator m_Iterator;
         MethodDesc *m_pCurrent;
 
     public:
-        CodeHeapIterator(BaseDomain *pDomainFilter = NULL, LoaderAllocator *pLoaderAllocatorFilter = NULL);
+        CodeHeapIterator(LoaderAllocator *pLoaderAllocatorFilter = NULL);
         ~CodeHeapIterator();
         BOOL Next();
 
@@ -1201,12 +1195,6 @@ public:
     HINSTANCE           m_JITCompilerOther; // Stores the handle of the legacy JIT, if one is loaded.
 #endif
 
-    // TRUE if the legacy/compat JIT was loaded successfully and will be used.
-    // This is available in all builds so if COMPlus_RequireLegacyJit=1 is set in a test,
-    // the test will fail in any build where the legacy JIT is not loaded, even if legacy
-    // fallback is not available in that build. This prevents unexpected silent successes.
-    BOOL                m_fLegacyJitUsed;
-
 #ifdef ALLOW_SXS_JIT
     //put these at the end so that we don't mess up the offsets in the DAC.
     ICorJitCompiler *   m_alternateJit;
@@ -1257,6 +1245,14 @@ public:
     // Special version with profiler hook
     static BOOL IsManagedCode(PCODE currentPC, HostCallPreference hostCallPreference, BOOL *pfFailedReaderLock);
 
+    // Returns true if currentPC is ready to run codegen
+    static BOOL IsReadyToRunCode(PCODE currentPC);
+
+    // Returns method's start address for a given PC
+    static PCODE GetCodeStartAddress(PCODE currentPC);
+
+    static NativeCodeVersion GetNativeCodeVersion(PCODE currentPC);
+
     // Returns methodDesc for given PC
     static MethodDesc * GetCodeMethodDesc(PCODE currentPC);
 
@@ -1265,7 +1261,6 @@ public:
         CONTRACTL {
             NOTHROW;
             GC_NOTRIGGER;
-            SO_TOLERANT;
             SUPPORTS_DAC;
         } CONTRACTL_END;
 
@@ -1286,7 +1281,7 @@ public:
         BOOL Acquired();
     };
 
-#ifdef _WIN64
+#ifdef _TARGET_64BIT_
     static ULONG          GetCLRPersonalityRoutineValue()
     {
         LIMITED_METHOD_CONTRACT;
@@ -1294,7 +1289,7 @@ public:
             (size_t)((ULONG)offsetof(HeapList, CLRPersonalityRoutine)));
         return offsetof(HeapList, CLRPersonalityRoutine);
     }
-#endif // _WIN64
+#endif // _TARGET_64BIT_
 
     static EEJitManager * GetEEJitManager()
     {
@@ -1363,7 +1358,8 @@ public:
                           PCODE target,
                           BYTE * loAddr,
                           BYTE * hiAddr,
-                          LoaderAllocator *pLoaderAllocator = NULL);
+                          LoaderAllocator *pLoaderAllocator = NULL,
+                          bool throwOnOutOfMemoryWithinRange = true);
 #endif
 
 private:
@@ -1436,7 +1432,8 @@ private:
     static PCODE getNextJumpStub(MethodDesc* pMD,
                                  PCODE target,
                                  BYTE * loAddr,  BYTE * hiAddr,
-                                 LoaderAllocator *pLoaderAllocator);
+                                 LoaderAllocator *pLoaderAllocator,
+                                 bool throwOnOutOfMemoryWithinRange);
 #endif    
 
 private:
@@ -1466,7 +1463,7 @@ private:
         static count_t Hash(key_t k)
         {
             LIMITED_METHOD_CONTRACT;
-#ifdef _WIN64
+#ifdef BIT64
             return (count_t) ((size_t) k ^ ((size_t) k >> 32));
 #else
             return (count_t)(size_t)k;
@@ -1490,6 +1487,7 @@ private:
     static unsigned m_LCG_JumpStubBlockAllocCount;
     static unsigned m_LCG_JumpStubBlockFullCount;
 
+public:
     struct JumpStubCache
     {
         JumpStubCache() 
@@ -1602,25 +1600,42 @@ public:
     
     virtual GCInfoToken  GetGCInfoToken(const METHODTOKEN& MethodToken);
 
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
     virtual PTR_RUNTIME_FUNCTION    LazyGetFunctionEntry(EECodeInfo * pCodeInfo);
 
     virtual TADDR                   GetFuncletStartAddress(EECodeInfo * pCodeInfo);
     virtual DWORD                   GetFuncletStartOffsets(const METHODTOKEN& MethodToken, DWORD* pStartFuncletOffsets, DWORD dwLength);
     virtual BOOL                    IsFilterFunclet(EECodeInfo * pCodeInfo);
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 
     virtual StubCodeBlockKind       GetStubCodeBlockKind(RangeSection * pRangeSection, PCODE currentPC);
 
 #if defined(DACCESS_COMPILE)
     virtual void EnumMemoryRegions(CLRDataEnumMemoryFlags flags);
     virtual void EnumMemoryRegionsForMethodDebugInfo(CLRDataEnumMemoryFlags flags, MethodDesc * pMD);
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
     // Enumerate the memory necessary to retrieve the unwind info for a specific method
     virtual void EnumMemoryRegionsForMethodUnwindInfo(CLRDataEnumMemoryFlags flags, EECodeInfo * pCodeInfo);
-#endif //WIN64EXCEPTIONS
+#endif //FEATURE_EH_FUNCLETS
 #endif //DACCESS_COMPILE
 };
+
+inline TADDR NativeImageJitManager::JitTokenToStartAddress(const METHODTOKEN& MethodToken)
+{
+    CONTRACTL{
+        NOTHROW;
+        GC_NOTRIGGER;
+        HOST_NOCALLS;
+        SUPPORTS_DAC;
+    } CONTRACTL_END;
+
+    return JitTokenToModuleBase(MethodToken) +
+        RUNTIME_FUNCTION__BeginAddress(dac_cast<PTR_RUNTIME_FUNCTION>(MethodToken.m_pCodeHeader));
+}
+
+#endif // FEATURE_PREJIT
+
+#if defined(FEATURE_PREJIT) || defined(FEATURE_READYTORUN)
 
 class NativeExceptionInfoLookupTable
 {
@@ -1639,27 +1654,16 @@ public:
                                          int StartIndex, 
                                          int EndIndex);
 
+#ifdef FEATURE_PREJIT
     static BOOL HasExceptionInfo(NGenLayoutInfo * pNgenLayout, PTR_RUNTIME_FUNCTION pMainRuntimeFunction);
     static PTR_MethodDesc GetMethodDesc(NGenLayoutInfo * pNgenLayout, PTR_RUNTIME_FUNCTION pMainRuntimeFunction, TADDR moduleBase);
 
 private:
     static DWORD GetMethodDescRVA(NGenLayoutInfo * pNgenLayout, PTR_RUNTIME_FUNCTION pMainRuntimeFunction);
+#endif
 };
 
-inline TADDR NativeImageJitManager::JitTokenToStartAddress(const METHODTOKEN& MethodToken)
-{ 
-    CONTRACTL {
-        NOTHROW;
-        GC_NOTRIGGER;
-        HOST_NOCALLS;
-        SUPPORTS_DAC;
-    } CONTRACTL_END;
- 
-    return JitTokenToModuleBase(MethodToken) + 
-        RUNTIME_FUNCTION__BeginAddress(dac_cast<PTR_RUNTIME_FUNCTION>(MethodToken.m_pCodeHeader));
-}
-
-#endif // FEATURE_PREJIT
+#endif // FEATURE_PREJIT || FEATURE_READYTORUN
 
 #ifdef FEATURE_READYTORUN
 
@@ -1714,23 +1718,23 @@ public:
     
     virtual GCInfoToken  GetGCInfoToken(const METHODTOKEN& MethodToken);
 
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
     virtual PTR_RUNTIME_FUNCTION    LazyGetFunctionEntry(EECodeInfo * pCodeInfo);
 
     virtual TADDR                   GetFuncletStartAddress(EECodeInfo * pCodeInfo);
     virtual DWORD                   GetFuncletStartOffsets(const METHODTOKEN& MethodToken, DWORD* pStartFuncletOffsets, DWORD dwLength);
     virtual BOOL                    IsFilterFunclet(EECodeInfo * pCodeInfo);
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 
     virtual StubCodeBlockKind       GetStubCodeBlockKind(RangeSection * pRangeSection, PCODE currentPC);
 
 #if defined(DACCESS_COMPILE)
     virtual void EnumMemoryRegions(CLRDataEnumMemoryFlags flags);
     virtual void EnumMemoryRegionsForMethodDebugInfo(CLRDataEnumMemoryFlags flags, MethodDesc * pMD);
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
     // Enumerate the memory necessary to retrieve the unwind info for a specific method
     virtual void EnumMemoryRegionsForMethodUnwindInfo(CLRDataEnumMemoryFlags flags, EECodeInfo * pCodeInfo);
-#endif //WIN64EXCEPTIONS
+#endif //FEATURE_EH_FUNCLETS
 #endif //DACCESS_COMPILE
 };
 
@@ -1748,7 +1752,9 @@ public:
 class EECodeInfo
 {
     friend BOOL EEJitManager::JitCodeToMethodInfo(RangeSection * pRangeSection, PCODE currentPC, MethodDesc** ppMethodDesc, EECodeInfo * pCodeInfo);
+#ifdef FEATURE_PREJIT
     friend BOOL NativeImageJitManager::JitCodeToMethodInfo(RangeSection * pRangeSection, PCODE currentPC, MethodDesc** ppMethodDesc, EECodeInfo * pCodeInfo);
+#endif
 #ifdef FEATURE_READYTORUN
     friend BOOL ReadyToRunJitManager::JitCodeToMethodInfo(RangeSection * pRangeSection, PCODE currentPC, MethodDesc** ppMethodDesc, EECodeInfo * pCodeInfo);
 #endif
@@ -1801,6 +1807,8 @@ public:
         return PCODEToPINSTR(m_codeAddress);
     }
 
+    NativeCodeVersion GetNativeCodeVersion();
+
     MethodDesc * GetMethodDesc()
     { 
         LIMITED_METHOD_DAC_CONTRACT; 
@@ -1837,7 +1845,7 @@ public:
         return GetJitManager()->JitTokenToModuleBase(GetMethodToken());
     }
 
-#ifdef WIN64EXCEPTIONS
+#ifdef FEATURE_EH_FUNCLETS
     PTR_RUNTIME_FUNCTION GetFunctionEntry();
     BOOL        IsFunclet()     { WRAPPER_NO_CONTRACT; return GetJitManager()->IsFunclet(this); }
     EECodeInfo  GetMainFunctionInfo();
@@ -1847,13 +1855,13 @@ public:
     BOOL        HasFrameRegister();
 #endif // _TARGET_AMD64_
 
-#else // WIN64EXCEPTIONS
+#else // FEATURE_EH_FUNCLETS
     ULONG       GetFixedStackSize()
     {
         WRAPPER_NO_CONTRACT;
         return GetCodeManager()->GetFrameSize(GetGCInfoToken());
     }
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 
 #if defined(_TARGET_AMD64_)
     void         GetOffsetsFromUnwindInfo(ULONG* pRSPOffset, ULONG* pRBPOffset);
@@ -1870,9 +1878,9 @@ private:
     MethodDesc         *m_pMD;
     IJitManager        *m_pJM;
     DWORD               m_relOffset;
-#ifdef WIN64EXCEPTIONS
+#ifdef FEATURE_EH_FUNCLETS
     PTR_RUNTIME_FUNCTION m_pFunctionEntry;
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 
 #ifdef _TARGET_AMD64_
     // Simple helper to return a pointer to the UNWIND_INFO given the offset to the unwind info.

@@ -12,9 +12,9 @@ CoreRT refers to https://github.com/dotnet/corert runtime that is optimized for 
 
 Read everything in the documented Windows ABI.
 
-AMD64: See "x64 Software Conventions" on MSDN: https://msdn.microsoft.com/en-us/library/7kcdt6fy.aspx.
+AMD64: See [x64 Software Conventions](https://docs.microsoft.com/en-us/cpp/build/x64-software-conventions).
 
-ARM: See "Overview of ARM ABI Conventions" on MSDN: https://msdn.microsoft.com/en-us/library/dn736986.aspx.
+ARM: See [Overview of ARM ABI Conventions"](https://docs.microsoft.com/en-us/cpp/build/overview-of-arm-abi-conventions).
 
 The CLR follows those basic conventions. This document only describes things that are CLR-specific, or exceptions from those documents.
 
@@ -50,7 +50,7 @@ Managed varargs are not supported in .NET Core.
 
 ## Generics
 
-*Shared generics*. In cases where the code address does not uniquely identify a generic instantiation of a method, then a 'generic instantiation parameter' is required. Often the "this" pointer can serve dual-purpose as the instantiation parameter. When the "this" pointer is not the generic parameter, the generic parameter is passed as an additional argument. On ARM, ARM64 and AMD64, it is passed after the optional return buffer and the optional "this" pointer, but before any user arguments. On x86, if all arguments of the function including "this" pointer fit into argument registers (ECX and EDX) and we still have argument registers available, we store the hidden argument in the next available argument register. Otherwise it is passed as the last stack argument. For generic methods (where there is a type parameter directly on the method, as compared to the type), the generic parameter currently is a MethodDesc pointer (I believe an InstantiatedMethodDesc). For static methods (where there is no "this" pointer) the generic parameter is a MethodTable pointer/TypeHandle.
+*Shared generics*. In cases where the code address does not uniquely identify a generic instantiation of a method, then a 'generic instantiation parameter' is required. Often the "this" pointer can serve dual-purpose as the instantiation parameter. When the "this" pointer is not the generic parameter, the generic parameter is passed as an additional argument. On ARM and AMD64, it is passed after the optional return buffer and the optional "this" pointer, but before any user arguments. On ARM64, the generic parameter is passed after the optional "this" pointer, but before any user arguments. On x86, if all arguments of the function including "this" pointer fit into argument registers (ECX and EDX) and we still have argument registers available, we store the hidden argument in the next available argument register. Otherwise it is passed as the last stack argument. For generic methods (where there is a type parameter directly on the method, as compared to the type), the generic parameter currently is a MethodDesc pointer (I believe an InstantiatedMethodDesc). For static methods (where there is no "this" pointer) the generic parameter is a MethodTable pointer/TypeHandle.
 
 Sometimes the VM asks the JIT to report and keep alive the generics parameter. In this case, it must be saved on the stack someplace and kept alive via normal GC reporting (if it was the "this" pointer, as compared to a MethodDesc or MethodTable) for the entire method except the prolog and epilog. Also note that the code to home it, must be in the range of code reported as the prolog in the GC info (which probably isn't the same as the range of code reported as the prolog in the unwind info).
 
@@ -73,11 +73,11 @@ The same applies to some return buffers. See `MethodTable::IsStructRequiringStac
 
 NOTE: This optimization is now disabled for all platforms (`IsStructRequiringStackAllocRetBuf()` always returns FALSE).
 
+ARM64-only: When a method returns a structure that is larger than 16 bytes the caller reserves a return buffer of sufficient size and alignment to hold the result. The address of the buffer is passed as an argument to the method in `R8` (defined in the JIT as `REG_ARG_RET_BUFF`). The callee isn't required to preserve the value stored in `R8`.
+
 ## Hidden parameters
 
-*Stub dispatch* - when a virtual call uses a VSD stub, rather than back-patching the calling code (or disassembling it), the JIT must place the address of the stub used to load the call target, the "stub indirection cell", in (x86) `EAX` / (AMD64) `R11` / (ARM) `R4` / (ARM64) `R11`. In the JIT, this is `REG_VIRTUAL_STUB_PARAM`.
-
-AMD64-only: Fast Pinvoke - The VM wants a conservative estimate of the size of the stack arguments placed in `R11`. (This is consumed by callout stubs used in SQL hosting).
+*Stub dispatch* - when a virtual call uses a VSD stub, rather than back-patching the calling code (or disassembling it), the JIT must place the address of the stub used to load the call target, the "stub indirection cell", in (x86) `EAX` / (AMD64) `R11` / (AMD64 CoreRT ABI) `R10` / (ARM) `R4` / (ARM CoreRT ABI) `R12` / (ARM64) `R11`. In the JIT, this is encapsulated in the `VirtualStubParamInfo` class.
 
 *Calli Pinvoke* - The VM wants the address of the PInvoke in (AMD64) `R10` / (ARM) `R12` / (ARM64) `R14` (In the JIT: `REG_PINVOKE_TARGET_PARAM`), and the signature (the pinvoke cookie) in (AMD64) `R11` / (ARM) `R4` / (ARM64) `R15` (in the JIT: `REG_PINVOKE_COOKIE_PARAM`).
 
@@ -85,7 +85,9 @@ AMD64-only: Fast Pinvoke - The VM wants a conservative estimate of the size of t
 
 # PInvokes
 
-The convention is that any method with an InlinedCallFrame (either an IL stub or a normal method with an inlined pinvoke) saves/restores all non-volatile integer registers in its prolog/epilog respectively. This is done so that the InlinedCallFrame can just contain a return address, a stack pointer and a frame pointer. Then using just those three it can start a full stack walk using the normal RtlVirtualUnwind.
+The convention is that any method with an InlinedCallFrame (either an IL stub or a normal method with an inlined PInvoke) saves/restores all non-volatile integer registers in its prolog/epilog respectively. This is done so that the InlinedCallFrame can just contain a return address, a stack pointer and a frame pointer. Then using just those three it can start a full stack walk using the normal RtlVirtualUnwind.
+
+When encountering a PInvoke, the JIT will query the VM if the GC transition should be suppressed. Suppression of the GC transition is indicated by the addition of an attribute on the PInvoke definition. If the VM indicates the GC transition is to be suppressed, the PInvoke frame will be omitted in either the IL stub or inlined scenario and a GC Poll will be inserted near the unmanaged call site. If an enclosing function contains more than one inlined PInvoke but not all have requested a suppression of the GC transition a PInvoke frame will still be constructed for the other inlined PInvokes. 
 
 For AMD64, a method with an InlinedCallFrame must use RBP as the frame register.
 
@@ -113,13 +115,15 @@ For IL stubs only, the per-frame initialization includes setting `Thread->m_pFra
 
 ## Per-call-site PInvoke work
 
+The below is performed when the GC transition is not suppressed.
+
 1. For direct calls, the JITed code sets `InlinedCallFrame->m_pDatum` to the MethodDesc of the call target.
     * For JIT64, indirect calls within IL stubs sets it to the secret parameter (this seems redundant, but it might have changed since the per-frame initialization?).
     * For JIT32 (ARM) indirect calls, it sets this member to the size of the pushed arguments, according to the comments. The implementation however always passed 0.
 2. For JIT64/AMD64 only: Next for non-IL stubs, the InlinedCallFrame is 'pushed' by setting `Thread->m_pFrame` to point to the InlinedCallFrame (recall that the per-frame initialization already set `InlinedCallFrame->m_pNext` to point to the previous top). For IL stubs this step is accomplished in the per-frame initialization.
 3. The Frame is made active by setting `InlinedCallFrame->m_pCallerReturnAddress`.
 4. The code then toggles the GC mode by setting `Thread->m_fPreemptiveGCDisabled = 0`.
-5. Starting now, no GC pointers may be live in registers.
+5. Starting now, no GC pointers may be live in registers. RyuJit LSRA meets this requirement by adding special refPositon `RefTypeKillGCRefs` before unmanaged calls and special helpers.
 6. Then comes the actual call/PInvoke.
 7. The GC mode is set back by setting `Thread->m_fPreemptiveGCDisabled = 1`.
 8. Then we check to see if `g_TrapReturningThreads` is set (non-zero). If it is, we call `CORINFO_HELP_STOP_FOR_GC`.
@@ -269,11 +273,15 @@ Finally1:
 	ret
 ```
 
-Note that JIT64 does not implement this properly. The C# compiler used to always insert all necessary "step" blocks. The Roslyn C# compiler at one point did not, but then was change to once again insert them.
+Note that JIT64 does not implement this properly. The C# compiler used to always insert all necessary "step" blocks. The Roslyn C# compiler at one point did not, but then was changed to once again insert them.
 
 ## The PSPSym and funclet parameters
 
-The name *PSPSym* stands for Previous Stack Pointer Symbol. It is how a funclet accesses locals from the main function body. This is not used for x86: the frame pointer on x86 is always preserved when the handlers are invoked.
+The *PSPSym* (which stands for Previous Stack Pointer Symbol) is a pointer-sized local variable used to access locals from the main function body.
+
+CoreRT does not use PSPSym. For filter funclets the VM sets the frame register to be the same as the parent function. For second pass funclets the VM restores all non-volatile registers. The same convention is used across all platforms.
+
+CoreCLR uses PSPSym for all platforms except x86: the frame pointer on x86 is always preserved when the handlers are invoked.
 
 First, two definitions.
 
@@ -281,7 +289,7 @@ First, two definitions.
 
 *Initial-SP* is the initial value of the stack pointer after the fixed-size portion of the frame has been allocated. That is, before any "alloca"-type allocations.
 
-The PSPSym is a pointer-sized local variable in the frame of the main function and of each funclet. The value stored in PSPSym is the value of Initial-SP for AMD64 or Caller-SP for other platforms, for the main function. The stack offset of the PSPSym is reported to the VM in the GC information header. The value reported in the GC information is the offset of the PSPSym from Initial-SP for AMD64 or Caller-SP for other platforms. (Note that both the value stored, and the way the value is reported to the VM, differs between architectures. In particular, note that most things in the GC information header are reported as offsets relative to Caller-SP, but PSPSym on AMD64 is one exception, and maybe the only exception.)
+The value stored in PSPSym is the value of Initial-SP for AMD64 or Caller-SP for other platforms, for the main function. The stack offset of the PSPSym is reported to the VM in the GC information header. The value reported in the GC information is the offset of the PSPSym from Initial-SP for AMD64 or Caller-SP for other platforms. (Note that both the value stored, and the way the value is reported to the VM, differs between architectures. In particular, note that most things in the GC information header are reported as offsets relative to Caller-SP, but PSPSym on AMD64 is one exception, and maybe the only exception.)
 
 The VM uses the PSPSym to find other locals it cares about (such as the generics context in a funclet frame). The JIT uses it to re-establish the frame pointer register, so that the frame pointer is the same value in a funclet as it is in the main function body.
 
@@ -292,8 +300,6 @@ Using the establisher frame, the funclet wants to load the value of the PSPSym. 
 On ARM and ARM64, for all second pass funclets (finally, fault, catch, and filter-handler) the VM restores all non-volatile registers to their values within the parent frame. This includes the frame register (`R11`). Thus, the PSPSym is not used to recompute the frame pointer register in this case, though the PSPSym is copied to the funclet's frame, as for all funclets.
 
 Catch, Filter, and Filter-handlers also get an Exception object (GC ref) as an argument (`REG_EXCEPTION_OBJECT`). On AMD64 it is the second argument and thus passed in RDX. On ARM and ARM64 this is the first argument and passed in R0.
-
-CoreRT does not use PSPSym. For filter funclets the VM sets the frame register to be the same as the parent function. For second pass funclets the VM restores all non-volatile registers. The same convention is used across all platforms.
 
 (Note that the JIT64 source code contains a comment that says, "The current CLR doesn't always pass the correct establisher frame to the funclet. Funclet may receive establisher frame of funclet when expecting that of original routine." It indicates this is the reason that a PSPSym is required in all funclets as well as the main function, whereas if the establisher frame was correctly reported, the PSPSym could be omitted in some cases.)
 
@@ -468,7 +474,7 @@ When the inner "throw new UserException4" is executed, the exception handling fi
 
 ## Filter GC semantics
 
-Filters are invoked in the 1st pass of EH processing and as such execution might resume back at the faulting address, or in the filter-handler, or someplace else. Because the VM must allow GC's to occur during and after a filter invocation, but before the EH subsystem knows where it will resume, we need to keep everything alive at both the faulting address **and** within the filter. This is accomplished by 3 means: (1) the VM's stackwalker and GCInfoDecoder report as live both the filter frame and its corresponding parent frame, (2) the JIT encodes all stack slots that are live within the filter as being pinned, and (3) the JIT reports as live (and possible zero-initializes) anything live-out of the filter. Because of (1) it is likely that a stack variable that is live within the filter and the try body will be double reported. During the mark phase of the GC double reporting is not a problem. The problem only arises if the object is relocated: if the same location is reported twice, the GC will try to relocate the address stored at that location twice. Thus we prevent the object from being relocated by pinning it, which leads us to why we must do (2). (3) is done so that after the filter returns, we can still safely incur a GC before executing the filter-handler or any outer handler within the same frame.
+Filters are invoked in the 1st pass of EH processing and as such execution might resume back at the faulting address, or in the filter-handler, or someplace else. Because the VM must allow GC's to occur during and after a filter invocation, but before the EH subsystem knows where it will resume, we need to keep everything alive at both the faulting address **and** within the filter. This is accomplished by 3 means: (1) the VM's stackwalker and GCInfoDecoder report as live both the filter frame and its corresponding parent frame, (2) the JIT encodes all stack slots that are live within the filter as being pinned, and (3) the JIT reports as live (and possible zero-initializes) anything live-out of the filter. Because of (1) it is likely that a stack variable that is live within the filter and the try body will be double reported. During the mark phase of the GC double reporting is not a problem. The problem only arises if the object is relocated: if the same location is reported twice, the GC will try to relocate the address stored at that location twice. Thus we prevent the object from being relocated by pinning it, which leads us to why we must do (2). (3) is done so that after the filter returns, we can still safely incur a GC before executing the filter-handler or any outer handler within the same frame. For the same reason, control must exit a filter region via its final block (in other words, a filter region must terminate with the instruction that leaves the filter region, and the program may not exit the filter region via other paths).
 
 ## Duplicated Clauses
 
@@ -583,9 +589,9 @@ The CLR unwinder assumes any non-leaf frame was unwound as a result of a call. T
 
 If the JIT gets passed `CORJIT_FLG_PROF_ENTERLEAVE`, then the JIT might need to insert native entry/exit/tail call probes. To determine for sure, the JIT must call GetProfilingHandle. This API returns as out parameters, the true dynamic boolean indicating if the JIT should actually insert the probes and a parameter to pass to the callbacks (typed as void*), with an optional indirection (used for NGEN). This parameter is always the first argument to all of the call-outs (thus placed in the usual first argument register `RCX` (AMD64) or `R0` (ARM, ARM64)).
 
-Outside of the prolog (in a GC interruptible location), the JIT injects a call to `CORINFO_HELP_PROF_FCN_ENTER`. For AMD64, all argument registers will be homed into their caller-allocated stack locations (similar to varargs). For ARM and ARM64, all arguments are prespilled (again similar to varargs).
+Outside of the prolog (in a GC interruptible location), the JIT injects a call to `CORINFO_HELP_PROF_FCN_ENTER`. For AMD64,  on Windows all argument registers will be homed into their caller-allocated stack locations (similar to varargs), on Unix all argument registers will be stored in the inner structure. For ARM and ARM64, all arguments are prespilled (again similar to varargs).
 
-After computing the return value and storing it in the correct register, but before any epilog code (including before a possible GS cookie check), the JIT injects a call to `CORINFO_HELP_PROF_FCN_LEAVE`. For AMD64 this call must preserve the return register: `RAX` or `XMM0`. For ARM, the return value will be moved from `R0` to `R2` (if it was in `R0`), `R1`, `R2`, and `S0/D0` must be preserved by the callee (longs will be `R2`, `R1` - note the unusual ordering of the registers, floats in `S0`, doubles in `D0`, smaller integrals in `R2`).
+After computing the return value and storing it in the correct register, but before any epilog code (including before a possible GS cookie check), the JIT injects a call to `CORINFO_HELP_PROF_FCN_LEAVE`. For AMD64 this call must preserve the return register: `RAX` or `XMM0` on Windows and `RAX` and `RDX` or `XMM0` and `XMM1` on Unix. For ARM, the return value will be moved from `R0` to `R2` (if it was in `R0`), `R1`, `R2`, and `S0/D0` must be preserved by the callee (longs will be `R2`, `R1` - note the unusual ordering of the registers, floats in `S0`, doubles in `D0`, smaller integrals in `R2`).
 
 TODO: describe ARM64 profile leave conventions.
 
@@ -597,11 +603,13 @@ For AMD64, all probes receive a second parameter (passed in `RDX` according to t
 
 TODO: describe ARM64 tail call convention.
 
+On Linux/x86 the profiling hooks are declared with the ```__cdecl``` attribute.  In cdecl (which stands for C declaration), subroutine arguments are passed on the stack. Integer values and memory addresses are returned in the EAX register, floating point values in the ST0 x87 register. Registers EAX, ECX, and EDX are caller-saved, and the rest are callee-saved. The x87 floating point registers ST0 to ST7 must be empty (popped or freed) when calling a new function, and ST1 to ST7 must be empty on exiting a function. ST0 must also be empty when not used for returning a value. Returned values of managed-code are formed before the leave/tailcall profiling hooks, so they should be saved in these hooks and restored on returning from them. The instruction ```ret``` for assembler implementations of profiling hooks should be without a parameter.
+
 JIT32 only generates one epilog (and causes all returns to branch to it) when there are profiler hooks.
 
 # Synchronized Methods
 
-JIT32/RyuJIT only generates one epilog (and causes all returns to branch to it) when a method is synchronized. See `Compiler::fgAddSyncMethodEnterExit()`. The user code is wrapped in a try/finally. Outside/before the try body, the code initializes a boolean to false. `CORINFO_HELP_MON_ENTER` or `CORINFO_HELP_MON_ENTER_STATIC` are called, passing the lock object (the "this" pointer for instance methods or the Type object for static methods) and the address of the boolean. If the lock is acquired, the boolean is set to true (as an 'atomic' operation in the sense that a Thread.Abort/EH/GC/etc. cannot interrupt the Thread when the boolean does not match the arquired state of the lock). JIT32/RyuJIT follows the exact same logic and arguments for placing the call to `CORINFO_HELP_MON_EXIT` /  `CORINFO_HELP_MON_EXIT_STATIC` in the finally.
+JIT32/RyuJIT only generates one epilog (and causes all returns to branch to it) when a method is synchronized. See `Compiler::fgAddSyncMethodEnterExit()`. The user code is wrapped in a try/finally. Outside/before the try body, the code initializes a boolean to false. `CORINFO_HELP_MON_ENTER` or `CORINFO_HELP_MON_ENTER_STATIC` are called, passing the lock object (the "this" pointer for instance methods or the Type object for static methods) and the address of the boolean. If the lock is acquired, the boolean is set to true (as an 'atomic' operation in the sense that a Thread.Abort/EH/GC/etc. cannot interrupt the Thread when the boolean does not match the acquired state of the lock). JIT32/RyuJIT follows the exact same logic and arguments for placing the call to `CORINFO_HELP_MON_EXIT` /  `CORINFO_HELP_MON_EXIT_STATIC` in the finally.
 
 # Rejit
 
@@ -665,3 +673,35 @@ The general rules outlined in the System V x86_64 ABI (described at http://www.x
 3. The JIT proactively generates frame register frames (with `RBP` as a frame register) in order to aid the native OS tooling for stack unwinding and the like.
 4. All the other internal VM contracts for PInvoke, EH, and generic support remains in place. Please see the relevant sections above for more details. Note, however, that the registers used are different on System V due to the different calling convention. For example, the integer argument registers are, in order, RDI, RSI, RDX, RCX, R8, and R9. Thus, where the first argument (typically, the "this" pointer) on Windows AMD64 goes in RCX, on System V it goes in RDI, and so forth.   
 5. Structs with explicit layout are always passed by value on the stack.
+6. The following table describes register usage according to the System V x86_64 ABI
+
+```
+| Register     | Usage                                   | Preserved across  |
+|              |                                         | function calls    |
+|--------------|-----------------------------------------|-------------------|
+| %rax         | temporary register; with variable argu- | No                |
+|              | ments passes information about the      |                   |
+|              | number of SSE registers used;           |                   |
+|              | 1st return argument                     |                   |
+| %rbx         | callee-saved register; optionally used  | Yes               |
+|              | as base pointer                         |                   |
+| %rcx         | used to pass 4st integer argument to    | No                |
+|              | to functions                            |                   |
+| %rdx         | used to pass 3rd argument to functions  | No                |
+|              | 2nd return register                     |                   |
+| %rsp         | stack pointer                           | Yes               |
+| %rbp         | callee-saved register; optionally used  | Yes               |
+|              | as frame pointer                        |                   |
+| %rsi         | used to pass 2nd argument to functions  | No                |
+| %rdi         | used to pass 1st argument to functions  | No                |
+| %r8          | used to pass 5th argument to functions  | No                |
+| %r9          | used to pass 6th argument to functions  | No                |
+| %r10         | temporary register, used for passing a  | No                |
+|              | function's static chain pointer         |                   |
+| %r11         | temporary register                      | No                |
+| %r12-%r15    | callee-saved registers                  | Yes               |
+| %xmm0-%xmm1  | used to pass and return floating point  | No                |
+|              | arguments                               |                   |
+| %xmm2-%xmm7  | used to pass floating point arguments   | No                |
+| %xmm8-%xmm15 | temporary registers                     | No                |
+```

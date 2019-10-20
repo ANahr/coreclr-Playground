@@ -185,7 +185,7 @@ size_t DisAssembler::disCchAddrMember(
                 const char* name           = disGetMethodFullName(absoluteTarget);
                 if (name != nullptr)
                 {
-                    swprintf_s(wz, cchMax, W("%p %S"), dspAddr(absoluteTarget), name);
+                    swprintf_s(wz, cchMax, W("%zx %S"), dspAddr(absoluteTarget), name);
                     retval = 1;
                     break;
                 }
@@ -270,7 +270,7 @@ size_t DisAssembler::disCchAddrMember(
                 const char* name           = disGetMethodFullName(absoluteTarget);
                 if (name != nullptr)
                 {
-                    swprintf_s(wz, cchMax, W("%p %S"), dspAddr(absoluteTarget), name);
+                    swprintf_s(wz, cchMax, W("%zx %S"), dspAddr(absoluteTarget), name);
                     retval = 1;
                     break;
                 }
@@ -428,7 +428,7 @@ size_t DisAssembler::disCchFixupMember(
                 const char* name = disGetMethodFullName(targetAddr);
                 if (name != nullptr)
                 {
-                    swprintf_s(wz, cchMax, W("%p %S"), dspAddr(targetAddr), name);
+                    swprintf_s(wz, cchMax, W("%zx %S"), dspAddr(targetAddr), name);
                     break;
                 }
             }
@@ -533,7 +533,7 @@ size_t DisAssembler::disCchFixupMember(
                 const char* name = disGetMethodFullName(targetAddr);
                 if (name != nullptr)
                 {
-                    swprintf_s(wz, cchMax, W("%p %S"), dspAddr(targetAddr), name);
+                    swprintf_s(wz, cchMax, W("%zx %S"), dspAddr(targetAddr), name);
                     break;
                 }
             }
@@ -864,7 +864,6 @@ AddrToMethodHandleMap* DisAssembler::GetAddrToMethodHandleMap()
 {
     if (disAddrToMethodHandleMap == nullptr)
     {
-        assert(disComp->getAllocator() != nullptr);
         disAddrToMethodHandleMap = new (disComp->getAllocator()) AddrToMethodHandleMap(disComp->getAllocator());
     }
     return disAddrToMethodHandleMap;
@@ -877,7 +876,6 @@ AddrToMethodHandleMap* DisAssembler::GetHelperAddrToMethodHandleMap()
 {
     if (disHelperAddrToMethodHandleMap == nullptr)
     {
-        assert(disComp->getAllocator() != nullptr);
         disHelperAddrToMethodHandleMap = new (disComp->getAllocator()) AddrToMethodHandleMap(disComp->getAllocator());
     }
     return disHelperAddrToMethodHandleMap;
@@ -890,7 +888,6 @@ AddrToAddrMap* DisAssembler::GetRelocationMap()
 {
     if (disRelocationMap == nullptr)
     {
-        assert(disComp->getAllocator() != nullptr);
         disRelocationMap = new (disComp->getAllocator()) AddrToAddrMap(disComp->getAllocator());
     }
     return disRelocationMap;
@@ -1106,7 +1103,7 @@ size_t DisAssembler::CbDisassemble(DIS*        pdis,
     }
 
     wchar_t wz[MAX_CLASSNAME_LENGTH];
-    pdis->CchFormatInstr(wz, sizeof(wz) / sizeof(wz[0]));
+    pdis->CchFormatInstr(wz, _countof(wz));
 
     if (printit)
     {
@@ -1137,7 +1134,7 @@ size_t DisAssembler::CbDisassemble(DIS*        pdis,
             wchar_t wzBytes[MAX_CLASSNAME_LENGTH];
             assert(cchBytesMax < MAX_CLASSNAME_LENGTH);
 
-            size_t cchBytes = pdis->CchFormatBytes(wzBytes, sizeof(wzBytes) / sizeof(wzBytes[0]));
+            size_t cchBytes = pdis->CchFormatBytes(wzBytes, _countof(wzBytes));
 
             if (cchBytes > CCH_INDENT)
             {
@@ -1172,7 +1169,7 @@ size_t CbDisassembleWithBytes(DIS* pdis, DIS::ADDR addr, const BYTE* pb, size_t 
 
     wchar_t wz[MAX_CLASSNAME_LENGTH];
 
-    pdis->CchFormatAddr(addr, wz, sizeof(wz) / sizeof(wz[0]));
+    pdis->CchFormatAddr(addr, wz, _countof(wz));
 
     size_t cchIndent = (size_t)fprintf(pfile, "  %ls: ", wz);
 
@@ -1194,7 +1191,7 @@ size_t CbDisassembleWithBytes(DIS* pdis, DIS::ADDR addr, const BYTE* pb, size_t 
     }
 
     wchar_t wzBytes[64];
-    size_t  cchBytes = pdis->CchFormatBytes(wzBytes, sizeof(wzBytes) / sizeof(wzBytes[0]));
+    size_t  cchBytes = pdis->CchFormatBytes(wzBytes, _countof(wzBytes));
 
     wchar_t* pwzBytes;
     wchar_t* pwzNext;
@@ -1232,7 +1229,7 @@ size_t CbDisassembleWithBytes(DIS* pdis, DIS::ADDR addr, const BYTE* pb, size_t 
 
         if (fFirst)
         {
-            pdis->CchFormatInstr(wz, sizeof(wz) / sizeof(wz[0]));
+            pdis->CchFormatInstr(wz, _countof(wz));
             fprintf(pfile, "%-*ls %ls\n", cchBytesMax, pwzBytes, wz);
         }
 

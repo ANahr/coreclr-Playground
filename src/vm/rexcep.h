@@ -18,6 +18,13 @@
 // name for your HResult to the list below so it can be thrown from
 // within the EE and recognized in Interop scenarios.
 
+//
+// Note: This file gets parsed by the Mono IL Linker (https://github.com/mono/linker/) which may throw an exception during parsing.
+// Specifically, this (https://github.com/mono/linker/blob/master/corebuild/integration/ILLink.Tasks/CreateRuntimeRootDescriptorFile.cs) will try to 
+// parse this header, and it may throw an exception while doing that. If you edit this file and get a build failure on msbuild.exe D:\repos\coreclr\build.proj
+// you might want to check out the parser linked above.
+//
+
 
 // This is an exhaustive list of all exceptions that can be
 // thrown by the EE itself.  If you add to this list the IL spec
@@ -109,9 +116,7 @@
 //
 
 DEFINE_EXCEPTION(g_ReflectionNS,       AmbiguousMatchException,        false,  COR_E_AMBIGUOUSMATCH)
-// ApplicationException is removed in CoreCLR
-#define kApplicationException kException 
-DEFINE_EXCEPTION(g_SystemNS,           AppDomainUnloadedException,     false,  COR_E_APPDOMAINUNLOADED)
+DEFINE_EXCEPTION(g_SystemNS,           ApplicationException,           false,  COR_E_APPLICATION)
 DEFINE_EXCEPTION(g_SystemNS,           ArithmeticException,            false,  COR_E_ARITHMETIC)
 
 DEFINE_EXCEPTION(g_SystemNS,           ArgumentException,              false,
@@ -196,7 +201,7 @@ DEFINE_EXCEPTION(g_IONS,               FileNotFoundException,           true,
 
 DEFINE_EXCEPTION(g_SystemNS,           FormatException,                false,  COR_E_FORMAT)
 
-DEFINE_EXCEPTION(g_SystemNS,           IndexOutOfRangeException,       false,  COR_E_INDEXOUTOFRANGE, 0x800a0009 /*Subscript out of range*/)
+DEFINE_EXCEPTION(g_SystemNS,           IndexOutOfRangeException,       false,  COR_E_INDEXOUTOFRANGE, (int)0x800a0009 /*Subscript out of range*/)
 DEFINE_EXCEPTION(g_SystemNS,           InsufficientExecutionStackException, false,  COR_E_INSUFFICIENTEXECUTIONSTACK)
 DEFINE_EXCEPTION(g_SystemNS,           InvalidCastException,           false,  COR_E_INVALIDCAST)
 #ifdef FEATURE_COMINTEROP
@@ -229,6 +234,8 @@ DEFINE_EXCEPTION(g_SystemNS,           MissingMemberException,         false,  C
 
 DEFINE_EXCEPTION(g_SystemNS,           MissingMethodException,         false,  COR_E_MISSINGMETHOD)
 DEFINE_EXCEPTION(g_SystemNS,           MulticastNotSupportedException, false,  COR_E_MULTICASTNOTSUPPORTED)
+
+DEFINE_EXCEPTION(g_RuntimeNS,          AmbiguousImplementationException, false,COR_E_AMBIGUOUSIMPLEMENTATION)
 
 DEFINE_EXCEPTION(g_SystemNS,           NotFiniteNumberException,       false,  COR_E_NOTFINITENUMBER)
 
@@ -300,8 +307,6 @@ DEFINE_EXCEPTION(g_InteropNS,          SEHException,                   false,  E
 DEFINE_EXCEPTION(g_SystemNS,           NotImplementedException,        false,  E_NOTIMPL)
 
 DEFINE_EXCEPTION(g_SystemNS,           OutOfMemoryException,           false,  E_OUTOFMEMORY, CTL_E_OUTOFMEMORY, STD_CTL_SCODE(31001))
-
-DEFINE_EXCEPTION(g_SystemNS,           CrossAppDomainMarshaledException, false, E_FAIL)
 
 
 DEFINE_EXCEPTION(g_SystemNS,           ArgumentNullException,          false,  E_POINTER)

@@ -10,14 +10,13 @@
 #include "threads.h"
 #include "excep.h"
 #include "corerror.h"
-#include "security.h"
 #include "classnames.h"
 #include "fcall.h"
 #include "assemblynative.hpp"
 #include "typeparse.h"
-#include "securityattributes.h"
 #include "reflectioninvocation.h"
 #include "runtimehandles.h"
+#include "typestring.h"
 
 typedef InlineFactory<InlineSString<64>, 16> SStringFactory;
 
@@ -119,18 +118,18 @@ void Attribute::SetManagedValue(CustomAttributeManagedValues gc, CustomAttribute
 
     if (type == SERIALIZATION_TYPE_TYPE || type == SERIALIZATION_TYPE_STRING)
     {
-        SetObjectReference((OBJECTREF*)&pValue->m_enumOrTypeName, gc.string, GetAppDomain());
+        SetObjectReference((OBJECTREF*)&pValue->m_enumOrTypeName, gc.string);
     }
     else if (type == SERIALIZATION_TYPE_ENUM)
     {
-        SetObjectReference((OBJECTREF*)&pValue->m_type.m_enumName, gc.string, GetAppDomain());
+        SetObjectReference((OBJECTREF*)&pValue->m_type.m_enumName, gc.string);
     }
     else if (type == SERIALIZATION_TYPE_SZARRAY)
     {
-        SetObjectReference((OBJECTREF*)&pValue->m_value, gc.array, GetAppDomain());
+        SetObjectReference((OBJECTREF*)&pValue->m_value, gc.array);
         
         if (pValue->m_type.m_arrayType == SERIALIZATION_TYPE_ENUM)
-            SetObjectReference((OBJECTREF*)&pValue->m_type.m_enumName, gc.string, GetAppDomain());
+            SetObjectReference((OBJECTREF*)&pValue->m_type.m_enumName, gc.string);
     }   
 }
 
@@ -171,7 +170,7 @@ CustomAttributeManagedValues Attribute::GetManagedCaValue(CaValue* pCaVal)
 
             if (length != (ULONG)-1)
             {
-                gc.array = (CaValueArrayREF)AllocateValueSzArray(MscorlibBinder::GetClass(CLASS__CUSTOM_ATTRIBUTE_ENCODED_ARGUMENT), length);
+                gc.array = (CaValueArrayREF)AllocateSzArray(TypeHandle(MscorlibBinder::GetClass(CLASS__CUSTOM_ATTRIBUTE_ENCODED_ARGUMENT)).MakeSZArray(), length);
                 CustomAttributeValue* pValues = gc.array->GetDirectPointerToNonObjectElements();
 
                 for (COUNT_T i = 0; i < length; i ++)
@@ -671,7 +670,7 @@ FCIMPL2(Object*, RuntimeTypeHandle::CreateCaInstance, ReflectClassBaseObject* pC
     CONTRACTL {
         FCALL_CHECK;
         PRECONDITION(CheckPointer(pCaTypeUNSAFE));
-        PRECONDITION(!pCaTypeUNSAFE->GetType().IsGenericVariable()); 
+        PRECONDITION(!pCaTypeUNSAFE->GetType().IsGenericVariable());
         PRECONDITION(pCaTypeUNSAFE->GetType().IsValueType() || CheckPointer(pCtorUNSAFE));
     }
     CONTRACTL_END;
@@ -695,10 +694,6 @@ FCIMPL2(Object*, RuntimeTypeHandle::CreateCaInstance, ReflectClassBaseObject* pC
         PRECONDITION(
             (!pCtor && gc.refCaType->GetType().IsValueType() && !gc.refCaType->GetType().GetMethodTable()->HasDefaultConstructor()) || 
             (pCtor == gc.refCaType->GetType().GetMethodTable()->GetDefaultConstructor()));
-
-        // If we relax this, we need to insure custom attributes construct properly for Nullable<T>
-        if (gc.refCaType->GetType().HasInstantiation())
-            COMPlusThrow(kNotSupportedException, W("Argument_GenericsInvalid"));
         
         gc.o = pCaMT->Allocate();
 
@@ -732,16 +727,20 @@ FCIMPL2(Object*, RuntimeTypeHandle::CreateCaInstance, ReflectClassBaseObject* pC
 }
 FCIMPLEND
 
-FCIMPL5(LPVOID, COMCustomAttribute::CreateCaObject, ReflectModuleBaseObject* pAttributedModuleUNSAFE, ReflectMethodObject *pMethodUNSAFE, BYTE** ppBlob, BYTE* pEndBlob, INT32* pcNamedArgs)
+FCIMPL6(LPVOID, COMCustomAttribute::CreateCaObject, ReflectModuleBaseObject* pAttributedModuleUNSAFE, ReflectClassBaseObject* pCaTypeUNSAFE, ReflectMethodObject *pMethodUNSAFE, BYTE** ppBlob, BYTE* pEndBlob, INT32* pcNamedArgs)
 {
     FCALL_CONTRACT;
 
     struct
     {
+        REFLECTCLASSBASEREF refCaType;
         OBJECTREF ca;
         REFLECTMETHODREF refCtor;
         REFLECTMODULEBASEREF refAttributedModule;
     } gc;
+    gc.refCaType = (REFLECTCLASSBASEREF)ObjectToOBJECTREF(pCaTypeUNSAFE);
+    TypeHandle th = gc.refCaType->GetType();
+
     gc.ca = NULL;
     gc.refCtor = (REFLECTMETHODREF)ObjectToOBJECTREF(pMethodUNSAFE);
     gc.refAttributedModule = (REFLECTMODULEBASEREF)ObjectToOBJECTREF(pAttributedModuleUNSAFE);
@@ -750,10 +749,10 @@ FCIMPL5(LPVOID, COMCustomAttribute::CreateCaObject, ReflectModuleBaseObject* pAt
         FCThrowRes(kArgumentNullException, W("Arg_InvalidHandle"));
 
     MethodDesc* pCtorMD = gc.refCtor->GetMethod();
-
+    
     HELPER_METHOD_FRAME_BEGIN_RET_PROTECT(gc);
     {
-        MethodDescCallSite ctorCallSite(pCtorMD);
+        MethodDescCallSite ctorCallSite(pCtorMD, th);
         MetaSig* pSig = ctorCallSite.GetMetaSig();
         BYTE* pBlob = *ppBlob;
 
@@ -768,12 +767,8 @@ FCIMPL5(LPVOID, COMCustomAttribute::CreateCaObject, ReflectModuleBaseObject* pAt
         OBJECTREF *argToProtect = (OBJECTREF*)_alloca(cArgs * sizeof(OBJECTREF));
         memset((void*)argToProtect, 0, cArgs * sizeof(OBJECTREF));
 
-        // If we relax this, we need to insure custom attributes construct properly for Nullable<T>
-        if (pCtorMD->GetMethodTable()->HasInstantiation())
-            COMPlusThrow(kNotSupportedException, W("Argument_GenericsInvalid"));
-
         // load the this pointer
-        argToProtect[0] = pCtorMD->GetMethodTable()->Allocate(); // this is the value to return after the ctor invocation
+        argToProtect[0] = gc.refCaType->GetType().GetMethodTable()->Allocate(); // this is the value to return after the ctor invocation
 
         if (pBlob) 
         {
@@ -871,7 +866,6 @@ FCIMPL5(VOID, COMCustomAttribute::ParseAttributeUsageAttribute, PVOID pData, ULO
     int inherited = 0;
     int allowMultiple = 1;    
         
-    BEGIN_SO_INTOLERANT_CODE_NOTHROW(GetThread(), FCThrowVoid(kStackOverflowException));
     {
         CustomAttributeParser ca(pData, cData);
         
@@ -902,7 +896,6 @@ FCIMPL5(VOID, COMCustomAttribute::ParseAttributeUsageAttribute, PVOID pData, ULO
         *pInherited = namedArgs[inherited].val.boolean == TRUE;
         *pAllowMultiple = namedArgs[allowMultiple].val.boolean == TRUE;
     }
-    END_SO_INTOLERANT_CODE;    
 }
 FCIMPLEND
 
@@ -1317,7 +1310,7 @@ void COMCustomAttribute::ReadArray(Assembly *pCtorAssembly,
         TypeHandle arrayHandle = ClassLoader::LoadArrayTypeThrowing(th);
         if (arrayHandle.IsNull()) 
             goto badBlob;
-        *pArray = (BASEARRAYREF)AllocateArrayEx(arrayHandle, &bounds, 1);
+        *pArray = (BASEARRAYREF)AllocateSzArray(arrayHandle, bounds);
         BOOL fSuccess;
         switch (elementSize)
         {
@@ -1567,40 +1560,3 @@ ARG_SLOT COMCustomAttribute::GetDataFromBlob(Assembly *pCtorAssembly,
 
     return retValue;
 }
-
-FCIMPL2(VOID, COMCustomAttribute::PushSecurityContextFrame, SecurityContextFrame *pFrame, AssemblyBaseObject *pAssemblyObjectUNSAFE)
-{
-    FCALL_CONTRACT;
-
-    BEGIN_SO_INTOLERANT_CODE_NOTHROW(GetThread(), FCThrowVoid(kStackOverflowException));
-
-    // Adjust frame pointer for the presence of the GSCookie at a negative
-    // offset (it's hard for us to express neginfo in the managed definition of
-    // the frame).
-    pFrame = (SecurityContextFrame*)((BYTE*)pFrame + sizeof(GSCookie));
-
-    *((TADDR*)pFrame) = SecurityContextFrame::GetMethodFrameVPtr();
-    pFrame->SetAssembly(pAssemblyObjectUNSAFE->GetAssembly());
-    *pFrame->GetGSCookiePtr() = GetProcessGSCookie();
-    pFrame->Push();
-
-    END_SO_INTOLERANT_CODE;
-}
-FCIMPLEND
-
-FCIMPL1(VOID, COMCustomAttribute::PopSecurityContextFrame, SecurityContextFrame *pFrame)
-{
-    FCALL_CONTRACT;
-
-    BEGIN_SO_INTOLERANT_CODE_NOTHROW(GetThread(), FCThrowVoid(kStackOverflowException));
-
-    // Adjust frame pointer for the presence of the GSCookie at a negative
-    // offset (it's hard for us to express neginfo in the managed definition of
-    // the frame).
-    pFrame = (SecurityContextFrame*)((BYTE*)pFrame + sizeof(GSCookie));
-
-    pFrame->Pop();
-
-    END_SO_INTOLERANT_CODE;
-}
-FCIMPLEND

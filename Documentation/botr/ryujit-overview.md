@@ -22,50 +22,45 @@ RyuJIT provides the just in time compilation service for the .NET runtime. The r
   * `compileMethod` is the main entry point for the JIT. The EE passes it a `ICorJitInfo` object, and the “info” containing the IL, the method header, and various other useful tidbits. It returns a pointer to the code, its size, and additional GC, EH and (optionally) debug info.
   * `getVersionIdentifier` is the mechanism by which the JIT/EE interface is versioned. There is a single GUID (manually generated) which the JIT and EE must agree on.
   * `getMaxIntrinsicSIMDVectorLength` communicates to the EE the largest SIMD vector length that the JIT can support.
-* `ICorJitInfo` – this is the interface that the EE implements. It has many methods defined on it that allow the JIT to look up metadata tokens, traverse type signatures, compute field and vtable offsets, find method entry points, construct string literals, etc. This bulk of this interface is inherited from `ICorJitDynamicInfo` which is defined in [src/inc/corinfo.h](https://github.com/dotnet/coreclr/blob/master/src/inc/corinfo.h). The implementation is defined in [src/vm/jitinterface.cpp](https://github.com/dotnet/coreclr/blob/master/src/vm/jitinterface.cpp).
+* `ICorJitInfo` – this is the interface that the EE implements. It has many methods defined on it that allow the JIT to look up metadata tokens, traverse type signatures, compute field and vtable offsets, find method entry points, construct string literals, etc. This bulk of this interface is inherited from `ICorDynamicInfo` which is defined in [src/inc/corinfo.h](https://github.com/dotnet/coreclr/blob/master/src/inc/corinfo.h). The implementation is defined in [src/vm/jitinterface.cpp](https://github.com/dotnet/coreclr/blob/master/src/vm/jitinterface.cpp).
 
 # Internal Representation (IR)
 
+## `Compiler` object
+
+The `Compiler` object is the primary data structure of the JIT. While it is not part of the JIT's IR per se, it serves as the root from which the data structures that implement the IR are accessible. For example, the `Compiler` object points to the head of the function's `BasicBlock` list with the `fgFirstBB` field, as well as having additional pointers to the end of the list, and other distinguished locations. `ICorJit`Compiler`::CompileMethod()` is invoked for each method, and creates a new `Compiler` object. Thus, the JIT need not worry about thread synchronization while accessing `Compiler` state. The EE has the necessary synchronization to ensure there is a single JIT’d copy of a method when two or more threads try to trigger JIT compilation of the same method.
+
 ## Overview of the IR
 
-The RyuJIT IR can be described at a high level as follows:
+RyuJIT represents a function as a doubly-linked list of `BasicBlock` values. Each `BasicBlock` has explicit edges to its successors that define the function's non-exceptional control flow. Exceptional control flow is implicit, with protected regions and handlers described in a table of `EHblkDsc` values. At the beginning of a compilation, each `BasicBlock` contains nodes in a high-level, statement- and tree-oriented form (HIR); this form persists throughout the JIT's front end. During the first phase of the back end--the rationalization phase--the HIR for each block is lowered to a linearly-ordered, node-oriented form (LIR). The fundamental distinction between HIR and LIR is in ordering semantics, though there are also some restrictions on the types of nodes that may appear in an HIR or LIR block.
 
-* The Compiler object is the primary data structure of the JIT. Each method is represented as a doubly-linked list of `BasicBlock` objects. The Compiler object points to the head of this list with the `fgFirstBB` link, as well as having additional pointers to the end of the list, and other distinguished locations.
-  * `ICorJitCompiler::CompileMethod()` is invoked for each method, and creates a new Compiler object.  Thus, the JIT need not worry about thread synchronization while accessing Compiler state. The EE has the necessary synchronization to ensure there is a single JIT’d copy of a method when two or more threads try to trigger JIT compilation of the same method.
-* `BasicBlock` nodes contain a list of doubly-linked statements with no internal control flow (there is an exception for the case of the qmark/colon operator)
-  * The `BasicBlock` also contains the dataflow information, when available.
-* `GenTree` nodes represent the operations and statement of the method being compiled.
-  * It includes the type of the node, as well as value number, assertions, and register assignments when available.
-* `LclVarDsc` represents a local variable, argument or JIT-created temp. It has a `gtLclNum` which is the identifier usually associated with the variable in the JIT and its dumps. The `LclVarDsc` contains the type, use count, weighted use count, frame or register assignment etc. These are often referred to simply as “lclVars”. They can be tracked (`lvTracked`), in which case they participate in dataflow analysis, and have a different index (`lvVarIndex`) to allow for the use of dense bit vectors.
+Both HIR and LIR blocks are composed of `GenTree` nodes that define the operations performed by the block. A `GenTree` node may consume some number of operands and may produce a singly-defined, at-most-singly-used value as a result. These values are referred to interchangably as *SDSU* temps or *tree* temps. Defs of SDSU temps are represented by `GenTree` nodes themselves, and uses are represented by edges from the using node to the defining node. Furthermore, SDSU temps defined in one block may not be used in a different block. In cases where a value must be multiply-defined, multiply-used, or defined in one block and used in another, the IR provides another class of temporary: the local var. Local vars are defined by assignment nodes in HIR or store nodes in LIR, and are used by local var nodes in both forms.
+
+An HIR block is composed of a doubly-linked list of statement nodes (`Statement`), each of which references a single expression tree (`m_rootNode`). The `GenTree` nodes in this tree execute in "tree order", which is defined as the order produced by a depth-first, left-to-right traversal of the tree, with two notable exceptions:
+- Binary nodes marked with the `GTF_REVERSE_OPS` flag execute their right operand tree (`gtOp2`) before their left operand tree (`gtOp1`)
+- Dynamically-sized block copy nodes where `gtEvalSizeFirst` is `true` execute the `gtDynamicSize` tree before executing their other operand trees.
+
+In addition to tree order, HIR also requires that no SDSU temp is defined in one statement and used in another. In situations where the requirements of tree and statement order prove onerous (e.g. when code must execute at a particular point in a function), HIR provides `GT_COMMA` nodes as an escape valve: these nodes consume and discard the results of their left-hand side while producing a copy of the value produced by their right-hand side. This allows the compiler to insert code in the middle of a statement without requiring that the statement be split apart.
+
+An LIR block is composed of a doubly-linked list of `GenTree` nodes, each of which describes a single operation in the method. These nodes execute in the order given by the list; there is no relationship between the order in which a node's operands appear and the order in which the operators that produced those operands execute. The only exception to this rule occurs after the register allocator, which may introduce `GT_COPY` and `GT_RELOAD` nodes that execute in "spill order". Spill order is defined as the order in which the register allocator visits a node's operands. For correctness, the code generator must generate code for spills, reloads, and `GT_COPY`/`GT_RELOAD` nodes in this order.
+
+In addition to HIR and LIR `BasicBlock`s, a separate representation--`insGroup` and `instrDesc`--is used during the actual instruction encoding.
 
 ![RyuJIT IR Overview](../images/ryujit-ir-overview.png)
 
-The IR has two modes:
-
-* In tree-order mode, non-statement nodes (often described as expression nodes, though they are not always strictly expressions) are linked only via parent-child links (unidirectional). That is, the consuming node has pointers to the nodes that produce its input operands.
-* In linear-order mode, non-statement nodes have both parent-child links as well as execution order links (`gtPrev` and `gtNext`).
-  * In the interest of maintaining functionality that depends upon the validity of the tree ordering, the linear mode of the `GenTree` IR has an unusual constraint that the execution order must represent a valid traversal of the parent-child links.
-
-A separate representation, `insGroup` and `instrDesc`, is used during the actual instruction encoding.
-
-### Statement Order
-
-During the “front end” of the JIT compiler (prior to Rationalization), the execution order of the `GenTree` nodes on a statement is fully described by the “tree” order – that is, the links from the top node of a statement (the `gtStmtExpr`) to its children. The order is determined by a depth-first, left-to-right traversal of the tree, with the exception of nodes marked `GTF_REVERSE_OPS` on binary nodes, whose second operand is traversed before its first.
-
-After rationalization, the execution order can no longer be deduced from the tree order alone. At this point, the dominant ordering becomes “linear order”. This is because at this point any `GT_COMMA` nodes have been replaced by embedded statements, whose position in the execution order can only be determined by the `gtNext` and `gtPrev` links on the tree nodes.
-
-This modality is captured in the `fgOrder` flag on the Compiler object – it is either `FGOrderTree` or `FGOrderLinear`.
-
 ## GenTree Nodes
 
-Each operation is represented as a GenTree node, with an opcode (GT_xxx), zero or more child `GenTree` nodes, and additional fields as needed to represent the semantics of that node.
+Each operation is represented as a GenTree node, with an opcode (`GT_xxx`), zero or more child/operand `GenTree` nodes, and additional fields as needed to represent the semantics of that node. Every node includes its type, value number, assertions, register assignments, etc. when available.
 
-The `GenTree` nodes are doubly-linked in execution order, but the links are not necessarily valid during all phases of the JIT.
+`GenTree` nodes are doubly-linked in execution order, but the links are not necessarily valid during all phases of the JIT. In HIR these links are primarily a convenience, as the order produced by a traversal of the links must match the order produced by a "tree order" traversal (see above for details). In LIR these links define the execution order of the nodes.
 
-The statement nodes utilize the same `GenTree` base type as the operation nodes, though they are not truly related.
+HIR statement nodes utilize the same `GenTree` base type as the operation nodes, though they are not truly related.
+* The statement nodes are doubly-linked. The first statement node in a block points to the last node in the block via its `m_prev` link. Note that the last statement node does *not* point to the first; that is, the list is not fully circular.
+* Each statement node contains two `GenTree` links – `m_rootNode` points to the top-level node in the statement (i.e. the root of the tree that represents the statement), while `m_treeList` points to the first node in execution order (again, this link is not always valid).
 
-* The statement nodes are doubly-linked. The first statement node in a block points to the last node in the block via its `gtPrev` link. Note that the last statement node does *not* point to the first; that is, the list is not fully circular.
-* Each statement node contains two `GenTree` links – `gtStmtExpr` points to the top-level node in the statement (i.e. the root of the tree that represents the statement), while `gtStmtList` points to the first node in execution order (again, this link is not always valid).
+## Local var descriptors
+
+A `LclVarDsc` represents a possibly-multiply-defined, possibly-multiply-used temporary. These temporaries may be used to represent user local variables, arguments or JIT-created temps. Each lclVar has a `gtLclNum` which is the identifier usually associated with the variable in the JIT and its dumps. The `LclVarDsc` contains the type, use count, weighted use count, frame or register assignment etc. A local var may be "tracked" (`lvTracked`), in which case it participates in dataflow analysis, and has a secondary name (`lvVarIndex`) that allows for the use of dense bit vectors.
 
 ### Example of Post-Import IR
 
@@ -75,27 +70,29 @@ For this snippet of code (extracted from [tests/src/JIT/CodeGenBringUpTests/DblR
 
 A stripped-down dump of the `GenTree` nodes just after they are imported looks like this:
 
-    ▌ stmtExpr  void  (top level) (IL 0x000...0x026)
-    │        ┌──▌ lclVar    double V00 arg0
-    │     ┌──▌ *         double
-    │     │  └──▌ dconst    double 2.00
-    │  ┌──▌ /         double
-    │  │  │  ┌──▌ mathFN    double sqrt
-    │  │  │  │  │     ┌──▌ lclVar    double V02 arg2
-    │  │  │  │  │  ┌──▌ *         double
-    │  │  │  │  │  │  │  ┌──▌ lclVar    double V00 arg0
-    │  │  │  │  │  │  └──▌ *         double
-    │  │  │  │  │  │     └──▌ dconst    double 4.00
-    │  │  │  │  └──▌ -         double
-    │  │  │  │     │       lclVar    double V01 arg1
-    │  │  │  │     └──▌ *         double
-    │  │  │  │        └──▌ lclVar    double V01 arg1
-    │  │  └──▌ +         double
-    │  │     └──▌ unary -   double
-    │  │        └──▌ lclVar    double V01 arg1
-    └──▌  =         double
-       └──▌ indir     double
-          └──▌ lclVar    byref  V03 arg3
+```
+STMT  (IL 0x000...0x026)
+   ▌  ASG       double
+   ├──▌  IND       double
+   │  └──▌  LCL_VAR   byref  V03 arg3         
+   └──▌  DIV       double
+      ├──▌  ADD       double
+      │  ├──▌  NEG       double
+      │  │  └──▌  LCL_VAR   double V01 arg1         
+      │  └──▌  INTRINSIC double sqrt
+      │     └──▌  SUB       double
+      │        ├──▌  MUL       double
+      │        │  ├──▌  LCL_VAR   double V01 arg1         
+      │        │  └──▌  LCL_VAR   double V01 arg1         
+      │        └──▌  MUL       double
+      │           ├──▌  MUL       double
+      │           │  ├──▌  LCL_VAR   double V00 arg0         
+      │           │  └──▌  CNS_DBL   double 4.0000000000000000
+      │           └──▌  LCL_VAR   double V02 arg2         
+      └──▌  MUL       double
+         ├──▌  LCL_VAR   double V00 arg0         
+         └──▌  CNS_DBL   double 2.0000000000000000
+```         
 
 ## Types
 
@@ -103,22 +100,21 @@ The JIT is primarily concerned with “primitive” types, i.e. integers, refere
 
 ## Dataflow Information
 
-In order to limit throughput impact, the JIT limits the number of lvlVars for which liveness information is computed. These are the tracked lvlVars (`lvTracked` is true), and they are the only candidates for register allocation.
+In order to limit throughput impact, the JIT limits the number of lclVars for which liveness information is computed. These are the tracked lclVars (`lvTracked` is true), and they are the only candidates for register allocation (i.e. only these lclVars may be assigned registers over their entire lifetime). Defs and uses of untracked lclVars are treated as stores and loads to/from the appropriate stack location, and the corresponding nodes act as normal operators during register allocation.
 
 The liveness analysis determines the set of defs, as well as the uses that are upward exposed, for each block. It then propagates the liveness information. The result of the analysis is captured in the following:
 
 * The live-in and live-out sets are captured in the `bbLiveIn` and `bbLiveOut` fields of the `BasicBlock`.
-* The `GTF_VAR_DEF` flag is set on a lvlVar `GenTree` node that is a definition.
-* The `GTF_VAR_USEASG` flag is set (in addition to the `GTF_VAR_DEF` flag) for the target of an update (e.g. +=).
-* The `GTF_VAR_USEDEF` is set on the target of an assignment of a binary operator with the same lvlVar as an operand.
+* The `GTF_VAR_DEF` flag is set on a lclVar node (all of which are of type `GenTreeLclVarCommon`) that is a definition.
+* The `GTF_VAR_USEASG` flag is set (in addition to the `GTF_VAR_DEF` flag) on partial definitions of a local variable (i.e. `GT_LCL_FLD` nodes that do not define the entire variable).
 
 ## SSA
 
-Static single assignment (SSA) form is constructed in a traditional manner [[1]](#[1]). The SSA names are recorded on the lvlVar references. While SSA form usually retains a pointer or link to the defining reference, RyuJIT currently retains only the `BasicBlock` in which the definition of each SSA name resides.
+Static single assignment (SSA) form is constructed in a traditional manner [[1]](#[1]). The SSA names are recorded on the lclVar references. While SSA form usually retains a pointer or link to the defining reference, RyuJIT currently retains only the `BasicBlock` in which the definition of each SSA name resides.
 
 ## Value Numbering
 
-Value numbering utilizes SSA for lvlVar values, but also performs value numbering of expression trees. It takes advantage of type safety by not invalidating the value number for field references with a heap write, unless the write is to the same field. The IR nodes are annotated with the value numbers, which are indexes into a type-specific value number store. Value numbering traverses the trees, performing symbolic evaluation of many operations.
+Value numbering utilizes SSA for lclVar values, but also performs value numbering of expression trees. It takes advantage of type safety by not invalidating the value number for field references with a heap write, unless the write is to the same field. The IR nodes are annotated with the value numbers, which are indexes into a type-specific value number store. Value numbering traverses the trees, performing symbolic evaluation of many operations.
 
 # Phases of RyuJIT
 
@@ -127,15 +123,15 @@ The top-level function of interest is `Compiler::compCompile`. It invokes the fo
 | **Phase** | **IR Transformations** |
 | --- | --- |
 |[Pre-import](#pre-import)|`Compiler->lvaTable` created and filled in for each user argument and variable. BasicBlock list initialized.|
-|[Importation](#importation)|`GenTree` nodes created and linked in to Statements, and Statements into BasicBlocks. Inlining candidates identified.|
+|[Importation](#importation)|`GenTree` nodes created and linked in to `Statement` nodes, and Statements into BasicBlocks. Inlining candidates identified.|
 |[Inlining](#inlining)|The IR for inlined methods is incorporated into the flowgraph.|
-|[Struct Promotion](#struct-promotion)|New lvlVars are created for each field of a promoted struct.|
-|[Mark Address-Exposed Locals](#mark-addr-exposed)|lvlVars with references occurring in an address-taken context are marked.  This must be kept up-to-date.|
+|[Struct Promotion](#struct-promotion)|New lclVars are created for each field of a promoted struct.|
+|[Mark Address-Exposed Locals](#mark-addr-exposed)|lclVars with references occurring in an address-taken context are marked.  This must be kept up-to-date.|
 |[Morph Blocks](#morph-blocks)|Performs localized transformations, including mandatory normalization as well as simple optimizations.|
 |[Eliminate Qmarks](#eliminate-qmarks)|All `GT_QMARK` nodes are eliminated, other than simple ones that do not require control flow.|
 |[Flowgraph Analysis](#flowgraph-analysis)|`BasicBlock` predecessors are computed, and must be kept valid. Loops are identified, and normalized, cloned and/or unrolled.|
-|[Normalize IR for Optimization](#normalize-ir)|lvlVar references counts are set, and must be kept valid. Evaluation order of `GenTree` nodes (`gtNext`/`gtPrev`) is determined, and must be kept valid.|
-|[SSA and Value Numbering Optimizations](#ssa-vn)|Computes liveness (`bbLiveIn` and `bbLiveOut` on `BasicBlocks`), and dominators. Builds SSA for tracked lvlVars. Computes value numbers.|
+|[Normalize IR for Optimization](#normalize-ir)|lclVar references counts are set, and must be kept valid. Evaluation order of `GenTree` nodes (`gtNext`/`gtPrev`) is determined, and must be kept valid.|
+|[SSA and Value Numbering Optimizations](#ssa-vn)|Computes liveness (`bbLiveIn` and `bbLiveOut` on `BasicBlocks`), and dominators. Builds SSA for tracked lclVars. Computes value numbers.|
 |[Loop Invariant Code Hoisting](#licm)|Hoists expressions out of loops.|
 |[Copy Propagation](#copy-propagation)|Copy propagation based on value numbers.|
 |[Common Subexpression Elimination (CSE)](#cse)|Elimination of redundant subexressions based on value numbers.|
@@ -173,11 +169,11 @@ Struct promotion (`fgPromoteStructs()`) analyzes the local variables and temps, 
 
 Next, it determines whether it is likely to be profitable, based on the number of fields, and whether the fields are individually referenced.
 
-When a lvlVar is promoted, there are now N+1 lvlVars for the struct, where N is the number of fields. The original struct lvlVar is not considered to be tracked, but its fields may be.
+When a lclVar is promoted, there are now N+1 lclVars for the struct, where N is the number of fields. The original struct lclVar is not considered to be tracked, but its fields may be.
 
 ### <a name="mark-addr-exposed"/>Mark Address-Exposed Locals
 
-This phase traverses the expression trees, propagating the context (e.g. taking the address, indirecting) to determine which lvlVars have their address taken, and which therefore will not be register candidates. If a struct lvlVar has been promoted, and is then found to be address-taken, it will be considered “dependently promoted”, which is an odd way of saying that the fields will still be separately tracked, but they will not be register candidates.
+This phase traverses the expression trees, propagating the context (e.g. taking the address, indirecting) to determine which lclVars have their address taken, and which therefore will not be register candidates. If a struct lclVar has been promoted, and is then found to be address-taken, it will be considered “dependently promoted”, which is an odd way of saying that the fields will still be separately tracked, but they will not be register candidates.
 
 ### <a name="morph-blocks"/>Morph Blocks
 
@@ -201,7 +197,9 @@ At this point, a number of analyses and transformations are done on the flowgrap
 
 At this point, a number of properties are computed on the IR, and must remain valid for the remaining phases. We will call this “normalization”
 
-* `lvaMarkLocalVars` – set the reference counts (raw and weighted) for lvlVars, sort them, and determine which will be tracked (currently up to 128). Note that after this point any transformation that adds or removes lvlVar references must update the reference counts.
+* `lvaMarkLocalVars` – if this jit is optimizing, set the reference counts (raw and weighted) for lclVars, sort them, and determine which
+will be tracked (currently up to 512). If not optimizing, all locals are given an implicit reference count of one. Reference counts are not incrementally
+maintained. They can be recomputed if accurate counts are needed.
 * `optOptimizeBools` – this optimizes Boolean expressions, and may change the flowgraph (why is it not done prior to reachability and dominators?)
 * Link the trees in evaluation order (setting `gtNext` and `gtPrev` fields): and `fgFindOperOrder()` and `fgSetBlockOrder()`.
 
@@ -216,7 +214,7 @@ This phase traverses all the loop nests, in outer-to-inner order (thus hoisting 
 * A valid CSE candidate
 * Has no side-effects
 * Does not raise an exception OR occurs in the loop prior to any side-effects
-* Has a valid value number, and it is a lvlVar defined outside the loop, or its children (the value numbers from which it was computed) are invariant.
+* Has a valid value number, and it is a lclVar defined outside the loop, or its children (the value numbers from which it was computed) are invariant.
 
 ### <a name="copy-propagation"/>Copy Propagation
 
@@ -226,7 +224,7 @@ The JIT currently requires that the IR be maintained in conventional SSA form, a
 
 ### <a name="cse"/>Common Subexpression Elimination (CSE)
 
-Utilizes value numbers to identify redundant computations, which are then evaluated to a new temp lvlVar, and then reused.
+Utilizes value numbers to identify redundant computations, which are then evaluated to a new temp lclVar, and then reused.
 
 ### <a name="assertion-propagation"/>Assertion Propagation
 
@@ -236,152 +234,233 @@ Utilizes value numbers to propagate and transform based on properties such as no
 
 Optimize array index range checks based on value numbers and assertions.
 
-## <a name=rationalization"/>Rationalization
+## <a name="rationalization"/>Rationalization
 
 As the JIT has evolved, changes have been made to improve the ability to reason over the tree in both “tree order” and “linear order”. These changes have been termed the “rationalization” of the IR. In the spirit of reuse and evolution, some of the changes have been made only in the later (“backend”) components of the JIT. The corresponding transformations are made to the IR by a “Rationalizer” component. It is expected that over time some of these changes will migrate to an earlier place in the JIT phase order:
 
 * Elimination of assignment nodes (`GT_ASG`). The assignment node was problematic because the semantics of its destination (left hand side of the assignment) could not be determined without context. For example, a `GT_LCL_VAR` on the left-hand side of an assignment is a definition of the local variable, but on the right-hand side it is a use. Furthermore, since the execution order requires that the children be executed before the parent, it is unnatural that the left-hand side of the assignment appears in execution order before the assignment operator.
   * During rationalization, all assignments are replaced by stores, which either represent their destination on the store node itself (e.g. `GT_LCL_VAR`), or by the use of a child address node (e.g. `GT_STORE_IND`).
 * Elimination of address nodes (`GT_ADDR`). These are problematic because of the need for parent context to analyze the child.
-* Elimination of “comma” nodes (`GT_COMMA`). These nodes are introduced for convenience during importation, during which a single tree is constructed at a time, and not incorporated into the statement list until it is completed. When it is necessary, for example, to store a partially-constructed tree into a temporary variable, a `GT_COMMA` node is used to link it into the tree. However, in later phases, these comma nodes are an impediment to analysis, and thus are split into separate statements.
+* Elimination of “comma” nodes (`GT_COMMA`). These nodes are introduced for convenience during importation, during which a single tree is constructed at a time, and not incorporated into the statement list until it is completed. When it is necessary, for example, to store a partially-constructed tree into a temporary variable, a `GT_COMMA` node is used to link it into the tree. However, in later phases, these comma nodes are an impediment to analysis, and thus are eliminated.
   * In some cases, it is not possible to fully extract the tree into a separate statement, due to execution order dependencies. In these cases, an “embedded” statement is created. While these are conceptually very similar to the `GT_COMMA` nodes, they do not masquerade as expressions.
 * Elimination of “QMark” (`GT_QMARK`/`GT_COLON`) nodes is actually done at the end of morphing, long before the current rationalization phase. The presence of these nodes made analyses (especially dataflow) overly complex.
+* Elimination of statements. Without statements, the execution order of a basic block's contents is fully defined by the `gtNext`/`gtPrev` links between `GenTree` nodes.
 
-For our earlier example (Example of Post-Import IR), here is what the simplified dump looks like just prior to Rationalization (the $ annotations are value numbers).  Note that some common subexpressions have been computed into new temporary lvlVars, and that computation has been inserted as a `GT_COMMA` (comma) node in the IR:
+For our earlier example (Example of Post-Import IR), here is what the simplified dump looks like just prior to Rationalization (the $ annotations are value numbers).  Note that some common subexpressions have been computed into new temporary lclVars, and that computation has been inserted as a `GT_COMMA` (comma) node in the IR:
 
-    ▌  stmtExpr  void  (top level) (IL 0x000...0x026)
-    │        ┌──▌  lclVar    double V07 cse1          $185
-    │     ┌──▌  comma     double                      $185
-    │     │  │     ┌──▌  dconst    double 2.00        $143
-    │     │  │  ┌──▌  \*         double                $185
-    │     │  │  │  └──▌  lclVar   double V00 arg0 u:2 $80
-    │     │  └──▌  =         double                   $VN.Void
-    │     │     └──▌  lclVar    double V07 cse1       $185
-    │  ┌──▌  /         double                         $186
-    │  │  │  ┌──▌  unary -   double                   $84
-    │  │  │  │  └──▌  lclVar    double V01 arg1   u:2 $81
-    │  │  └──▌  +         double                      $184
-    │  │     │  ┌──▌  lclVar    double V06 cse0       $83
-    │  │     └──▌  comma     double                   $83
-    │  │        │  ┌──▌  mathFN    double sqrt        $83
-    │  │        │  │  │     ┌──▌  lclVar double V02 arg2 u:2 $82
-    │  │        │  │  │  ┌──▌  \*         double              $182
-    │  │        │  │  │  │  │  ┌──▌  dconst    double 4.00   $141
-    │  │        │  │  │  │  └──▌  \*         double           $181
-    │  │        │  │  │  │     └──▌  lclVar double V00 arg0 u:2 $80
-    │  │        │  │  └──▌  -         double                    $183
-    │  │        │  │     │  ┌──▌  lclVar    double V01 arg1 u:2 $81
-    │  │        │  │     └──▌  \*         double                 $180
-    │  │        │  │        └──▌  lclVar    double V01 arg1 u:2 $81
-    │  │        └──▌  =         double                          $VN.Void
-    │  │           └──▌  lclVar    double V06 cse0              $83
-    └──▌  =         double                                      $VN.Void
-       └──▌  indir     double $186
-          └──▌  lclVar    byref  V03 arg3        u:2 (last use) $c0
+```
+STMT  (IL 0x000...0x026)
+   ▌  ASG       double $VN.Void
+   ├──▌  IND       double $146
+   │  └──▌  LCL_VAR   byref  V03 arg3         u:1 (last use) $c0
+   └──▌  DIV       double $146
+      ├──▌  ADD       double $144
+      │  ├──▌  COMMA     double $83
+      │  │  ├──▌  ASG       double $VN.Void
+      │  │  │  ├──▌  LCL_VAR   double V06 cse0          $83
+      │  │  │  └──▌  INTRINSIC double sqrt $83
+      │  │  │     └──▌  SUB       double $143
+      │  │  │        ├──▌  MUL       double $140
+      │  │  │        │  ├──▌  LCL_VAR   double V01 arg1         u:1 $81
+      │  │  │        │  └──▌  LCL_VAR   double V01 arg1         u:1 $81
+      │  │  │        └──▌  MUL       double $142
+      │  │  │           ├──▌  MUL       double $141
+      │  │  │           │  ├──▌  LCL_VAR   double V00 arg0         u:1 $80
+      │  │  │           │  └──▌  CNS_DBL   double 4.0000000000000000 $180
+      │  │  │           └──▌  LCL_VAR   double V02 arg2         u:1 $82
+      │  │  └──▌  LCL_VAR   double V06 cse0          $83
+      │  └──▌  COMMA     double $84
+      │     ├──▌  ASG       double $VN.Void
+      │     │  ├──▌  LCL_VAR   double V08 cse2          $84
+      │     │  └──▌  NEG       double $84
+      │     │     └──▌  LCL_VAR   double V01 arg1         u:1 $81
+      │     └──▌  LCL_VAR   double V08 cse2          $84
+      └──▌  COMMA     double $145
+         ├──▌  ASG       double $VN.Void
+         │  ├──▌  LCL_VAR   double V07 cse1          $145
+         │  └──▌  MUL       double $145
+         │     ├──▌  LCL_VAR   double V00 arg0         u:1 $80
+         │     └──▌  CNS_DBL   double 2.0000000000000000 $181
+         └──▌  LCL_VAR   double V07 cse1          $145
+```
 
-After rationalization, the nodes are presented in execution order, and the `GT_COMMA` (comma) and `GT_ASG` (=) nodes have been eliminated:
+After rationalization, the nodes are presented in execution order, and the `GT_COMMA` (comma), `GT_ASG` (=), and `Statement` nodes have been eliminated:
 
-    ▌  stmtExpr  void  (top level) (IL 0x000...  ???)
-    │           ┌──▌  lclVar    double V01 arg1
-    │           ├──▌  lclVar    double V01 arg1
-    │        ┌──▌  \*         double
-    │        │     ┌──▌  lclVar    double V00 arg0
-    │        │     ├──▌  dconst    double 4.00
-    │        │  ┌──▌  \*         double
-    │        │  ├──▌  lclVar    double V02 arg2
-    │        ├──▌  \*         double
-    │     ┌──▌  -         double
-    │  ┌──▌  mathFN    double sqrt
-    └──▌  st.lclVar double V06
-
-    ▌  stmtExpr  void  (top level) (IL 0x000...0x026)
-    │        ┌──▌  lclVar    double V06
-    │        │  ┌──▌  lclVar    double V01 arg1
-    │        ├──▌  unary -   double
-    │     ┌──▌  +         double
-    │     │  {  ▌  stmtExpr  void  (embedded) (IL 0x000...  ???)
-    │     │  {  │     ┌──▌  lclVar    double V00 arg0
-    │     │  {  │     ├──▌  dconst    double 2.00
-    │     │  {  │  ┌──▌  \*         double
-    │     │  {  └──▌  st.lclVar double V07
-    │     ├──▌  lclVar    double V07
-    │  ┌──▌  /         double
-    │  ├──▌  lclVar    byref  V03 arg3
-    └──▌  storeIndir double
-
-
-Note that the first operand of the first comma has been extracted into a separate statement, but the second comma causes an embedded statement to be created, in order to preserve execution order.
+```
+         IL_OFFSET void   IL offset: 0x0
+ t3 =    LCL_VAR   double V01 arg1         u:1 $81
+ t4 =    LCL_VAR   double V01 arg1         u:1 $81
+     ┌──▌  t3     double 
+     ├──▌  t4     double 
+ t5 = ▌  MUL       double $140
+ t7 =    LCL_VAR   double V00 arg0         u:1 $80
+ t6 =    CNS_DBL   double 4.0000000000000000 $180
+     ┌──▌  t7     double 
+     ├──▌  t6     double 
+ t8 = ▌  MUL       double $141
+ t9 =    LCL_VAR   double V02 arg2         u:1 $82
+     ┌──▌  t8     double 
+     ├──▌  t9     double 
+t10 = ▌  MUL       double $142
+     ┌──▌  t5     double 
+     ├──▌  t10    double 
+t11 = ▌  SUB       double $143
+     ┌──▌  t11    double 
+t12 = ▌  INTRINSIC double sqrt $83
+     ┌──▌  t12    double 
+      ▌  STORE_LCL_VAR double V06 cse0         
+t46 =    LCL_VAR   double V06 cse0          $83
+ t1 =    LCL_VAR   double V01 arg1         u:1 $81
+     ┌──▌  t1     double 
+ t2 = ▌  NEG       double $84
+     ┌──▌  t2     double 
+      ▌  STORE_LCL_VAR double V08 cse2         
+t56 =    LCL_VAR   double V08 cse2          $84
+     ┌──▌  t46    double 
+     ├──▌  t56    double 
+t13 = ▌  ADD       double $144
+t15 =    LCL_VAR   double V00 arg0         u:1 $80
+t14 =    CNS_DBL   double 2.0000000000000000 $181
+     ┌──▌  t15    double 
+     ├──▌  t14    double 
+t16 = ▌  MUL       double $145
+     ┌──▌  t16    double 
+      ▌  STORE_LCL_VAR double V07 cse1         
+t51 =    LCL_VAR   double V07 cse1          $145
+     ┌──▌  t13    double 
+     ├──▌  t51    double 
+t17 = ▌  DIV       double $146
+ t0 =    LCL_VAR   byref  V03 arg3         u:1 (last use) $c0
+     ┌──▌  t0     byref  
+     ├──▌  t17    double 
+      ▌  STOREIND  double
+```
 
 ## <a name="lowering"/>Lowering
 
 Lowering is responsible for transforming the IR in such a way that the control flow, and any register requirements, are fully exposed.
 
-It accomplishes this in two passes.
+It does an execution-order traversal that performs context-dependent transformations such as
+* expanding switch statements (using a switch table or a series of conditional branches)
+* constructing addressing modes (LEA nodes)
+* determining the code generation strategy for block assignments (e.g. `GT_STORE_BLK`) which may become helper calls, unrolled loops, or an instruction like `rep stos`
+* generating machine specific instructions (e.g. generating the `BT` x86/64 instruction)
+* mark "contained" nodes - such a node does not generate any code and relies on its user to include the node's operation in its own codegen (e.g. memory operands, immediate operands)
+* mark "reg optional" nodes - despite the name, such a node may produce a value in a register but its user does not require a register and can consume the value directly from a memory location
 
-The first pass is a post-order traversal that performs context-dependent transformations such as expanding switch statements (using a switch table or a series of conditional branches), constructing addressing modes, etc.  For example, this:
-
-             ┌──▌  lclVar    ref    V00 arg0
-             │     ┌──▌  lclVar    int    V03 loc1
-             │  ┌──▌  cast      long <- int
-             │  ├──▌  const     long   2
-             ├──▌  <<        long
-          ┌──▌  +         byref
-          ├──▌  const     long   16
-       ┌──▌  +         byref
-    ┌──▌  indir     int
+For example, this:
+```
+t47 =    LCL_VAR   ref    V00 arg0
+t48 =    LCL_VAR   int    V01 arg1
+     ┌──▌  t48    int    
+t51 = ▌  CAST      long <- int
+t52 =    CNS_INT   long   2
+     ┌──▌  t51    long   
+     ├──▌  t52    long   
+t53 = ▌  LSH       long
+t54 =    CNS_INT   long   16 Fseq[#FirstElem]
+     ┌──▌  t53    long   
+     ├──▌  t54    long   
+t55 = ▌  ADD       long
+     ┌──▌  t47    ref    
+     ├──▌  t55    long   
+t56 = ▌  ADD       byref
+     ┌──▌  t56    byref  
+t44 = ▌  IND       int
+```
 
 Is transformed into this, in which the addressing mode is explicit:
-
-          ┌──▌  lclVar    ref    V00 arg0
-          │  ┌──▌  lclVar    int    V03 loc1
-          ├──▌  cast      long <- int
-       ┌──▌  lea(b+(i*4)+16) byref
-    ┌──▌  indir     int
-
-The next pass annotates the nodes with register requirements, and this is done in an execution order traversal (effectively post-order) in order to ensure that the children are visited prior to the parent. It may also do some transformations that do not require the parent context, such as determining the code generation strategy for block assignments (e.g. `GT_COPYBLK`) which may become helper calls, unrolled loops, or an instruction like rep stos.
-
-The register requirements are expressed in the `TreeNodeInfo` (`gtLsraInfo`) for each node.  For example, for the `copyBlk` node in this snippet:
-
-    Source      │  ┌──▌  const(h)  long   0xCA4000 static
-    Destination │  ├──▌  &lclVar   byref  V04 loc4
-                │  ├──▌  const     int    34
-                └──▌  copyBlk   void
-
-The `TreeNodeInfo` would be as follows:
-
-    +<TreeNodeInfo @ 15 0=1 1i 1f
-          src=[allInt]
-          int=[rax rcx rdx rbx rbp rsi rdi r8-r15 mm0-mm5]
-          dst=[allInt] I>
-
-The “@ 15” is the location number of the node.  The “0=1” indicates that there are zero destination registers (because this defines only memory), and 1 source register (the address of lclVar V04).  The “1i” indicates that it requires 1 internal integer register (for copying the remainder after copying 16-byte sized chunks), the “1f” indicates that it requires 1 internal floating point register (for copying the two 16-byte chunks).  The src, int and dst fields are encoded masks that indicate the register constraints for the source, internal and destination registers, respectively.
+```
+t47 =    LCL_VAR   ref    V00 arg0
+t48 =    LCL_VAR   int    V01 arg1
+     ┌──▌  t48    int    
+t51 = ▌  CAST      long <- int
+     ┌──▌  t47    ref    
+     ├──▌  t51    long   
+t79 = ▌  LEA(b+(i*4)+16) byref 
+     ┌──▌  t79    byref  
+t44 = ▌  IND       int
+```
+After all nodes are lowered, liveness is run in preparation for register allocation.
 
 ## <a name="reg-alloc"/>Register allocation
 
-The RyuJIT register allocator uses a Linear Scan algorithm, with an approach similar to [[2]](#[2]). In brief, it operates on two main data structures:
+The RyuJIT register allocator uses a Linear Scan algorithm, with an approach similar to [[2]](#[2]). In discussion it is referred to as either `LinearScan` (the name of the implementing class), or LSRA (Linear Scan Register Allocation). In brief, it operates on two main data structures:
 
-* `Intervals` (representing live ranges of variables or tree expressions) and `RegRecords` (representing physical registers), both of which derive from `Referent`.
+* `Intervals` (representing live ranges of variables or tree expressions) and `RegRecords` (representing physical registers), both of which derive from `Referenceable`.
 * `RefPositions`, which represent uses or defs (or variants thereof, such as ExposedUses) of either `Intervals` or physical registers.
 
-Pre-conditions:
+`LinearScan::buildIntervals()` traverses the entire method building RefPositions and Intervals as required. For example, for the `STORE_BLK` node in this snippet:
+```
+t67 =    CNS_INT(h) long   0x2b5acef2c50 static Fseq[s1]
+     ┌──▌  t67    long   
+ t0 = ▌  IND       ref
+ t1 =    CNS_INT   long   8 Fseq[#FirstElem]
+     ┌──▌  t0     ref    
+     ├──▌  t1     long   
+ t2 = ▌  ADD       byref
+     ┌──▌  t2     byref  
+ t3 = ▌  IND       struct
+t31 =    LCL_VAR_ADDR byref  V08 tmp1
+     ┌──▌  t31    byref  
+     ├──▌  t3     struct 
+      ▌  STORE_BLK(40) struct (copy) (Unroll)
+```
+the following RefPositions are generated:
+```
+N027 (???,???) [000085] -A-XG-------              ▌  STORE_BLK(40) struct (copy) (Unroll) REG NA
+Interval 16: int RefPositions {} physReg:NA Preferences=[allInt]
+<RefPosition #40  @27  RefTypeDef <Ivl:16 internal> STORE_BLK BB01 regmask=[allInt] minReg=1>
+Interval 17: float RefPositions {} physReg:NA Preferences=[allFloat]
+<RefPosition #41  @27  RefTypeDef <Ivl:17 internal> STORE_BLK BB01 regmask=[allFloat] minReg=1>
+<RefPosition #42  @27  RefTypeUse <Ivl:15> BB01 regmask=[allInt] minReg=1 last>
+<RefPosition #43  @27  RefTypeUse <Ivl:16 internal> STORE_BLK BB01 regmask=[allInt] minReg=1 last>
+<RefPosition #44  @27  RefTypeUse <Ivl:17 internal> STORE_BLK BB01 regmask=[allFloat] minReg=1 last>
+```
+The “@ 27” is the location number of the node. “internal” indicates a register that is internal to the node (in this case 2 internal registers are needed, one float (XMM on XARCH) and one int, as temporaries for copying). “regmask” indicates the register constraints for the `RefPosition`.
 
-* The `NodeInfo` is initialized for each tree node to indicate:
-  * Number of registers consumed and produced by the node.
-  * Number and type (int versus float) of internal registers required.
+### Notable features of RyuJIT LinearScan
+
+Unlike most register allocators, LSRA performs register allocation on an IR (Intermediate Representation) that is not a direct representation of the target instructions. A given IR node may map to 0, 1 or multiple target instructions. Nodes that are "contained" are handled by code generation as part of their parent node and thus may map to 0 instructions. A simple node will have a 1-to-1 mapping to a target instruction, and a more complex node (e.g. `GT_STORE_BLK`) may map to multiple instructions.
+
+### Pre-conditions:
+
+It is the job of the `Lowering` phase to transform the IR such that:
+* The nodes are in `LIR` form (i.e. all expression trees have been linearized, and the execution order of the nodes within a BasicBlock is specified by the `gtNext` and `gtPrev` links)
+* All contained nodes are identified (`gtFlags` has the `GTF_CONTAINED` bit set)
+* All nodes for which a register is optional are identified (`RefPosition::regOptional` is `true`)
+  * This is used for x86 and x64 on operands that can be directly consumed from memory if no register is allocated.
+* All unused values (nodes that produce a result that is not consumed) are identified (gtLIRFlags has the LIR::Flags::UnusedValue bit set)
+  * Since tree temps (the values produced by nodes and consumed by their parent) are expected to be single-def, single-use (SDSU), normally the live range can be determined to end at the use. If there is no use, the register allocator doesn't know where the live range ends.
+* Code can be generated without any context from the parent (consumer) of each node.
+
+After `Lowering` has completed, liveness analysis is performed:
+* It identifies which `lclVar`s should have their liveness computed.
+  * The reason this is done after `Lowering` is that it can introduce new `lclVar`s.
+* It then does liveness analysis on those `lclVar`s, updating the `bbLiveIn` and `bbLiveOut` sets for each `BasicBlock`.
+  * This tells the register allocator which `lclVars` are live at block boundaries.
+  * Note that "tree temps" cannot be live at block boundaries.
+
+### Allocation Overview
 
 Allocation proceeds in 4 phases:
 
-* Determine the order in which the `BasicBlocks` will be allocated, and which predecessor of each block will be used to determine the starting location for variables live-in to the `BasicBlock`.
-* Construct Intervals for each tracked lvlVar, then walk the `BasicBlocks` in the determined order building `RefPositions` for each register use, def, or kill.
+* Prepration:
+  * Determine the order in which the `BasicBlocks` will be allocated, and which predecessor of each block will be used to determine the starting location for variables live-in to the `BasicBlock`.
+  * Construct an `Interval` for each `lclVar` that may be enregistered.
+  * Construct a `RegRecord` for each physical register.
+* Walk the `BasicBlocks` in the determined order building `RefPositions` for each register use, def, or kill.
+  * Just prior to building `RefPosition`s for the node, the `TreeNodeInfoInit()` method is called to determine its register requirements.
 * Allocate the registers by traversing the `RefPositions`.
 * Write back the register assignments, and perform any necessary moves at block boundaries where the allocations don’t match.
 
 Post-conditions:
 
-* The `gtRegNum` property of all `GenTree` nodes that require a register has been set to a valid register number.
+* The `gtRegNum` property of all `GenTree` nodes that require a register has been set to `a valid register number.
+  * For reg-optional nodes, the `GTF_NOREG_AT_USE` bit is set in `gtFlags` if a register was not allocated.
 * The `gtRsvdRegs` field (a set/mask of registers) has the requested number of registers specified for internal use.
-* All spilled values (lvlVar or expression) are marked with `GTF_SPILL` at their definition. For lvlVars, they are also marked with `GTF_SPILLED` at any use at which the value must be reloaded.
-* For all lvlVars that are register candidates:
+* All spilled values (lclVar or expression) are marked with `GTF_SPILL` at their definition. For lclVars, they are also marked with `GTF_SPILLED` at any use at which the value must be reloaded.
+* For all lclVars that are register candidates:
   * `lvRegNum` = initial register location (or `REG_STK`)
   * `lvRegister` flag set if it always lives in the same register
   * `lvSpilled` flag is set if it is ever spilled
@@ -391,12 +470,12 @@ Post-conditions:
 
 The process of code generation is relatively straightforward, as Lowering has done some of the work already. Code generation proceeds roughly as follows:
 
-* Determine the frame layout – allocating space on the frame for any lvlVars that are not fully enregistered, as well as any spill temps required for spilling non-lvlVar expressions.
+* Determine the frame layout – allocating space on the frame for any lclVars that are not fully enregistered, as well as any spill temps required for spilling non-lclVar expressions.
 * For each `BasicBlock`, in layout order, and each `GenTree` node in the block, in execution order:
   * If the node is “contained” (i.e. its operation is subsumed by a parent node), do nothing.
   * Otherwise, “consume” all the register operands of the node.
-    * This updates the liveness information (i.e. marking a lvlVar as dead if this is the last use), and performs any needed copies.
-    * This must be done in correct execution order, obeying any reverse flags (GTF_REVERSE_OPS) on the operands, so that register conflicts are handled properly.
+    * This updates the liveness information (i.e. marking a lclVar as dead if this is the last use), and performs any needed copies.
+    * This must be done in "spill order" so that any spill/restore code inserted by the register allocator to resolve register conflicts is generated in the correct order. "
   * Track the live variables in registers, as well as the live stack variables that contain GC refs.
   * Produce the `instrDesc(s)` for the operation, with the current live GC references.
   * Update the scope information (debug info) at block boundaries.
@@ -415,14 +494,14 @@ There are several properties of the IR that are valid only during (or after) spe
   * Computes edge weights, if profile information is available.
   * Identifies and normalizes loops. These may be invalidated, but must be marked as such.
 * Normalization
-  * The lvlVar reference counts are set by `lvaMarkLocalVars()`.
+  * The lclVar reference counts are set by `lvaMarkLocalVars()`.
   * Statement ordering is determined by `fgSetBlockOrder()`. Execution order is a depth-first preorder traversal of the nodes, with the operands usually executed in order. The exceptions are:
-    * Commutative operators, which can have the `GTF_REVERSE_OPS` flag set to indicate that op2 should be evaluated before op1.
-    * Assignments, which can also have the `GTF_REVERSE_OPS` flag set to indicate that the rhs (op2) should be evaluated before the target address (if any) on the lhs (op1) is evaluated. This can only be done if there are no side-effects in the expression for the lhs.
+    * Binary operators, which can have the `GTF_REVERSE_OPS` flag set to indicate that the RHS (`gtOp2`) should be evaluated before the LHS (`gtOp1`).
+    * Dynamically-sized block copy nodes, which can have `gtEvalSizeFirst` set to `true` to indicate that their `gtDynamicSize` tree should be evaluated before executing their other operands.
 * Rationalization
-  * All `GT_COMMA` nodes are split into separate statements, which may be embedded in other statements in execution order.
   * All `GT_ASG` trees are transformed into `GT_STORE` variants (e.g. `GT_STORE_LCL_VAR`).
   * All `GT_ADDR` nodes are eliminated (e.g. with `GT_LCL_VAR_ADDR`).
+  * All `GT_COMMA` and `Statement` nodes are removed and their constituent nodes linked into execution order.
 * Lowering
   * `GenTree` nodes are split or transformed as needed to expose all of their register requirements and any necessary `flowgraph` changes (e.g., for switch statements).
 
@@ -430,27 +509,29 @@ There are several properties of the IR that are valid only during (or after) spe
 
 Ordering:
 
-* For `GenTreeStmt` nodes, the `gtNext` and `gtPrev` fields must always be consistent. The last statement in the `BasicBlock` must have `gtNext` equal to null. By convention, the `gtPrev` of the first statement in the `BasicBlock` must be the last statement of the `BasicBlock`.
-  * In all phases, `gtStmtExpr` points to the top-level node of the expression.
-* For non-statement nodes, the `gtNext` and `gtPrev` fields are either null, prior to ordering, or they are consistent (i.e. `A->gtPrev->gtNext = A`, and `A->gtNext->gtPrev == A`, if they are non-null).
-* After normalization the `gtStmtList` of the containing statement points to the first node to be executed.
-* Prior to normalization, the `gtNext` and `gtPrev` pointers on the expression (non-statement) `GenTree` nodes are invalid. The expression nodes are only traversed via the links from parent to child (e.g. `node->gtGetOp1()`, or `node->gtOp.gtOp1`). The `gtNext/gtPrev` links are set by `fgSetBlockOrder()`.
+* For `Statement` nodes, the `m_next` and `m_prev` fields must always be consistent. The last statement in the `BasicBlock` must have `m_next` equal to null. By convention, the `m_prev` of the first statement in the `BasicBlock` must be the last statement of the `BasicBlock`.
+  * In all phases, `m_rootNode` points to the top-level node of the expression.
+* For 'GenTree' nodes, the `gtNext` and `gtPrev` fields are either null, prior to ordering, or they are consistent (i.e. `A->gtPrev->gtNext = A`, and `A->gtNext->gtPrev == A`, if they are non-null).
+* After normalization the `m_treeList` of the containing statement points to the first node to be executed.
+* Prior to normalization, the `gtNext` and `gtPrev` pointers on the expression `GenTree` nodes are invalid. The expression nodes are only traversed via the links from parent to child (e.g. `node->gtGetOp1()`, or `node->gtOp.gtOp1`). The `gtNext/gtPrev` links are set by `fgSetBlockOrder()`.
   * After normalization, and prior to rationalization, the parent/child links remain the primary traversal mechanism. The evaluation order of any nested expression-statements (usually assignments) is enforced by the `GT_COMMA` in which they are contained.
-* After rationalization, all `GT_COMMA` nodes are eliminated, and the primary traversal mechanism becomes the `gtNext/gtPrev` links. Statements may be embedded within other statements, but the nodes of each statement preserve the valid traversal order.
+* After rationalization, all `GT_COMMA` nodes are eliminated, statements are flattened, and the primary traversal mechanism becomes the `gtNext/gtPrev` links which define the execution order.
 * In tree ordering:
-  * The `gtPrev` of the first node (`gtStmtList`) is always null.
-  * The `gtNext` of the last node (`gtStmtExpr`) is always null.
-* In linear ordering:
-  * The nodes of each statement are ordered such that `gtStmtList` is encountered first, and `gtStmtExpr` is encountered last.
-  * The nodes of an embedded statement S2 (starting with `S2->gtStmtList`) appear in the ordering after a node from the “containing” statement S1, and no other node from S1 will appear in the list prior to the `gtStmtExpr` of S2. However, there may be multiple levels of nesting of embedded statements.
-
-TreeNodeInfo:
-
-* The `TreeNodeInfo` (`gtLsraInfo`) is set during the Lowering phase, and communicates the register requirements of the node, including the number and types of registers used as sources, destinations and internal registers. Currently only a single destination per node is supported.
+  * The `gtPrev` of the first node (`m_treeList`) is always null.
+  * The `gtNext` of the last node (`m_rootNode`) is always null.
 
 ## LclVar phase-dependent properties
 
-Prior to normalization, the reference counts (`lvRefCnt` and `lvRefCntWtd`) are not valid. After normalization they must be updated when lvlVar references are added or removed.
+LclVar ref counts track the number of uses and weighted used of a local in the jit IR. There are two sequences of phases over which ref counts are valid,
+tracked via `lvaRefCountState`: an early sequence (state `RCS_EARLY`) and the normal sequence (state `RCS_NORMAL`). Requests for ref counts via `lvRefCnt`
+and `lvRefCntWtd` must be aware of the ref count state.
+
+Before struct promotion the ref counts are invalid. Struct promotion enables `RCS_EARLY` and it and subsequent phases through morph compute and uses ref counts
+on some locals to guide some struct optimizations. After morph the counts go back to longer being valid.
+
+The `RCS_NORMAL` sequence begins at normalization. Ref counts are computed and generally available via for the rest of the compilation phases.
+The counts are not incrementally maintained and may go stale as the IR is optimized or transformed, or maybe very approximate if the jit is not optimizing.
+They can be recomputed via `lvaComputeRefCounts` at points where accurate counts are valuable. Currently this happens before and after lower.
 
 # Supporting technologies and components
 
@@ -465,8 +546,8 @@ Instruction encoding is performed by the emitter ([emit.h](https://github.com/do
 
 Reporting of live GC references is done in two ways:
 
-* For stack locations that are not tracked (these could be spill locations or lvlVars – local variables or temps – that are not register candidates), they are initialized to null in the prolog, and reported as live for the entire method.
-* For lvlVars with tracked lifetimes, or for expression involving GC references, we report the range over which the reference is live. This is done by the emitter, which adds this information to the instruction group, and which terminates instruction groups when the GC info changes.
+* For stack locations that are not tracked (these could be spill locations or lclVars – local variables or temps – that are not register candidates), they are initialized to null in the prolog, and reported as live for the entire method.
+* For lclVars with tracked lifetimes, or for expression involving GC references, we report the range over which the reference is live. This is done by the emitter, which adds this information to the instruction group, and which terminates instruction groups when the GC info changes.
 
 The tracking of GC reference lifetimes is done via the `GCInfo` class in the JIT. It is declared in [src/jit/jitgcinfo.h](https://github.com/dotnet/coreclr/blob/master/src/jit/jitgcinfo.h) (to differentiate it from [src/inc/gcinfo.h](https://github.com/dotnet/coreclr/blob/master/src/inc/gcinfo.h)), and implemented in [src/jit/gcinfo.cpp](https://github.com/dotnet/coreclr/blob/master/src/jit/gcinfo.cpp).
 
@@ -477,8 +558,8 @@ In a JitDump, the generated GC info can be seen following the “In gcInfoBlockH
 Debug info consists primarily of two types of information in the JIT:
 
 * Mapping of IL offsets to native code offsets. This is accomplished via:
-  * the `gtStmtILoffsx` on the statement nodes (`GenTreeStmt`)
-  * the `gtLclILoffs` on lvlVar references (`GenTreeLclVar`)
+  * the `m_ILOffsetX` on the statement nodes (`Statement`)
+  * the `gtLclILoffs` on lclVar references (`GenTreeLclVar`)
   * The IL offsets are captured during CodeGen by calling `CodeGen::genIPmappingAdd()`, and then written to debug tables by `CodeGen::genIPmappingGen()`.
 * Mapping of user locals to location (register or stack). This is accomplished via:
   * Struct `siVarLoc` (in [compiler.h](https://github.com/dotnet/coreclr/blob/master/src/jit/compiler.h)) captures the location
@@ -512,38 +593,59 @@ Full instructions for dumping the compilation of some managed code can be found 
 
 ## Reading expression trees
 
-It takes some time to learn to “read” the expression trees, which are printed with the children indented from the parent, and, for binary operators, with the first operand below the parent and the second operand above.
+Expression trees are displayed using a pre-order traversal, with the subtrees of a node being displayed under the node in operand order (e.g. `gtOp1`, `gtOp2`). This is similar to the way trees are displayed in typical user interfaces (e.g. folder trees). Note that the operand order may be different from the actual execution order, determined by `GTF_REVERSE_OPS` or other means. The operand order usually follows the order in high level languages so that the typical infix, left to right expression `a - b` becomes prefix, top to bottom tree:
+```
+▌  SUB       double
+├──▌  LCL_VAR   double V03 a
+└──▌  LCL_VAR   double V02 b
+```
+Assignments are displayed like all other binary operators, with `dest = src` becoming:
+```
+▌  ASG       double
+├──▌  LCL_VAR   double V03 dest
+└──▌  LCL_VAR   double V02 src
+```
+Calls initially display in source order - `Order(1, 2, 3, 4)` is:
+```
+[000004] --C-G-------              *  CALL      void   Program.Order
+[000000] ------------ arg0         +--*  CNS_INT   int    1
+[000001] ------------ arg1         +--*  CNS_INT   int    2
+[000002] ------------ arg2         +--*  CNS_INT   int    3
+[000003] ------------ arg3         \--*  CNS_INT   int    4
+```
+but call morphing may change the order depending on the ABI so the above may become:
+```
+[000004] --CXG+------              *  CALL      void   Program.Order
+[000002] -----+------ arg2 on STK  +--*  CNS_INT   int    3
+[000003] -----+------ arg3 on STK  +--*  CNS_INT   int    4
+[000000] -----+------ arg0 in ecx  +--*  CNS_INT   int    1
+[000001] -----+------ arg1 in edx  \--*  CNS_INT   int    2
+```
+where the node labels (e.g. arg0) help identifying the call arguments after reordering.
 
-Here is an example dump
-
-    [000027] ------------             ▌  stmtExpr  void  (top level) (IL 0x010...  ???)
-    [000026] --C-G-------             └──▌  return    double
-    [000024] --C-G-------                └──▌  call      double BringUpTest.DblSqrt
-    [000021] ------------                   │     ┌──▌  lclVar    double V02 arg2
-    [000022] ------------                   │  ┌──▌  -         double
-    [000020] ------------                   │  │  └──▌  lclVar    double V03 loc0
-    [000023] ------------ arg0              └──▌  *         double
-    [000017] ------------                      │     ┌──▌  lclVar    double V01 arg1
-    [000018] ------------                      │  ┌──▌  -         double
-    [000016] ------------                      │  │  └──▌  lclVar    double V03 loc0
-    [000019] ------------                      └──▌  *         double
-    [000013] ------------                         │     ┌──▌  lclVar    double V00 arg0
-    [000014] ------------                         │  ┌──▌  -         double
-    [000012] ------------                         │  │  └──▌  lclVar    double V03 loc0
-    [000015] ------------                         └──▌  *         double
-    [000011] ------------                            └──▌  lclVar    double V03 loc0
-
-The tree nodes are indented to represent the parent-child relationship. Binary operators print first the right hand side, then the operator node itself, then the left hand side. This scheme makes sense if you look at the dump “sideways” (lean your head to the left). Oriented this way, the left hand side operator is actually on the left side, and the right hand operator is on the right side so you can almost visualize the tree if you look at it sideways. The indentation level is also there as a backup.
+Here is a full dump of an entire statement:
+```
+STMT00000 (IL 0x010...  ???)
+[000025] --C-G-------              └──▌  RETURN    double
+[000023] --C-G-------                 └──▌  CALL      double C.DblSqrt
+[000022] ------------ arg0               └──▌  MUL       double
+[000018] ------------                       ├──▌  MUL       double
+[000014] ------------                       │  ├──▌  MUL       double
+[000010] ------------                       │  │  ├──▌  LCL_VAR   double V03 loc0
+[000013] ------------                       │  │  └──▌  SUB       double
+[000011] ------------                       │  │     ├──▌  LCL_VAR   double V03 loc0
+[000012] ------------                       │  │     └──▌  LCL_VAR   double V00 arg0
+[000017] ------------                       │  └──▌  SUB       double
+[000015] ------------                       │     ├──▌  LCL_VAR   double V03 loc0
+[000016] ------------                       │     └──▌  LCL_VAR   double V01 arg1
+[000021] ------------                       └──▌  SUB       double
+[000019] ------------                          ├──▌  LCL_VAR   double V03 loc0
+[000020] ------------                          └──▌  LCL_VAR   double V02 arg2
+```
 
 Tree nodes are identified by their `gtTreeID`. This field only exists in DEBUG builds, but is quite useful for debugging, since all tree nodes are created from the routine `gtNewNode` (in [src/jit/gentree.cpp](https://github.com/dotnet/coreclr/blob/master/src/jit/gentree.cpp)). If you find a bad tree and wish to understand how it got corrupted, you can place a conditional breakpoint at the end of `gtNewNode` to see when it is created, and then a data breakpoint on the field that you believe is corrupted.
 
 The trees are connected by line characters (either in ASCII, by default, or in slightly more readable Unicode when `COMPlus_JitDumpAscii=0` is specified), to make it a bit easier to read.
-
-    N037 (  0,  0) [000391] ----------L- arg0 SETUP  │  ┌──▌  argPlace  ref    REG NA $1c1
-    N041 (  2,  8) [000389] ------------             │  │     ┌──▌  const(h) long 0xB410A098 REG rcx $240
-    N043 (  4, 10) [000390] ----G-------             │  │  ┌──▌  indir     ref    REG rcx $1c1
-    N045 (  4, 10) [000488] ----G------- arg0 in rcx │  ├──▌  putarg_reg ref    REG rcx
-    N049 ( 18, 16) [000269] --C-G-------             └──▌  call void System.Diagnostics.TraceInternal.Fail $VN.Void
 
 ## Variable naming
 

@@ -5,22 +5,6 @@
 
 #ifndef _EMITINL_H_
 #define _EMITINL_H_
-/*****************************************************************************/
-/*****************************************************************************
- *
- *  Return the number of bytes of machine code the given instruction will
- *  produce.
- */
-
-inline UNATIVE_OFFSET emitter::emitInstCodeSz(instrDesc* id)
-{
-    return id->idCodeSize();
-}
-
-inline UNATIVE_OFFSET emitter::emitSizeOfJump(instrDescJmp* jmp)
-{
-    return jmp->idCodeSize();
-}
 
 #ifdef _TARGET_XARCH_
 
@@ -118,6 +102,8 @@ inline regNumber emitter::inst3opImulReg(instruction ins)
  *  get stored in different places within the instruction descriptor.
  */
 
+#ifdef _TARGET_XARCH_
+
 inline ssize_t emitter::emitGetInsAmd(instrDesc* id)
 {
     return id->idIsLargeDsp() ? ((instrDescAmd*)id)->idaAmdVal : id->idAddr()->iiaAddrMode.amDisp;
@@ -144,9 +130,7 @@ inline int emitter::emitGetInsCDinfo(instrDesc* id)
 
 inline void emitter::emitGetInsCns(instrDesc* id, CnsVal* cv)
 {
-#ifdef RELOC_SUPPORT
     cv->cnsReloc = id->idIsCnsReloc();
-#endif
     if (id->idIsLargeCns())
     {
         cv->cnsVal = ((instrDescCns*)id)->idcCnsVal;
@@ -159,9 +143,7 @@ inline void emitter::emitGetInsCns(instrDesc* id, CnsVal* cv)
 
 inline ssize_t emitter::emitGetInsAmdCns(instrDesc* id, CnsVal* cv)
 {
-#ifdef RELOC_SUPPORT
     cv->cnsReloc = id->idIsCnsReloc();
-#endif
     if (id->idIsLargeDsp())
     {
         if (id->idIsLargeCns())
@@ -192,9 +174,7 @@ inline ssize_t emitter::emitGetInsAmdCns(instrDesc* id, CnsVal* cv)
 
 inline void emitter::emitGetInsDcmCns(instrDesc* id, CnsVal* cv)
 {
-#ifdef RELOC_SUPPORT
     cv->cnsReloc = id->idIsCnsReloc();
-#endif
     if (id->idIsLargeCns())
     {
         if (id->idIsLargeDsp())
@@ -225,6 +205,8 @@ inline ssize_t emitter::emitGetInsAmdAny(instrDesc* id)
 
     return id->idAddr()->iiaAddrMode.amDisp;
 }
+
+#endif // _TARGET_XARCH_
 
 /*****************************************************************************
  *

@@ -1,3 +1,4 @@
+
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
@@ -124,12 +125,11 @@ static void _dumpVarNativeInfo(ICorDebugInfo::NativeVarInfo* vni)
 }
 #endif
 
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
 void DebuggerJitInfo::InitFuncletAddress()
 {
     CONTRACTL
     {
-        SO_INTOLERANT;
         NOTHROW;
         GC_NOTRIGGER;
     }
@@ -232,13 +232,13 @@ int DebuggerJitInfo::GetFuncletIndex(CORDB_ADDRESS offsetOrAddr, GetFuncletIndex
     UNREACHABLE();
 }
 
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 
 // It is entirely possible that we have multiple sequence points for the
 // same IL offset (because of funclets, optimization, etc.).  Just to be
 // uniform in all cases, let's return the sequence point with the smallest
 // native offset if fWantFirst is TRUE.
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
 #define ADJUST_MAP_ENTRY(_map, _wantFirst)                                                        \
     if ((_wantFirst))                                                                             \
         for ( ; (_map) > m_sequenceMap && (((_map)-1)->ilOffset == (_map)->ilOffset); (_map)--);  \
@@ -246,11 +246,11 @@ int DebuggerJitInfo::GetFuncletIndex(CORDB_ADDRESS offsetOrAddr, GetFuncletIndex
         for ( ; (_map) < m_sequenceMap + (m_sequenceMapCount-1) && (((_map)+1)->ilOffset == (_map)->ilOffset); (_map)++);
 #else
 #define ADJUST_MAP_ENTRY(_map, _wantFirst)
-#endif // _WIN64
+#endif // FEATURE_EH_FUNCLETS
 
-DebuggerJitInfo::DebuggerJitInfo(DebuggerMethodInfo *minfo, MethodDesc *fd) :
-    m_fd(fd),
-    m_pLoaderModule(fd->GetLoaderModule()),
+DebuggerJitInfo::DebuggerJitInfo(DebuggerMethodInfo *minfo, NativeCodeVersion nativeCodeVersion) :
+    m_nativeCodeVersion(nativeCodeVersion),
+    m_pLoaderModule(nativeCodeVersion.GetMethodDesc()->GetLoaderModule()),
     m_jitComplete(false),
 #ifdef EnC_SUPPORTED
     m_encBreakpointsApplied(false),
@@ -266,10 +266,10 @@ DebuggerJitInfo::DebuggerJitInfo(DebuggerMethodInfo *minfo, MethodDesc *fd) :
     m_sequenceMapSorted(false),
     m_varNativeInfo(NULL), m_varNativeInfoCount(0),
     m_fAttemptInit(false)
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
     ,m_rgFunclet(NULL)
     , m_funcletCount(0)
-#endif // defined(WIN64EXCEPTIONS)
+#endif // defined(FEATURE_EH_FUNCLETS)
 {
     WRAPPER_NO_CONTRACT;
 
@@ -287,7 +287,7 @@ DebuggerJitInfo::DebuggerJitInfo(DebuggerMethodInfo *minfo, MethodDesc *fd) :
 
     // Debugger doesn't track LightWeight codegen methods.
     // We should never even be creating a DJI for one.
-    _ASSERTE(!m_fd->IsDynamicMethod());
+    _ASSERTE(!m_nativeCodeVersion.GetMethodDesc()->IsDynamicMethod());
 }
     
 DebuggerILToNativeMap *DebuggerJitInfo::MapILOffsetToMapEntry(SIZE_T offset, BOOL *exact, BOOL fWantFirst)
@@ -371,7 +371,6 @@ DebuggerJitInfo::NativeOffset DebuggerJitInfo::MapILOffsetToNative(DebuggerJitIn
 {
     CONTRACTL
     {
-        SO_NOT_MAINLINE;
         NOTHROW;
         GC_NOTRIGGER;
     }
@@ -381,18 +380,18 @@ DebuggerJitInfo::NativeOffset DebuggerJitInfo::MapILOffsetToNative(DebuggerJitIn
 
     DebuggerILToNativeMap *map = MapILOffsetToMapEntry(ilOffset.m_ilOffset, &(resultOffset.m_fExact));
 
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
     // See if we want the map entry for the parent.
     if (ilOffset.m_funcletIndex <= PARENT_METHOD_INDEX)
     {
-#endif // _WIN64
+#endif // FEATURE_EH_FUNCLETS
         PREFIX_ASSUME( map != NULL );
         LOG((LF_CORDB, LL_INFO10000, "DJI::MILOTN: ilOff 0x%x to nat 0x%x exact:0x%x (Entry IL Off:0x%x)\n",
              ilOffset.m_ilOffset, map->nativeStartOffset, resultOffset.m_fExact, map->ilOffset));
 
         resultOffset.m_nativeOffset = map->nativeStartOffset;
 
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
     }
     else
     {
@@ -440,7 +439,7 @@ DebuggerJitInfo::NativeOffset DebuggerJitInfo::MapILOffsetToNative(DebuggerJitIn
             }
         }
     }
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 
     return resultOffset;
 }
@@ -452,7 +451,7 @@ DebuggerJitInfo::ILToNativeOffsetIterator::ILToNativeOffsetIterator()
 
     m_dji = NULL;
     m_currentILOffset.m_ilOffset = INVALID_IL_OFFSET;
-#ifdef WIN64EXCEPTIONS
+#ifdef FEATURE_EH_FUNCLETS
     m_currentILOffset.m_funcletIndex = PARENT_METHOD_INDEX;
 #endif
 }
@@ -463,7 +462,7 @@ void DebuggerJitInfo::ILToNativeOffsetIterator::Init(DebuggerJitInfo* dji, SIZE_
 
     m_dji = dji;
     m_currentILOffset.m_ilOffset = ilOffset;
-#ifdef WIN64EXCEPTIONS
+#ifdef FEATURE_EH_FUNCLETS
     m_currentILOffset.m_funcletIndex = PARENT_METHOD_INDEX;
 #endif
 
@@ -502,7 +501,7 @@ SIZE_T DebuggerJitInfo::ILToNativeOffsetIterator::CurrentAssertOnlyOne(BOOL* pfE
 
 void DebuggerJitInfo::ILToNativeOffsetIterator::Next()
 {
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
     NativeOffset tmpNativeOffset;
 
     for (m_currentILOffset.m_funcletIndex += 1;
@@ -522,9 +521,9 @@ void DebuggerJitInfo::ILToNativeOffsetIterator::Next()
     {
         m_currentILOffset.m_ilOffset = INVALID_IL_OFFSET;
     }
-#else  // !WIN64EXCEPTIONS
+#else  // !FEATURE_EH_FUNCLETS
     m_currentILOffset.m_ilOffset = INVALID_IL_OFFSET;
-#endif // !WIN64EXCEPTIONS
+#endif // !FEATURE_EH_FUNCLETS
 }
 
 
@@ -543,7 +542,6 @@ SIZE_T DebuggerJitInfo::MapSpecialToNative(CorDebugMappingResult mapping,
 {
     CONTRACTL
     {
-        SO_NOT_MAINLINE;
         NOTHROW;
         GC_NOTRIGGER;
         PRECONDITION(NULL != pfAccurate);
@@ -593,7 +591,7 @@ SIZE_T DebuggerJitInfo::MapSpecialToNative(CorDebugMappingResult mapping,
     return 0;
 }
 
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
 //
 // DebuggerJitInfo::MapILOffsetToNativeForSetIP()
 //
@@ -611,7 +609,6 @@ SIZE_T DebuggerJitInfo::MapILOffsetToNativeForSetIP(SIZE_T offsetILTo, int funcl
 {
     CONTRACTL
     {
-        SO_NOT_MAINLINE;
         NOTHROW;
         GC_NOTRIGGER;
         MODE_ANY;
@@ -654,7 +651,7 @@ SIZE_T DebuggerJitInfo::MapILOffsetToNativeForSetIP(SIZE_T offsetILTo, int funcl
 
     return offsetNatTo;
 }
-#endif // _WIN64
+#endif // FEATURE_EH_FUNCLETS
 
 // void DebuggerJitInfo::MapILRangeToMapEntryRange():   MIRTMER
 // calls MapILOffsetToNative for the startOffset (putting the
@@ -675,7 +672,6 @@ void DebuggerJitInfo::MapILRangeToMapEntryRange(SIZE_T startOffset,
 {
     CONTRACTL
     {
-        SO_NOT_MAINLINE;
         NOTHROW;
         GC_NOTRIGGER;
     }
@@ -714,7 +710,7 @@ void DebuggerJitInfo::MapILRangeToMapEntryRange(SIZE_T startOffset,
     }
     else
         *end = MapILOffsetToMapEntry(endOffset - 1, NULL
-                                     WIN64_ARG(FALSE));
+                                     BIT64_ARG(FALSE));
 
     _ASSERTE(*end>=m_sequenceMap);
 
@@ -752,7 +748,6 @@ DWORD DebuggerJitInfo::MapNativeOffsetToIL(SIZE_T nativeOffsetToMap,
 {
     CONTRACTL
     {
-        SO_INTOLERANT;
         NOTHROW;
         GC_NOTRIGGER;
         PRECONDITION(map != NULL);
@@ -867,20 +862,19 @@ DebuggerJitInfo::~DebuggerJitInfo()
         DeleteInteropSafe(m_varNativeInfo);
     }
 
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
     if (m_rgFunclet)
     {
         DeleteInteropSafe(m_rgFunclet);
         m_rgFunclet = NULL;
     }
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 
 
 #ifdef _DEBUG
     // Trash pointers to garbage.
     // Don't null out since there may be runtime checks against NULL.
     // Set to a non-null random pointer value that will cause an immediate AV on deref.
-    m_fd = (MethodDesc*) 0x1;
     m_methodInfo = (DebuggerMethodInfo*) 0x1;
     m_prevJitInfo = (DebuggerJitInfo*) 0x01;
     m_nextJitInfo = (DebuggerJitInfo*) 0x01;
@@ -895,7 +889,6 @@ void DebuggerJitInfo::LazyInitBounds()
 {
     CONTRACTL
     {
-        SO_INTOLERANT;
         NOTHROW;
         GC_NOTRIGGER;
         PRECONDITION(ThisMaybeHelperThread());
@@ -917,7 +910,7 @@ void DebuggerJitInfo::LazyInitBounds()
         // Should have already been jitted
         _ASSERTE(this->m_jitComplete);
 
-        MethodDesc * mdesc = this->m_fd;
+        MethodDesc * mdesc = this->m_nativeCodeVersion.GetMethodDesc();
         DebugInfoRequest request;
 
         _ASSERTE(this->m_addrOfCode != NULL); // must have address to disambguate the Enc cases.
@@ -939,6 +932,8 @@ void DebuggerJitInfo::LazyInitBounds()
 
         LOG((LF_CORDB,LL_EVERYTHING, "DJI::LazyInitBounds: this=0x%x GetBoundariesAndVars success=0x%x\n", this, fSuccess));
 
+        // SetBoundaries uses the CodeVersionManager, need to take it now for lock ordering reasons 
+        CodeVersionManager::TableLockHolder lockHolder(mdesc->GetCodeVersionManager());
         Debugger::DebuggerDataLockHolder debuggerDataLockHolder(g_pDebugger);
 
         if (!m_fAttemptInit)
@@ -1004,7 +999,7 @@ CHECK DebuggerJitInfo::Invariant() const
     LIMITED_METHOD_CONTRACT;
     CHECK((m_sequenceMapCount == 0) == (m_sequenceMap == NULL));
     CHECK(m_methodInfo != NULL);
-    CHECK(m_fd != NULL);
+    CHECK(m_nativeCodeVersion.GetMethodDesc() != NULL);
 
     CHECK_OK;
 }
@@ -1018,7 +1013,6 @@ void DebuggerJitInfo::SetBoundaries(ULONG32 cMap, ICorDebugInfo::OffsetMapping *
 {
     CONTRACTL
     {
-        SO_INTOLERANT;
         THROWS;
         GC_NOTRIGGER;
         PRECONDITION(CheckPointer(this));
@@ -1065,8 +1059,26 @@ void DebuggerJitInfo::SetBoundaries(ULONG32 cMap, ICorDebugInfo::OffsetMapping *
     // Pick a unique initial value (-10) so that the 1st doesn't accidentally match.
     int ilPrevOld = -10;
 
-    InstrumentedILOffsetMapping mapping = 
-        m_methodInfo->GetRuntimeModule()->GetInstrumentedILOffsetMapping(m_methodInfo->m_token);
+    _ASSERTE(m_nativeCodeVersion.GetMethodDesc()->GetCodeVersionManager()->LockOwnedByCurrentThread());
+
+    InstrumentedILOffsetMapping mapping;
+
+    ILCodeVersion ilVersion = m_nativeCodeVersion.GetILCodeVersion();
+    if (!ilVersion.IsDefaultVersion())
+    {
+        // Did the current rejit provide a map?
+        const InstrumentedILOffsetMapping *pReJitMap = ilVersion.GetInstrumentedILMap();
+        if (pReJitMap != NULL)
+        {
+            mapping = *pReJitMap;
+        }
+    }
+    else if (m_methodInfo->HasInstrumentedILMap())
+    {
+        // If a ReJIT hasn't happened, check for a profiler provided map.
+        mapping = m_methodInfo->GetRuntimeModule()->GetInstrumentedILOffsetMapping(m_methodInfo->m_token);
+    }
+    
 
     //
     // <TODO>@todo perf: we could do the vast majority of this
@@ -1101,7 +1113,7 @@ void DebuggerJitInfo::SetBoundaries(ULONG32 cMap, ICorDebugInfo::OffsetMapping *
         // (8 old -> 50 new)
         // And the jit gives us an entry for 44 new, that will map back to 6 old.
         // Since the map can only have one entry for 6 old, we remove 44 new.
-        if (m_methodInfo->HasInstrumentedILMap())
+        if (!mapping.IsNull())
         {
             int ilThisOld = m_methodInfo->TranslateToInstIL(&mapping, 
                                                             pMapEntry->ilOffset, 
@@ -1228,14 +1240,14 @@ void DebuggerJitInfo::Init(TADDR newAddress)
     this->m_addrOfCode = (ULONG_PTR)PTR_TO_CORDB_ADDRESS((BYTE*) newAddress);
     this->m_jitComplete = true;
 
-    this->m_codeRegionInfo.InitializeFromStartAddress((PCODE)this->m_addrOfCode);
+    this->m_codeRegionInfo.InitializeFromStartAddress(PINSTRToPCODE((TADDR)this->m_addrOfCode));
     this->m_sizeOfCode =  this->m_codeRegionInfo.getSizeOfTotalCode();
 
     this->m_encVersion = this->m_methodInfo->GetCurrentEnCVersion();
 
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
     this->InitFuncletAddress();
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 
     LOG((LF_CORDB,LL_INFO10000,"De::JITCo:Got DJI 0x%p(V %d),"
          "Hot section from 0x%p to 0x%p "
@@ -1272,7 +1284,6 @@ ICorDebugInfo::SourceTypes DebuggerJitInfo::GetSrcTypeFromILOffset(SIZE_T ilOffs
 {
     CONTRACTL
     {
-        SO_NOT_MAINLINE;
         NOTHROW;
         GC_NOTRIGGER;
     }
@@ -1301,7 +1312,6 @@ DebuggerMethodInfo::~DebuggerMethodInfo()
 {
     CONTRACTL
     {
-        SO_INTOLERANT;
         NOTHROW;
         GC_NOTRIGGER;
         DESTRUCTOR_CHECK;
@@ -1408,7 +1418,6 @@ DebuggerMethodInfo::DebuggerMethodInfo(Module *module, mdMethodDef token) :
 {
     CONTRACTL
     {
-        SO_INTOLERANT;
         WRAPPER(THROWS);
         WRAPPER(GC_TRIGGERS);
         CONSTRUCTOR_CHECK;
@@ -1441,7 +1450,6 @@ DebuggerModule* DebuggerMethodInfo::GetPrimaryModule()
 {
     CONTRACTL
     {
-        SO_INTOLERANT;
         NOTHROW;
         GC_NOTRIGGER;
     }
@@ -1506,7 +1514,6 @@ DebuggerJitInfo * DebuggerMethodInfo::FindJitInfo(MethodDesc * pMD,
 {
     CONTRACTL
     {
-        SO_INTOLERANT;
         SUPPORTS_DAC;
         NOTHROW;
         GC_NOTRIGGER;
@@ -1518,7 +1525,7 @@ DebuggerJitInfo * DebuggerMethodInfo::FindJitInfo(MethodDesc * pMD,
     DebuggerJitInfo * pCheck = m_latestJitInfo;
     while (pCheck != NULL)
     {
-        if ( (pCheck->m_fd == dac_cast<PTR_MethodDesc>(pMD)) && 
+        if ( (pCheck->m_nativeCodeVersion.GetMethodDesc() == dac_cast<PTR_MethodDesc>(pMD)) && 
              (pCheck->m_addrOfCode == addrNativeStartAddr) )
         {
             return pCheck;
@@ -1536,21 +1543,22 @@ DebuggerJitInfo * DebuggerMethodInfo::FindJitInfo(MethodDesc * pMD,
 /*
  * FindOrCreateInitAndAddJitInfo
  *
- * This routine allocates a new DJI, adding it to the DMI.
+ * This routine tries to find an existing DJI based on the method desc and start address, or allocates a new DJI, adding it to
+ * the DMI.
  *
  * Parameters:
- *   fd - the method desc to create a DJI for.
+ *   fd - the method desc to find or create a DJI for.
+ *   startAddr - the start address to find or create the DJI for.
  *
  * Returns
- *   A pointer to the created DJI, or NULL.
+ *   A pointer to the found or created DJI, or NULL.
  *
  */
 
-DebuggerJitInfo *DebuggerMethodInfo::FindOrCreateInitAndAddJitInfo(MethodDesc* fd)
+DebuggerJitInfo *DebuggerMethodInfo::FindOrCreateInitAndAddJitInfo(MethodDesc* fd, PCODE startAddr)
 {
     CONTRACTL
     {
-        SO_INTOLERANT;
         THROWS;
         GC_NOTRIGGER;
     }
@@ -1558,11 +1566,26 @@ DebuggerJitInfo *DebuggerMethodInfo::FindOrCreateInitAndAddJitInfo(MethodDesc* f
 
     _ASSERTE(fd != NULL);
 
-    // This will grab the latest EnC version.
-    TADDR addr = (TADDR) g_pEEInterface->GetFunctionAddress(fd);
-
-    if (addr == NULL)
+    // The debugger doesn't track Lightweight-codegen methods b/c they have no metadata.
+    if (fd->IsDynamicMethod())
+    {
         return NULL;
+    }
+
+    if (startAddr == NULL)
+    {
+        // This will grab the start address for the current code version.
+        startAddr = g_pEEInterface->GetFunctionAddress(fd);
+        if (startAddr == NULL)
+        {
+            return NULL;
+        }
+    }
+    else
+    {
+        _ASSERTE(g_pEEInterface->GetNativeCodeMethodDesc(startAddr) == fd);
+        _ASSERTE(g_pEEInterface->GetNativeCodeStartAddress(startAddr) == startAddr);
+    }
 
     // Check the lsit to see if we've already populated an entry for this JitInfo.
     // If we didn't have a JitInfo before, lazily create it now.
@@ -1570,39 +1593,59 @@ DebuggerJitInfo *DebuggerMethodInfo::FindOrCreateInitAndAddJitInfo(MethodDesc* f
     //
     // We haven't got the lock yet so we'll repeat this lookup once
     // we've taken the lock.
-    DebuggerJitInfo * pResult = FindJitInfo(fd, addr);
+    ARM_ONLY(_ASSERTE((startAddr & THUMB_CODE) == 1));
+    DebuggerJitInfo * pResult = FindJitInfo(fd, startAddr);
     if (pResult != NULL)
     {
-        // Found!
         return pResult;
     }
 
+    // The DJI may already be populated in the cache, if so CreateInitAndAddJitInfo is a no-op and that is fine.
+    // CreateInitAndAddJitInfo takes a lock and checks the list again, which makes this thread-safe.
 
-    // CreateInitAndAddJitInfo takes a lock and checks the list again, which
-    // makes this  thread-safe.
-    return CreateInitAndAddJitInfo(fd, addr);
+    NativeCodeVersion nativeCodeVersion;
+    if (fd->IsVersionable())
+    {
+        CodeVersionManager::TableLockHolder lockHolder(fd->GetCodeVersionManager());
+        CodeVersionManager *pCodeVersionManager = fd->GetCodeVersionManager();
+        nativeCodeVersion = pCodeVersionManager->GetNativeCodeVersion(fd, startAddr);
+        if (nativeCodeVersion.IsNull())
+        {
+            return NULL;
+        }
+    }
+    else
+    {
+        // Some day we'll get EnC to use code versioning properly, but until then we'll get the right behavior treating all EnC versions as the default native code version.
+        nativeCodeVersion = NativeCodeVersion(fd);
+    }
+
+    BOOL jitInfoWasCreated;
+    return CreateInitAndAddJitInfo(nativeCodeVersion, startAddr, &jitInfoWasCreated); 
 }
 
 // Create a DJI around a method-desc. The EE already has all the information we need for a DJI,
 // the DJI just serves as a cache of the information for the debugger.
 // Caller makes no guarantees about whether the DJI is already in the table. (Caller should avoid this if
 // it knows it's in the table, but b/c we can't expect caller to synchronize w/ the other threads).
-DebuggerJitInfo *DebuggerMethodInfo::CreateInitAndAddJitInfo(MethodDesc* fd, TADDR startAddr)
+DebuggerJitInfo *DebuggerMethodInfo::CreateInitAndAddJitInfo(NativeCodeVersion nativeCodeVersion, TADDR startAddr, BOOL* jitInfoWasCreated)
 {
     CONTRACTL
     {
-        SO_INTOLERANT;
         THROWS;
         GC_NOTRIGGER;
         PRECONDITION(!g_pDebugger->HasDebuggerDataLock());
     }
     CONTRACTL_END;
 
+    MethodDesc* fd = nativeCodeVersion.GetMethodDesc();
+
     _ASSERTE(fd != NULL);
 
     // May or may-not be jitted, that's why we passed in the start addr & size explicitly.
     _ASSERTE(startAddr != NULL);
 
+    *jitInfoWasCreated = FALSE;
 
     // No support for light-weight codegen methods.
     if (fd->IsDynamicMethod())
@@ -1611,7 +1654,7 @@ DebuggerJitInfo *DebuggerMethodInfo::CreateInitAndAddJitInfo(MethodDesc* fd, TAD
     }
 
 
-    DebuggerJitInfo *dji = new (interopsafe) DebuggerJitInfo(this, fd);
+    DebuggerJitInfo *dji = new (interopsafe) DebuggerJitInfo(this, nativeCodeVersion);
     _ASSERTE(dji != NULL); // throws on oom error
 
     _ASSERTE(dji->m_methodInfo == this); // this should be set
@@ -1634,13 +1677,17 @@ DebuggerJitInfo *DebuggerMethodInfo::CreateInitAndAddJitInfo(MethodDesc* fd, TAD
 
         // We need to ensure that another thread didn't go in and add this exact same DJI?
         {
-            DebuggerJitInfo * pResult = FindJitInfo(dji->m_fd, (TADDR)dji->m_addrOfCode);
+            DebuggerJitInfo * pResult = FindJitInfo(dji->m_nativeCodeVersion.GetMethodDesc(), (TADDR)dji->m_addrOfCode);
             if (pResult != NULL)
             {
                 // Found!
                 _ASSERTE(pResult->m_sizeOfCode == dji->m_sizeOfCode);
                 DeleteInteropSafe(dji);
                 return pResult;
+            }
+            else
+            {
+                *jitInfoWasCreated = TRUE;
             }
         }
 
@@ -1658,7 +1705,7 @@ DebuggerJitInfo *DebuggerMethodInfo::CreateInitAndAddJitInfo(MethodDesc* fd, TAD
 
             LOG((LF_CORDB,LL_INFO10000,"DMI:CAAJI: DJI version 0x%04x for %s\n",
                  GetCurrentEnCVersion(),
-                 dji->m_fd->m_pszDebugMethodName));
+                 dji->m_nativeCodeVersion.GetMethodDesc()->m_pszDebugMethodName));
         }
         else
         {
@@ -1692,7 +1739,6 @@ void DebuggerMethodInfo::DeleteJitInfo(DebuggerJitInfo *dji)
 {
     CONTRACTL
     {
-        SO_INTOLERANT;
         NOTHROW;
         GC_NOTRIGGER;
     }
@@ -1747,7 +1793,6 @@ void DebuggerMethodInfo::DeleteJitInfoList(void)
 {
     CONTRACTL
     {
-        SO_INTOLERANT;
         NOTHROW;
         GC_NOTRIGGER;
     }
@@ -1814,6 +1859,10 @@ void DebuggerMethodInfo::DJIIterator::Next(BOOL fFirst /*=FALSE*/)
         if ((m_pLoaderModuleFilter != NULL) && (m_pLoaderModuleFilter != pLoaderModule))
             continue;
 
+        //Obey the methodDesc filter if it is provided
+        if ((m_pMethodDescFilter != NULL) && (m_pMethodDescFilter != m_pCurrent->m_nativeCodeVersion.GetMethodDesc()))
+            continue;
+
         // Skip modules that are unloaded, but still hanging around. Note that we can't use DebuggerModule for this check 
         // because of it is deleted pretty early during unloading, and we do not want to recreate it.
         if (pLoaderModule->GetLoaderAllocator()->IsUnloaded())
@@ -1873,7 +1922,6 @@ void DebuggerMethodInfo::SetJMCStatus(bool fStatus)
 {
     CONTRACTL
     {
-        SO_NOT_MAINLINE;
         NOTHROW;
         GC_NOTRIGGER;
     }
@@ -1923,24 +1971,24 @@ void DebuggerMethodInfo::SetJMCStatus(bool fStatus)
 // Get an iterator that will go through ALL native code-blobs (DJI) in the specified
 // AppDomain, optionally filtered by loader module (if pLoaderModuleFilter != NULL).
 // This is EnC/ Generics / Prejit aware.
-void DebuggerMethodInfo::IterateAllDJIs(AppDomain * pAppDomain, Module * pLoaderModuleFilter, DebuggerMethodInfo::DJIIterator * pEnum)
+void DebuggerMethodInfo::IterateAllDJIs(AppDomain * pAppDomain, Module * pLoaderModuleFilter, MethodDesc * pMethodDescFilter, DebuggerMethodInfo::DJIIterator * pEnum)
 {
     CONTRACTL
     {
-        SO_NOT_MAINLINE;
         THROWS;
         GC_NOTRIGGER;
     }
     CONTRACTL_END;
 
     _ASSERTE(pEnum != NULL);
-    _ASSERTE(pAppDomain != NULL);
+    _ASSERTE(pAppDomain != NULL || pMethodDescFilter != NULL);
 
     // Esnure we have DJIs for everything.
-    CreateDJIsForNativeBlobs(pAppDomain, pLoaderModuleFilter);
+    CreateDJIsForNativeBlobs(pAppDomain, pLoaderModuleFilter, pMethodDescFilter);
 
     pEnum->m_pCurrent = m_latestJitInfo;
     pEnum->m_pLoaderModuleFilter = pLoaderModuleFilter;
+    pEnum->m_pMethodDescFilter = pMethodDescFilter;
 
     // Advance to the first DJI that passes the filter
     pEnum->Next(TRUE);
@@ -1956,13 +2004,13 @@ void DebuggerMethodInfo::IterateAllDJIs(AppDomain * pAppDomain, Module * pLoader
 //          loader module matches this one. (This can be different from m_module in the
 //          case of generics defined in one module and instantiated in another). If
 //          non-NULL, create DJIs for all modules in pAppDomain.
+//      * pMethodDescFilter - If non-NULL, create DJIs only for this single MethodDesc.
 //
 
-void DebuggerMethodInfo::CreateDJIsForNativeBlobs(AppDomain * pAppDomain, Module * pLoaderModuleFilter /* = NULL */)
+void DebuggerMethodInfo::CreateDJIsForNativeBlobs(AppDomain * pAppDomain, Module * pLoaderModuleFilter, MethodDesc* pMethodDescFilter)
 {
     CONTRACTL
     {
-        SO_NOT_MAINLINE;
         THROWS;
         GC_NOTRIGGER;
     }
@@ -1970,46 +2018,103 @@ void DebuggerMethodInfo::CreateDJIsForNativeBlobs(AppDomain * pAppDomain, Module
 
     // If we're not stopped and the module we're iterating over allows types to load,
     // then it's possible new native blobs are being created underneath us.
-    _ASSERTE(g_pDebugger->IsStopped() || ((pLoaderModuleFilter != NULL) && !pLoaderModuleFilter->IsReadyForTypeLoad()));
+    _ASSERTE(g_pDebugger->IsStopped() ||
+             ((pLoaderModuleFilter != NULL) && !pLoaderModuleFilter->IsReadyForTypeLoad()) ||
+             pMethodDescFilter != NULL);
 
-    // @todo - we really only need to do this if the stop-counter goes up (else we know nothing new is added).
-    // B/c of generics, it's possible that new instantiations of a method may have been jitted.
-    // So just loop through all known instantiations and ensure that we have all the DJIs.
-    // Note that this iterator won't show previous EnC versions, but we're already guaranteed to
-    // have DJIs for every verision of a method that was EnCed.
-    // This also handles the possibility of getting the same methoddesc back from the iterator.
-    // It also lets EnC + generics play nice together (including if an generic method was EnC-ed)
-    LoadedMethodDescIterator it(pAppDomain, m_module, m_token);
-    CollectibleAssemblyHolder<DomainAssembly *> pDomainAssembly;
-    while (it.Next(pDomainAssembly.This()))
+    if (pMethodDescFilter != NULL)
     {
-        MethodDesc * pDesc = it.Current();
-        if (!pDesc->HasNativeCode())
+        CreateDJIsForMethodDesc(pMethodDescFilter);
+    }
+    else
+    {
+        // @todo - we really only need to do this if the stop-counter goes up (else we know nothing new is added).
+        // B/c of generics, it's possible that new instantiations of a method may have been jitted.
+        // So just loop through all known instantiations and ensure that we have all the DJIs.
+        // Note that this iterator won't show previous EnC versions, but we're already guaranteed to
+        // have DJIs for every verision of a method that was EnCed.
+        // This also handles the possibility of getting the same methoddesc back from the iterator.
+        // It also lets EnC + generics play nice together (including if an generic method was EnC-ed)
+        LoadedMethodDescIterator it(pAppDomain, m_module, m_token);
+        CollectibleAssemblyHolder<DomainAssembly *> pDomainAssembly;
+        while (it.Next(pDomainAssembly.This()))
         {
-            continue;
-        }
+            MethodDesc * pDesc = it.Current();
+            if (!pDesc->HasNativeCode())
+            {
+                continue;
+            }
 
-        Module * pLoaderModule = pDesc->GetLoaderModule();
+            Module * pLoaderModule = pDesc->GetLoaderModule();
 
-        // Obey the module filter if it's provided
-        if ((pLoaderModuleFilter != NULL) && (pLoaderModuleFilter != pLoaderModule))
-            continue;
+            // Obey the module filter if it's provided
+            if ((pLoaderModuleFilter != NULL) && (pLoaderModuleFilter != pLoaderModule))
+                continue;
 
-        // Skip modules that are unloaded, but still hanging around. Note that we can't use DebuggerModule for this check 
-        // because of it is deleted pretty early during unloading, and we do not want to recreate it.
-        if (pLoaderModule->GetLoaderAllocator()->IsUnloaded())
-            continue;
+            // Skip modules that are unloaded, but still hanging around. Note that we can't use DebuggerModule for this check 
+            // because of it is deleted pretty early during unloading, and we do not want to recreate it.
+            if (pLoaderModule->GetLoaderAllocator()->IsUnloaded())
+                continue;
 
-        // We just ask for the DJI to ensure that it's lazily created.
-        // This should only fail in an oom scenario.
-        DebuggerJitInfo * djiTest = g_pDebugger->GetLatestJitInfoFromMethodDesc(pDesc);
-        if (djiTest == NULL)
-        {
-            // We're oom. Give up.
-            ThrowOutOfMemory();
-            return;
+            CreateDJIsForMethodDesc(pDesc);
         }
     }
+}
+
+
+//---------------------------------------------------------------------------------------
+//
+// Bring the DJI cache up to date for jitted code instances of a particular MethodDesc.
+//
+//
+void DebuggerMethodInfo::CreateDJIsForMethodDesc(MethodDesc * pMethodDesc)
+{
+    CONTRACTL
+    {
+        THROWS;
+        GC_NOTRIGGER;
+    }
+    CONTRACTL_END;
+
+
+    // The debugger doesn't track Lightweight-codegen methods b/c they have no metadata.
+    if (pMethodDesc->IsDynamicMethod())
+    {
+        return;
+    }
+
+#ifdef FEATURE_CODE_VERSIONING
+    CodeVersionManager* pCodeVersionManager = pMethodDesc->GetCodeVersionManager();
+    // grab the code version lock to iterate available versions of the code
+    {
+        CodeVersionManager::TableLockHolder lock(pCodeVersionManager);
+        NativeCodeVersionCollection nativeCodeVersions = pCodeVersionManager->GetNativeCodeVersions(pMethodDesc);
+
+        for (NativeCodeVersionIterator itr = nativeCodeVersions.Begin(), end = nativeCodeVersions.End(); itr != end; itr++)
+        {
+            // Some versions may not be compiled yet - skip those for now
+            // if they compile later the JitCompiled callback will add a DJI to our cache at that time
+            PCODE codeAddr = itr->GetNativeCode();
+            if (codeAddr)
+            {
+                // The DJI may already be populated in the cache, if so CreateInitAndAdd is
+                // a no-op and that is fine.
+                BOOL unusedDjiWasCreated;
+                CreateInitAndAddJitInfo(*itr, codeAddr, &unusedDjiWasCreated);
+            }
+        }
+    }
+#else
+    // We just ask for the DJI to ensure that it's lazily created.
+    // This should only fail in an oom scenario.
+    DebuggerJitInfo * djiTest = g_pDebugger->GetLatestJitInfoFromMethodDesc(pDesc);
+    if (djiTest == NULL)
+    {
+        // We're oom. Give up.
+        ThrowOutOfMemory();
+        return;
+    }
+#endif
 }
 
 /*
@@ -2228,7 +2333,6 @@ DebuggerJitInfo *DebuggerJitInfo::GetJitInfoByAddress(const BYTE *pbAddr )
 {
     CONTRACTL
     {
-        SO_INTOLERANT;
         NOTHROW;
         GC_NOTRIGGER;
     }
@@ -2270,7 +2374,6 @@ PTR_DebuggerJitInfo DebuggerMethodInfo::GetLatestJitInfo(MethodDesc *mdesc)
 
     CONTRACTL
     {
-        SO_INTOLERANT;
         THROWS;
         CALLED_IN_DEBUGGERDATALOCK_HOLDER_SCOPE_MAY_GC_TRIGGERS_CONTRACT;
         PRECONDITION(!g_pDebugger->HasDebuggerDataLock());
@@ -2278,12 +2381,12 @@ PTR_DebuggerJitInfo DebuggerMethodInfo::GetLatestJitInfo(MethodDesc *mdesc)
     CONTRACTL_END;
 
 
-    if (m_latestJitInfo && m_latestJitInfo->m_fd == mdesc && !m_latestJitInfo->m_fd->HasClassOrMethodInstantiation())
+    if (m_latestJitInfo && m_latestJitInfo->m_nativeCodeVersion.GetMethodDesc() == mdesc && !m_latestJitInfo->m_nativeCodeVersion.GetMethodDesc()->HasClassOrMethodInstantiation())
         return m_latestJitInfo;
 
     // This ensures that there is an entry in the DJI list for this particular MethodDesc.
     // in the case of generic code it may not be the first entry in the list.
-    FindOrCreateInitAndAddJitInfo(mdesc);
+    FindOrCreateInitAndAddJitInfo(mdesc, NULL /* startAddr */);
 
 #endif // #ifndef DACCESS_COMPILE
 
@@ -2444,9 +2547,9 @@ DebuggerJitInfo::EnumMemoryRegions(CLRDataEnumMemoryFlags flags)
 
     if (flags != CLRDATA_ENUM_MEM_MINI && flags != CLRDATA_ENUM_MEM_TRIAGE)
     {
-        if (m_fd.IsValid())
+        if (m_nativeCodeVersion.GetMethodDesc().IsValid())
         {
-            m_fd->EnumMemoryRegions(flags);
+            m_nativeCodeVersion.GetMethodDesc()->EnumMemoryRegions(flags);
         }
 
         DacEnumMemoryRegion(PTR_TO_TADDR(GetSequenceMap()),

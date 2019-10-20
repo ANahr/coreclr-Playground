@@ -74,6 +74,11 @@ CheckFileFormat(
         }
         // Get next stream.
         PSTORAGESTREAM pNext = pStream->NextStream_Verify();
+        if (pNext == NULL)
+        {   // Stream header is corrupted.
+            Debug_ReportError("Invalid stream header - cannot get next stream header.");
+            IfFailGo(CLDB_E_FILE_CORRUPT);
+        }
         
         // Check that stream header is within the buffer.
         if (((LPBYTE)pStream >= ((LPBYTE)pData + cbData)) ||
@@ -165,8 +170,6 @@ STDAPI GetMDInternalInterface(
     IMDCommon    *pInternalROMDCommon = NULL;
     MDFileFormat format;
 
-    BEGIN_SO_INTOLERANT_CODE_NO_THROW_CHECK_THREAD(return COR_E_STACKOVERFLOW);
-
     if (ppIUnk == NULL)
         IfFailGo(E_INVALIDARG);
 
@@ -210,8 +213,6 @@ ErrExit:
     if ( pInternalROMDCommon )
         pInternalROMDCommon->Release();
 
-    END_SO_INTOLERANT_CODE;
-    
     return hr;
 }   // GetMDInternalInterface
 

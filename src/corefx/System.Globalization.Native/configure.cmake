@@ -1,11 +1,11 @@
-include(CheckCXXSourceCompiles)
+include(CheckCSourceCompiles)
 include(CheckSymbolExists)
 
 set(CMAKE_REQUIRED_INCLUDES ${UTYPES_H} ${ICU_HOMEBREW_INC_PATH})
 
-CHECK_CXX_SOURCE_COMPILES("
+CHECK_C_SOURCE_COMPILES("
     #include <unicode/udat.h>
-    int main() { UDateFormatSymbolType e = UDAT_STANDALONE_SHORTER_WEEKDAYS; }
+    int main(void) { enum UDateFormatSymbolType e = UDAT_STANDALONE_SHORTER_WEEKDAYS; }
 " HAVE_UDAT_STANDALONE_SHORTER_WEEKDAYS)
 
 if(NOT CLR_CMAKE_PLATFORM_DARWIN)

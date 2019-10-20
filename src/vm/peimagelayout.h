@@ -50,12 +50,11 @@ public:
 public:
 #ifndef DACCESS_COMPILE
     static PEImageLayout* CreateFlat(const void *flat, COUNT_T size,PEImage* pOwner);
-    static PEImageLayout* CreateFromStream(IStream* pIStream, PEImage* pOwner);
     static PEImageLayout* CreateFromHMODULE(HMODULE mappedbase,PEImage* pOwner, BOOL bTakeOwnership);
     static PEImageLayout* LoadFromFlat(PEImageLayout* pflatimage);
     static PEImageLayout* Load(PEImage* pOwner, BOOL bNTSafeLoad, BOOL bThrowOnError = TRUE);
-    static PEImageLayout* LoadFlat(HANDLE hFile, PEImage* pOwner);
-    static PEImageLayout* Map (HANDLE hFile, PEImage* pOwner);
+    static PEImageLayout* LoadFlat(PEImage* pOwner);
+    static PEImageLayout* Map(PEImage* pOwner);
 #endif    
     PEImageLayout();
     virtual ~PEImageLayout();
@@ -68,21 +67,13 @@ public:
     ULONG Release();
     const SString& GetPath();
 
-#ifdef FEATURE_PREJIT
     void ApplyBaseRelocations();
-#endif
 
 public:
 #ifdef DACCESS_COMPILE
     void EnumMemoryRegions(CLRDataEnumMemoryFlags flags);
 #endif
 
-#if defined(_WIN64) && !defined(DACCESS_COMPILE)
-    bool ConvertILOnlyPE32ToPE64();
-private:
-    bool ConvertILOnlyPE32ToPE64Worker();
-#endif // defined(_WIN64) && !defined(DACCESS_COMPILE)
-    
 private:
     Volatile<LONG> m_refCount;
 public:    
@@ -126,11 +117,15 @@ class MappedImageLayout: public PEImageLayout
     VPTR_VTABLE_CLASS(MappedImageLayout,PEImageLayout)
     VPTR_UNIQUE(0x15)
 protected:
+#ifndef FEATURE_PAL
     HandleHolder m_FileMap;
     CLRMapViewHolder m_FileView;
+#else
+    PALPEFileHolder m_LoadedFile;
+#endif
 public:
 #ifndef DACCESS_COMPILE    
-    MappedImageLayout(HANDLE hFile, PEImage* pOwner);    
+    MappedImageLayout(PEImage* pOwner);    
 #endif
 };
 
@@ -168,7 +163,7 @@ protected:
     CLRMapViewHolder m_FileView;
 public:
 #ifndef DACCESS_COMPILE    
-    FlatImageLayout(HANDLE hFile, PEImage* pOwner);   
+    FlatImageLayout(PEImage* pOwner);   
 #endif
 
 };

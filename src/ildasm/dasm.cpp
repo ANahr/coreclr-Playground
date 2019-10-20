@@ -35,7 +35,6 @@
 #endif
 
 #ifdef FEATURE_PAL
-#include "coreclrloader.h"
 #include "resourcestring.h"
 #define NATIVE_STRING_RESOURCE_NAME dasm_rc
 DECLARE_NATIVE_STRING_RESOURCE_TABLE(NATIVE_STRING_RESOURCE_NAME);
@@ -149,16 +148,16 @@ extern ULONG    g_LocalComTypeNum;
 
 // MetaInfo integration:
 #include "../tools/metainfo/mdinfo.h"
-#include "ivehandler.h"
+
 BOOL                    g_fDumpMetaInfo = FALSE;
 ULONG                   g_ulMetaInfoFilter = MDInfo::dumpDefault;
 // Validator module type.
 DWORD g_ValModuleType = ValidatorModuleTypeInvalid;
 IMetaDataDispenserEx *g_pDisp = NULL;
-void DisplayFile(__in __nullterminated wchar_t* szFile, 
+void DisplayFile(__in __nullterminated WCHAR* szFile, 
                  BOOL isFile, 
                  ULONG DumpFilter, 
-                 __in_opt __nullterminated wchar_t* szObjFile, 
+                 __in_opt __nullterminated WCHAR* szObjFile, 
                  strPassBackFn pDisplayString);
 extern mdMethodDef      g_tkEntryPoint; // integration with MetaInfo
 
@@ -308,33 +307,8 @@ extern CQuickBytes *        g_szBuf_JUMPPT;
 extern CQuickBytes *        g_szBuf_UnquotedProperName;
 extern CQuickBytes *        g_szBuf_ProperName;
 
-#ifdef FEATURE_PAL
-CoreCLRLoader *g_loader;
-#endif
-MetaDataGetDispenserFunc metaDataGetDispenser;
-GetMetaDataInternalInterfaceFunc getMetaDataInternalInterface;
-GetMetaDataInternalInterfaceFromPublicFunc getMetaDataInternalInterfaceFromPublic;
-GetMetaDataPublicInterfaceFromInternalFunc getMetaDataPublicInterfaceFromInternal;
-
 BOOL Init()
 {
-#ifdef FEATURE_PAL
-    g_loader = CoreCLRLoader::Create(g_pszExeFile);
-    if (g_loader == NULL)
-    {
-        return FALSE;
-    }
-    metaDataGetDispenser = (MetaDataGetDispenserFunc)g_loader->LoadFunction("MetaDataGetDispenser");
-    getMetaDataInternalInterface = (GetMetaDataInternalInterfaceFunc)g_loader->LoadFunction("GetMetaDataInternalInterface");
-    getMetaDataInternalInterfaceFromPublic = (GetMetaDataInternalInterfaceFromPublicFunc)g_loader->LoadFunction("GetMetaDataInternalInterfaceFromPublic");
-    getMetaDataPublicInterfaceFromInternal = (GetMetaDataPublicInterfaceFromInternalFunc)g_loader->LoadFunction("GetMetaDataPublicInterfaceFromInternal");
-#else // FEATURE_PAL
-    metaDataGetDispenser = (MetaDataGetDispenserFunc)MetaDataGetDispenser;
-    getMetaDataInternalInterface = (GetMetaDataInternalInterfaceFunc)GetMetaDataInternalInterface;
-    getMetaDataInternalInterfaceFromPublic = (GetMetaDataInternalInterfaceFromPublicFunc)GetMetaDataInternalInterfaceFromPublic;
-    getMetaDataPublicInterfaceFromInternal = (GetMetaDataPublicInterfaceFromInternalFunc)GetMetaDataPublicInterfaceFromInternal;
-#endif // FEATURE_PAL
-
     g_szBuf_KEYWORD = new CQuickBytes();
     g_szBuf_COMMENT = new CQuickBytes();
     g_szBuf_ERRORMSG = new CQuickBytes();
@@ -483,17 +457,10 @@ void Uninit()
     {
         SDELETE(g_szBuf_UnquotedProperName);
     }
-    if (g_szBuf_UnquotedProperName != NULL)
+    if (g_szBuf_ProperName != NULL)
     {
         SDELETE(g_szBuf_ProperName);
     }
-    
-#ifdef FEATURE_PAL
-    if (g_loader != NULL)
-    {
-        g_loader->Finish();
-    }
-#endif
 } // Uninit
 
 HRESULT IsClassRefInScope(mdTypeRef classref)
@@ -581,7 +548,7 @@ BOOL EnumClasses()
         return FALSE;
     }
     
-    g_NumClasses = g_pImport->EnumTypeDefGetCount(&hEnum);
+    g_NumClasses = g_pImport->EnumGetCount(&hEnum);
 
     g_tkClassToDump = 0;
 
@@ -622,7 +589,7 @@ BOOL EnumClasses()
     }
 
     // fill the list of typedef tokens
-    while(g_pImport->EnumTypeDefNext(&hEnum, &g_cl_list[i]))
+    while(g_pImport->EnumNext(&hEnum, &g_cl_list[i]))
     {
         mdToken     tkEnclosing;
         
@@ -676,7 +643,7 @@ BOOL EnumClasses()
         }
         i++;
     }
-    g_pImport->EnumTypeDefClose(&hEnum);
+    g_pImport->EnumClose(&hEnum);
     // check nesting consistency (circular nesting, invalid enclosers)
     for(i = 0; i < g_NumClasses; i++)
     {
@@ -928,50 +895,51 @@ bool HasSuppressingAttribute()
 #endif
 void DumpMscorlib(void* GUICookie)
 {
-    if(g_pAssemblyImport==NULL) g_pAssemblyImport = GetAssemblyImport(GUICookie);
-    if(g_pAssemblyImport!=NULL)
+    // In the CoreCLR with reference assemblies and redirection it is more difficult to determine if
+    // a particular Assembly is the System assembly, like mscorlib.dll is for the Desktop CLR.
+    // In the CoreCLR runtimes, the System assembly can be System.Private.CoreLib.dll, System.Runtime.dll
+    // or netstandard.dll and in the future a different Assembly name could be used.
+    // We now determine the identity of the System assembly by querying if the Assembly defines the
+    // well known type System.Object as that type must be defined by the System assembly
+    // If this type is defined then we will output the ".mscorlib" directive to indicate that this 
+    // assembly is the System assembly.
+    //
+    mdTypeDef tkObjectTypeDef = mdTypeDefNil;
+
+    // Lookup the type System.Object and see it it has a type definition in this assembly
+    if (SUCCEEDED(g_pPubImport->FindTypeDefByName(W("System.Object"), mdTypeDefNil, &tkObjectTypeDef)))
     {
-        mdAssembly  tkAsm;
-        if(SUCCEEDED(g_pAssemblyImport->GetAssemblyFromScope(&tkAsm))&&(tkAsm != mdAssemblyNil))
+        if (tkObjectTypeDef != mdTypeDefNil)
         {
-            const void* pPublicKey;
-            ULONG       cbPublicKey = 0;
-            ULONG       ulHashAlgId;
-            WCHAR       wzName[1024];
-            ULONG       ulNameLen=0;
-            ASSEMBLYMETADATA    md;
-            WCHAR       wzLocale[1024];
-            DWORD       dwFlags;
-            //char        szString[4096];
-            
-            md.szLocale = wzLocale;
-            md.cbLocale = 1024;
-            md.rProcessor = NULL;
-            md.ulProcessor = 0;
-            md.rOS = NULL;
-            md.ulOS = 0;
-    
-            if(SUCCEEDED(g_pAssemblyImport->GetAssemblyProps(            // S_OK or error.
-                                                            tkAsm,       // [IN] The Assembly for which to get the properties.
-                                                            &pPublicKey, // [OUT] Pointer to the public key.
-                                                            &cbPublicKey,// [OUT] Count of bytes in the public key.
-                                                            &ulHashAlgId,// [OUT] Hash Algorithm.
-                                                            wzName,      // [OUT] Buffer to fill with name.
-                                                            1024,        // [IN] Size of buffer in wide chars.
-                                                            &ulNameLen,  // [OUT] Actual # of wide chars in name.
-                                                            &md,         // [OUT] Assembly MetaData.
-                                                            &dwFlags)))  // [OUT] Flags.
+            // We do have a type definition for System.Object in this assembly
+            //
+            DWORD dwClassAttrs = 0;
+            mdToken tkExtends = mdTypeDefNil;
+
+            // Retrieve the type def properties as well, so that we can check a few more things about 
+            // the System.Object type
+            //
+            if (SUCCEEDED(g_pPubImport->GetTypeDefProps(tkObjectTypeDef, NULL, NULL, 0, &dwClassAttrs, &tkExtends)))
             {
-                if(wcscmp(wzName,W("mscorlib")) == 0)
+                bool bExtends = g_pPubImport->IsValidToken(tkExtends);
+                bool isClass = ((dwClassAttrs & tdClassSemanticsMask) == tdClass);
+
+                // We also check the type properties to make sure that we have a class and not a Value type definition
+                // and that this type definition isn't extending another type.
+                // 
+                if (isClass & !bExtends)
                 {
-                    printLine(GUICookie,"");
-                    sprintf_s(szString,SZSTRING_SIZE,"%s%s ",g_szAsmCodeIndent,KEYWORD(".mscorlib"));
-                    printLine(GUICookie,szString);
-                    printLine(GUICookie,"");
+                    // We will mark this assembly with the System assembly directive: .mscorlib
+                    //
+                    printLine(GUICookie, "");
+                    sprintf_s(szString, SZSTRING_SIZE, "%s%s ", g_szAsmCodeIndent, KEYWORD(".mscorlib"));
+                    printLine(GUICookie, szString);
+                    printLine(GUICookie, "");                
                 }
             }
         }
     }
+
 }
 void DumpTypelist(void* GUICookie)
 {
@@ -999,7 +967,7 @@ void DumpTypelist(void* GUICookie)
     }
 
 }
-#define ELEMENT_TYPE_TYPEDEF ELEMENT_TYPE_MAX+1
+#define ELEMENT_TYPE_TYPEDEF (ELEMENT_TYPE_MAX+1)
 BOOL EnumTypedefs()
 {
     HENUMInternal   hEnum;
@@ -1054,7 +1022,6 @@ BOOL EnumTypedefs()
 
 void DumpTypedefs(void* GUICookie)
 {
-    HRESULT hr;
     DWORD i;
     char* szptr;
     CQuickBytes out;
@@ -1500,7 +1467,6 @@ mdToken ResolveReflectionNotation(BYTE* dataPtr,
 
 unsigned UnderlyingTypeOfEnumTypeDef(mdToken tk, IMDInternalImport *pIMDI)
 {
-    HRESULT hr;
     // make sure it's a TypeDef
     if(TypeFromToken(tk) != mdtTypeDef) return 0;
     
@@ -1630,7 +1596,7 @@ mdToken TypeRefToTypeDef(mdToken tk, IMDInternalImport *pIMDI, IMDInternalImport
             IUnknown *pUnk; 
             if(FAILED(pIAMDI[0]->QueryInterface(IID_IUnknown, (void**)&pUnk))) goto AssignAndReturn;
 
-            if (FAILED(getMetaDataInternalInterfaceFromPublic(
+            if (FAILED(GetMetaDataInternalInterfaceFromPublic(
                 pUnk,
                 IID_IMDInternalImport,
                 (LPVOID *)ppIMDInew)))
@@ -2268,7 +2234,6 @@ BOOL PrettyPrintCustomAttributeNVPairs(unsigned nPairs, BYTE* dataPtr, BYTE* dat
 }
 BOOL PrettyPrintCustomAttributeBlob(mdToken tkType, BYTE* pBlob, ULONG ulLen, void* GUICookie, __inout __nullterminated char* szString)
 {
-    HRESULT hr;
     char* initszptr = szString + strlen(szString);
     PCCOR_SIGNATURE typePtr;            // type to convert,     
     ULONG typeLen;                  // the lenght of 'typePtr' 
@@ -2387,7 +2352,6 @@ BOOL PrettyPrintCustomAttributeBlob(mdToken tkType, BYTE* pBlob, ULONG ulLen, vo
 
 void DumpCustomAttributeProps(mdToken tkCA, mdToken tkType, mdToken tkOwner, BYTE* pBlob, ULONG ulLen, void *GUICookie, bool bWithOwner)
 {
-    HRESULT hr;
     char*           szptr = &szString[0];
     BOOL            fCommentItOut = FALSE;
     if((TypeFromToken(tkType) == mdtMemberRef)||(TypeFromToken(tkType) == mdtMethodDef))
@@ -3094,7 +3058,9 @@ char *DumpGenericPars(__inout_ecount(SZSTRING_SIZE) char* szString, mdToken tok,
     DWORD           NumTyPars;
     DWORD           NumConstrs;
     mdGenericParam  tkTyPar;
+    ULONG           ulSequence;
     DWORD           attr;
+    mdToken         tkOwner;
     HCORENUM        hEnumTyPar = NULL;
     HCORENUM        hEnumTyParConstr = NULL;
     char*           szptr = &szString[strlen(szString)];
@@ -3110,7 +3076,7 @@ char *DumpGenericPars(__inout_ecount(SZSTRING_SIZE) char* szString, mdToken tok,
       
       for (i = 1; NumTyPars != 0; i++)
       {
-        g_pPubImport->GetGenericParamProps(tkTyPar, NULL, &attr, NULL, NULL, wzArgName, UNIBUF_SIZE/2, &chName);
+        g_pPubImport->GetGenericParamProps(tkTyPar, &ulSequence, &attr, &tkOwner, NULL, wzArgName, UNIBUF_SIZE/2, &chName);
         //if(wcslen(wzArgName) >= MAX_CLASSNAME_LENGTH)
         //    wzArgName[MAX_CLASSNAME_LENGTH-1] = 0;
         hEnumTyParConstr = NULL;
@@ -3239,12 +3205,95 @@ void DumpGenericParsCA(mdToken tok, void* GUICookie/*=NULL*/)
                     szptr += sprintf_s(szptr,SZSTRING_REMAINING_SIZE(szptr),"[%d] ",i+1);
                 if(g_fDumpTokens) szptr+=sprintf_s(szptr,SZSTRING_REMAINING_SIZE(szptr),COMMENT("/*%08X*/ "),tkTyPar);
                 printLine(GUICookie, szString);
+
+                strcat_s(g_szAsmCodeIndent, MAX_MEMBER_LENGTH, "  ");
                 while(g_pImport->EnumNext(&hEnum,&tkCA) && RidFromToken(tkCA))
                 {
                     DumpCustomAttribute(tkCA,GUICookie,false);
                 }
+                g_szAsmCodeIndent[strlen(g_szAsmCodeIndent) - 2] = 0;
             }
-            g_pImport->EnumClose( &hEnum);
+            g_pImport->EnumClose( &hEnum);  // mdtCustomAttribute
+
+            ULONG    ulSequence;
+            DWORD    attr;
+            mdToken  tkOwner;
+            HCORENUM hEnumTyParConstraint;
+            mdToken  tkConstraint[2048];
+            DWORD    NumConstraints;
+
+            g_pPubImport->GetGenericParamProps(tkTyPar, &ulSequence, &attr, &tkOwner, NULL, wzArgName, UNIBUF_SIZE / 2, &chName);
+            hEnumTyParConstraint = NULL;
+            if (FAILED(g_pPubImport->EnumGenericParamConstraints(&hEnumTyParConstraint, tkTyPar, tkConstraint, 2048, &NumConstraints)))
+            {
+                g_pPubImport->CloseEnum(hEnumTyPar);
+                return;
+            }
+            if (NumConstraints > 0)
+            {
+                CQuickBytes out;
+                mdToken tkConstraintType;
+                mdToken tkGenericParam;
+                ULONG ulSequence;
+
+                for (DWORD ix = 0; ix < NumConstraints; ix++)
+                {
+                    mdGenericParamConstraint  tkParamConstraint = tkConstraint[ix];
+                    if (FAILED(g_pPubImport->GetGenericParamConstraintProps(tkParamConstraint, &tkGenericParam, &tkConstraintType)))
+                    {
+                        sprintf_s(szString, SZSTRING_SIZE, "%sERROR: MetaData error in GetGenericParamConstraintProps for %08X", g_szAsmCodeIndent, tkParamConstraint);
+                        return;
+                    }
+                    if (FAILED(g_pImport->EnumInit(mdtCustomAttribute, tkParamConstraint, &hEnum)))
+                    {
+                        sprintf_s(szString, SZSTRING_SIZE, "%sERROR: MetaData error enumerating CustomAttribute for mdGenericParamConstraint %08X", g_szAsmCodeIndent, tkParamConstraint);
+                        printLine(GUICookie, szString);
+                        return;
+                    }
+
+                    ulCAs = g_pImport->EnumGetCount(&hEnum);
+                    if (ulCAs)
+                    {
+                        char    *szptr = &szString[0];
+                        szptr += sprintf_s(szptr, SZSTRING_SIZE, "%s%s ", g_szAsmCodeIndent, KEYWORD(".param constraint"));
+
+                        if (FAILED(g_pPubImport->GetGenericParamProps(tkGenericParam, &ulSequence, &attr, NULL, NULL, wzArgName, UNIBUF_SIZE / 2, &chName)))
+                        {
+                            sprintf_s(szString, SZSTRING_SIZE, "%sERROR: MetaData error in GetGenericParamProps for %08X", g_szAsmCodeIndent, tkGenericParam);
+                            printLine(GUICookie, szString);
+                            return;
+                        }
+                        if (chName > 0)
+                        {
+                            char* sz = (char*)(&wzUniBuf[UNIBUF_SIZE / 2]);
+                            WszWideCharToMultiByte(CP_UTF8, 0, wzArgName, -1, sz, UNIBUF_SIZE, NULL, NULL);
+                            szptr += sprintf_s(szptr, SZSTRING_REMAINING_SIZE(szptr), "  %s", ProperName(sz));
+                        }
+                        else
+                        {
+                            szptr += sprintf_s(szptr, SZSTRING_REMAINING_SIZE(szptr), "  [%d]", ulSequence + 1);
+                        }
+                        if (g_fDumpTokens)
+                        {
+                            szptr += sprintf_s(szptr, SZSTRING_REMAINING_SIZE(szptr), COMMENT("/*%08X*/ "), tkGenericParam);
+                        }
+
+                        szptr += sprintf_s(szptr, SZSTRING_REMAINING_SIZE(szptr), ", ");
+
+                        out.Shrink(0);
+                        szptr += sprintf_s(szptr, SZSTRING_REMAINING_SIZE(szptr), "%s", PrettyPrintClass(&out, tkConstraintType, g_pImport));
+                        printLine(GUICookie, szString);
+
+                        strcat_s(g_szAsmCodeIndent, MAX_MEMBER_LENGTH, "  ");
+                        while (g_pImport->EnumNext(&hEnum, &tkCA) && RidFromToken(tkCA))
+                        {
+                            DumpCustomAttribute(tkCA, GUICookie, false);
+                        }
+                        g_szAsmCodeIndent[strlen(g_szAsmCodeIndent) - 2] = 0;
+                    }
+                    g_pImport->EnumClose(&hEnum);  // mdtCustomAttribute
+                }
+            }
         } //end for(i=0;...
     } //end if(g_fShowCA)
 }
@@ -3255,7 +3304,6 @@ void DumpGenericParsCA(mdToken tok, void* GUICookie/*=NULL*/)
 void PrettyPrintOverrideDecl(ULONG i, __inout __nullterminated char* szString, void* GUICookie, mdToken tkOverrider,
                              BOOL *pbOverridingTypeSpec)
 {
-    HRESULT hr;
     const char *    pszMemberName;
     mdToken         tkDecl,tkDeclParent=0;
     char            szBadToken[256];
@@ -3363,7 +3411,6 @@ void PrettyPrintOverrideDecl(ULONG i, __inout __nullterminated char* szString, v
 #endif
 BOOL DumpMethod(mdToken FuncToken, const char *pszClassName, DWORD dwEntryPointToken,void *GUICookie,BOOL DumpBody)
 {
-    HRESULT hr;
     const char      *pszMemberName = NULL;//[MAX_MEMBER_LENGTH];
     const char      *pszMemberSig = NULL;
     DWORD           dwAttrs = 0;
@@ -3653,6 +3700,7 @@ lDone: ;
     if(IsMiNoInlining(dwImplAttrs))         szptr+=sprintf_s(szptr,SZSTRING_REMAINING_SIZE(szptr)," noinlining");
     if(IsMiAggressiveInlining(dwImplAttrs)) szptr+=sprintf_s(szptr,SZSTRING_REMAINING_SIZE(szptr)," aggressiveinlining");
     if(IsMiNoOptimization(dwImplAttrs))     szptr+=sprintf_s(szptr,SZSTRING_REMAINING_SIZE(szptr)," nooptimization");
+    if(IsMiAggressiveOptimization(dwImplAttrs)) szptr+=sprintf_s(szptr,SZSTRING_REMAINING_SIZE(szptr)," aggressiveoptimization");
     szptr+=sprintf_s(szptr,SZSTRING_REMAINING_SIZE(szptr),KEYWORD((char*)-1));
     printLine(GUICookie, szString);
     VDELETE(buff);
@@ -6849,29 +6897,6 @@ void DumpMI(__in __nullterminated const char *str)
     }
 }
 
-HRESULT VEHandlerReporter( // Return status.
-    LPCWSTR     szMsg,                  // Error message.
-    VEContext   Context,                // Error context (offset,token)
-    HRESULT     hrRpt)                  // HRESULT for the message
-{
-    WCHAR* wzMsg;
-    if(szMsg)
-    {
-        size_t L = wcslen(szMsg)+256;
-        if((wzMsg = new (nothrow) WCHAR[L]) != NULL)
-        {
-            wcscpy_s(wzMsg,L,szMsg);
-            // include token and offset from Context
-            if(Context.Token) swprintf_s(&wzMsg[wcslen(wzMsg)], L-wcslen(wzMsg), W(" [token:0x%08X]"),Context.Token);
-            if(Context.uOffset) swprintf_s(&wzMsg[wcslen(wzMsg)], L-wcslen(wzMsg), W(" [at:0x%X]"),Context.uOffset);
-            swprintf_s(&wzMsg[wcslen(wzMsg)], L-wcslen(wzMsg), W(" [hr:0x%08X]\n"),hrRpt);
-            DumpMI(UnicodeToUtf(wzMsg));
-            delete[] wzMsg;
-        }
-    }
-    return S_OK;
-}
-
 void DumpMetaInfo(__in __nullterminated const WCHAR* pwzFileName, __in_opt __nullterminated const char* pszObjFileName, void* GUICookie)
 {
     const WCHAR* pch = wcsrchr(pwzFileName,L'.');
@@ -6881,7 +6906,7 @@ void DumpMetaInfo(__in __nullterminated const WCHAR* pwzFileName, __in_opt __nul
     if(pch && (!_wcsicmp(pch+1,W("lib")) || !_wcsicmp(pch+1,W("obj"))))
     {   // This works only when all the rest does not
         // Init and run.
-        if (metaDataGetDispenser(CLSID_CorMetaDataDispenser,
+        if (MetaDataGetDispenser(CLSID_CorMetaDataDispenser,
             IID_IMetaDataDispenserEx, (void **)&g_pDisp))
                 {
                     WCHAR *pwzObjFileName=NULL;
@@ -6892,7 +6917,7 @@ void DumpMetaInfo(__in __nullterminated const WCHAR* pwzFileName, __in_opt __nul
                         memset(pwzObjFileName,0,sizeof(WCHAR)*nLength);
                         WszMultiByteToWideChar(CP_UTF8,0,pszObjFileName,-1,pwzObjFileName,nLength);
                     }
-                    DisplayFile((wchar_t*)pwzFileName, true, g_ulMetaInfoFilter, pwzObjFileName, DumpMI);
+                    DisplayFile((WCHAR*)pwzFileName, true, g_ulMetaInfoFilter, pwzObjFileName, DumpMI);
                     g_pDisp->Release();
                     g_pDisp = NULL;
                     if (pwzObjFileName) VDELETE(pwzObjFileName);
@@ -6903,7 +6928,7 @@ void DumpMetaInfo(__in __nullterminated const WCHAR* pwzFileName, __in_opt __nul
         HRESULT hr = S_OK;
         if(g_pDisp == NULL)
         {
-            hr = metaDataGetDispenser(CLSID_CorMetaDataDispenser,
+            hr = MetaDataGetDispenser(CLSID_CorMetaDataDispenser,
                 IID_IMetaDataDispenserEx, (void **)&g_pDisp);
         }
         if(SUCCEEDED(hr))
@@ -6913,7 +6938,6 @@ void DumpMetaInfo(__in __nullterminated const WCHAR* pwzFileName, __in_opt __nul
             printLine(GUICookie,RstrUTF(IDS_E_MISTART));
             //MDInfo metaDataInfo(g_pPubImport, g_pAssemblyImport, (LPCWSTR)pwzFileName, DumpMI, g_ulMetaInfoFilter);
             MDInfo metaDataInfo(g_pDisp,(LPCWSTR)pwzFileName, DumpMI, g_ulMetaInfoFilter);
-            metaDataInfo.SetVEHandlerReporter((__int64) (size_t) VEHandlerReporter);
             metaDataInfo.DisplayMD();
             printLine(GUICookie,RstrUTF(IDS_E_MIEND));
         }
@@ -6964,7 +6988,6 @@ void DumpPreamble()
 
 void DumpSummary()
 {
-    HRESULT hr;
     ULONG i;
     const char      *pcClass,*pcNS,*pcMember, *pcSig;
     char szFQN[4096];
@@ -7370,6 +7393,13 @@ BOOL DumpFile()
         }
         CORCOMPILE_HEADER * pNativeHeader;
         g_pPELoader->getVAforRVA(VAL32(g_CORHeader->ManagedNativeHeader.VirtualAddress), (void**)&pNativeHeader);
+
+        if (pNativeHeader->Signature != CORCOMPILE_SIGNATURE)
+        {
+            printError( g_pFile, "/native only works on NGen images." );
+            goto exit;
+        }
+
         g_pPELoader->getVAforRVA(VAL32(pNativeHeader->ManifestMetaData.VirtualAddress), &g_pMetaData);
         g_cbMetaData = VAL32(pNativeHeader->ManifestMetaData.Size);
     }
@@ -7386,7 +7416,7 @@ BOOL DumpFile()
         g_cbMetaData = VAL32(g_CORHeader->MetaData.Size);
     }
 
-    if (FAILED(getMetaDataInternalInterface(
+    if (FAILED(GetMetaDataInternalInterface(
         (BYTE *)g_pMetaData,
         g_cbMetaData,
         openFlags,
@@ -7400,7 +7430,7 @@ BOOL DumpFile()
     }
 
     TokenSigInit(g_pImport);
-    if (FAILED(metaDataGetDispenser(CLSID_CorMetaDataDispenser, IID_IMetaDataDispenser, (LPVOID*)&pMetaDataDispenser)))
+    if (FAILED(MetaDataGetDispenser(CLSID_CorMetaDataDispenser, IID_IMetaDataDispenser, (LPVOID*)&pMetaDataDispenser)))
     {
         if (g_fDumpHeader)
             DumpHeader(g_CORHeader, g_pFile);
@@ -7725,5 +7755,3 @@ exit:
 #ifdef _MSC_VER
 #pragma warning(default : 4640)
 #endif
-
-

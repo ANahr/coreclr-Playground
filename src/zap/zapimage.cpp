@@ -78,7 +78,7 @@ ZapImage::~ZapImage()
     if (m_pGCInfoTable != NULL)
         m_pGCInfoTable->~ZapGCInfoTable();
 
-#ifdef WIN64EXCEPTIONS
+#ifdef FEATURE_EH_FUNCLETS
     if (m_pUnwindDataTable != NULL)
         m_pUnwindDataTable->~ZapUnwindDataTable();
 #endif
@@ -149,16 +149,15 @@ void ZapImage::InitializeSections()
     m_pStubDispatchDataSection->Place(m_pStubDispatchDataTable);
 
     m_pImportTable = new (GetHeap()) ZapImportTable(this);
-    m_pImportTableSection->Place(m_pImportTable);
 
     m_pGCInfoTable = new (GetHeap()) ZapGCInfoTable(this);
     m_pExceptionInfoLookupTable = new (GetHeap()) ZapExceptionInfoLookupTable(this);
 
-#ifdef WIN64EXCEPTIONS
+#ifdef FEATURE_EH_FUNCLETS
     m_pUnwindDataTable = new (GetHeap()) ZapUnwindDataTable(this);
 #endif
 
-    m_pEEInfoTable = ZapBlob::NewAlignedBlob(this, NULL, sizeof(CORCOMPILE_EE_INFO_TABLE), sizeof(TADDR));
+    m_pEEInfoTable = ZapBlob::NewAlignedBlob(this, NULL, sizeof(CORCOMPILE_EE_INFO_TABLE), TARGET_POINTER_SIZE);
     m_pEETableSection->Place(m_pEEInfoTable);
 
     //
@@ -229,7 +228,6 @@ void ZapImage::InitializeSectionsForReadyToRun()
     }
 
     m_pImportTable = new (GetHeap()) ZapImportTable(this);
-    m_pImportTableSection->Place(m_pImportTable);
 
     for (int i=0; i<ZapImportSectionType_Total; i++)
     {
@@ -257,7 +255,7 @@ void ZapImage::InitializeSectionsForReadyToRun()
 
     m_pGCInfoTable = new (GetHeap()) ZapGCInfoTable(this);
 
-#ifdef WIN64EXCEPTIONS
+#ifdef FEATURE_EH_FUNCLETS
     m_pUnwindDataTable = new (GetHeap()) ZapUnwindDataTable(this);
 #endif
 
@@ -331,7 +329,7 @@ void ZapImage::AllocateVirtualSections()
 
         m_pPreloadSections[CORCOMPILE_SECTION_RVA_STATICS_HOT] = NewVirtualSection(pDataSection, IBCProfiledSection | HotRange | RVAStaticsSection);
 
-        m_pDelayLoadInfoTableSection[ZapImportSectionType_Eager] = NewVirtualSection(pDataSection, IBCUnProfiledSection | HotRange | DelayLoadInfoTableEagerSection, sizeof(TADDR));
+        m_pDelayLoadInfoTableSection[ZapImportSectionType_Eager] = NewVirtualSection(pDataSection, IBCUnProfiledSection | HotRange | DelayLoadInfoTableEagerSection, TARGET_POINTER_SIZE);
 
         //
         // Allocate dynamic info tables
@@ -340,12 +338,12 @@ void ZapImage::AllocateVirtualSections()
         // Place the HOT CorCompileTables now, the cold ones would be placed later in this routine (after other HOT sections)
         for (int i=0; i<ZapImportSectionType_Count; i++)
         {
-            m_pDelayLoadInfoTableSection[i] = NewVirtualSection(pDataSection, IBCProfiledSection | HotRange | DelayLoadInfoTableSection, sizeof(TADDR));
+            m_pDelayLoadInfoTableSection[i] = NewVirtualSection(pDataSection, IBCProfiledSection | HotRange | DelayLoadInfoTableSection, TARGET_POINTER_SIZE);
         }
 
-        m_pDynamicHelperCellSection = NewVirtualSection(pDataSection, IBCProfiledSection | HotColdSortedRange | ExternalMethodDataSection, sizeof(TADDR));
+        m_pDynamicHelperCellSection = NewVirtualSection(pDataSection, IBCProfiledSection | HotColdSortedRange | ExternalMethodDataSection, TARGET_POINTER_SIZE);
 
-        m_pExternalMethodCellSection = NewVirtualSection(pDataSection, IBCProfiledSection | HotColdSortedRange | ExternalMethodThunkSection, sizeof(TADDR));
+        m_pExternalMethodCellSection = NewVirtualSection(pDataSection, IBCProfiledSection | HotColdSortedRange | ExternalMethodThunkSection, TARGET_POINTER_SIZE);
 
         // m_pStubDispatchCellSection is  deliberately placed  directly after
         // the last m_pDelayLoadInfoTableSection (all .data sections go together in the order indicated).
@@ -359,12 +357,12 @@ void ZapImage::AllocateVirtualSections()
         // make sure the hot data is grouped with hot data in the
         // m_pDelayLoadInfoTableSection sections.
 
-        m_pStubDispatchCellSection = NewVirtualSection(pDataSection, IBCProfiledSection | HotColdSortedRange | StubDispatchDataSection, sizeof(TADDR));
+        m_pStubDispatchCellSection = NewVirtualSection(pDataSection, IBCProfiledSection | HotColdSortedRange | StubDispatchDataSection, TARGET_POINTER_SIZE);
 
         // Earlier we placed the HOT corCompile tables. Now place the cold ones after the stub dispatch cell section. 
         for (int i=0; i<ZapImportSectionType_Count; i++)
         {
-            m_pDelayLoadInfoTableSection[ZapImportSectionType_Cold + i] = NewVirtualSection(pDataSection, IBCProfiledSection | ColdRange | DelayLoadInfoTableSection, sizeof(TADDR));
+            m_pDelayLoadInfoTableSection[ZapImportSectionType_Cold + i] = NewVirtualSection(pDataSection, IBCProfiledSection | ColdRange | DelayLoadInfoTableSection, TARGET_POINTER_SIZE);
         }
 
         //
@@ -373,26 +371,26 @@ void ZapImage::AllocateVirtualSections()
 
         // This is everyhing that is assumed to be warm in the first strata
         // of non-profiled scenarios.  MethodTables related to objects etc.
-        m_pPreloadSections[CORCOMPILE_SECTION_WARM] = NewVirtualSection(pDataSection, IBCProfiledSection | WarmRange | EEDataSection, sizeof(TADDR));
+        m_pPreloadSections[CORCOMPILE_SECTION_WARM] = NewVirtualSection(pDataSection, IBCProfiledSection | WarmRange | EEDataSection, TARGET_POINTER_SIZE);
 
         m_pPreloadSections[CORCOMPILE_SECTION_RVA_STATICS_COLD] = NewVirtualSection(pDataSection, IBCProfiledSection | ColdRange | RVAStaticsSection);
 
         // In an ideal world these are cold in both profiled and the first strata
         // of non-profiled scenarios (i.e. no reflection, etc. )  The sections at the
         // bottom correspond to further strata of non-profiled scenarios.
-        m_pPreloadSections[CORCOMPILE_SECTION_CLASS_COLD] = NewVirtualSection(pDataSection, IBCProfiledSection | ColdRange | ClassSection, sizeof(TADDR));
-        m_pPreloadSections[CORCOMPILE_SECTION_CROSS_DOMAIN_INFO] = NewVirtualSection(pDataSection, IBCUnProfiledSection | ColdRange | CrossDomainInfoSection, sizeof(TADDR));
-        m_pPreloadSections[CORCOMPILE_SECTION_METHOD_DESC_COLD] = NewVirtualSection(pDataSection, IBCProfiledSection | ColdRange | MethodDescSection, sizeof(TADDR));
-        m_pPreloadSections[CORCOMPILE_SECTION_METHOD_DESC_COLD_WRITEABLE] = NewVirtualSection(pDataSection, IBCProfiledSection | ColdRange | MethodDescWriteableSection, sizeof(TADDR));
-        m_pPreloadSections[CORCOMPILE_SECTION_MODULE_COLD] = NewVirtualSection(pDataSection, IBCProfiledSection | ColdRange | ModuleSection, sizeof(TADDR));
-        m_pPreloadSections[CORCOMPILE_SECTION_DEBUG_COLD] = NewVirtualSection(pDataSection, IBCUnProfiledSection | ColdRange | DebugSection, sizeof(TADDR));
+        m_pPreloadSections[CORCOMPILE_SECTION_CLASS_COLD] = NewVirtualSection(pDataSection, IBCProfiledSection | ColdRange | ClassSection, TARGET_POINTER_SIZE);
+        m_pPreloadSections[CORCOMPILE_SECTION_CROSS_DOMAIN_INFO] = NewVirtualSection(pDataSection, IBCUnProfiledSection | ColdRange | CrossDomainInfoSection, TARGET_POINTER_SIZE);
+        m_pPreloadSections[CORCOMPILE_SECTION_METHOD_DESC_COLD] = NewVirtualSection(pDataSection, IBCProfiledSection | ColdRange | MethodDescSection, TARGET_POINTER_SIZE);
+        m_pPreloadSections[CORCOMPILE_SECTION_METHOD_DESC_COLD_WRITEABLE] = NewVirtualSection(pDataSection, IBCProfiledSection | ColdRange | MethodDescWriteableSection, TARGET_POINTER_SIZE);
+        m_pPreloadSections[CORCOMPILE_SECTION_MODULE_COLD] = NewVirtualSection(pDataSection, IBCProfiledSection | ColdRange | ModuleSection, TARGET_POINTER_SIZE);
+        m_pPreloadSections[CORCOMPILE_SECTION_DEBUG_COLD] = NewVirtualSection(pDataSection, IBCUnProfiledSection | ColdRange | DebugSection, TARGET_POINTER_SIZE);
 
         //
         // If we're instrumenting allocate a section for writing profile data
         //
         if (m_zapper->m_pOpt->m_compilerFlags.IsSet(CORJIT_FLAGS::CORJIT_FLAG_BBINSTR))
         {
-            m_pInstrumentSection = NewVirtualSection(pDataSection, IBCUnProfiledSection | ColdRange | InstrumentSection, sizeof(TADDR));
+            m_pInstrumentSection = NewVirtualSection(pDataSection, IBCUnProfiledSection | ColdRange | InstrumentSection, TARGET_POINTER_SIZE);
         }
     }
 
@@ -419,14 +417,14 @@ void ZapImage::AllocateVirtualSections()
         m_pHelperTableSection               = NewVirtualSection(pXDataSection, IBCProfiledSection | HotColdSortedRange| HelperTableSection, HELPER_TABLE_ALIGN);
 
         // hot for writing, i.e. profiling has indicated a write to this item, so at least one write likely per item at some point
-        m_pPreloadSections[CORCOMPILE_SECTION_METHOD_PRECODE_WRITE] = NewVirtualSection(pXDataSection, IBCProfiledSection | HotRange | MethodPrecodeWriteSection, sizeof(TADDR));
-        m_pPreloadSections[CORCOMPILE_SECTION_METHOD_PRECODE_HOT] = NewVirtualSection(pXDataSection, IBCProfiledSection | HotRange | MethodPrecodeSection, sizeof(TADDR));
+        m_pPreloadSections[CORCOMPILE_SECTION_METHOD_PRECODE_WRITE] = NewVirtualSection(pXDataSection, IBCProfiledSection | HotRange | MethodPrecodeWriteSection, TARGET_POINTER_SIZE);
+        m_pPreloadSections[CORCOMPILE_SECTION_METHOD_PRECODE_HOT] = NewVirtualSection(pXDataSection, IBCProfiledSection | HotRange | MethodPrecodeSection, TARGET_POINTER_SIZE);
 
         //
         // cold sections
         //
-        m_pPreloadSections[CORCOMPILE_SECTION_METHOD_PRECODE_COLD] = NewVirtualSection(pXDataSection, IBCProfiledSection | ColdRange | MethodPrecodeSection, sizeof(TADDR));
-        m_pPreloadSections[CORCOMPILE_SECTION_METHOD_PRECODE_COLD_WRITEABLE] = NewVirtualSection(pXDataSection, IBCProfiledSection | ColdRange | MethodPrecodeWriteableSection, sizeof(TADDR));
+        m_pPreloadSections[CORCOMPILE_SECTION_METHOD_PRECODE_COLD] = NewVirtualSection(pXDataSection, IBCProfiledSection | ColdRange | MethodPrecodeSection, TARGET_POINTER_SIZE);
+        m_pPreloadSections[CORCOMPILE_SECTION_METHOD_PRECODE_COLD_WRITEABLE] = NewVirtualSection(pXDataSection, IBCProfiledSection | ColdRange | MethodPrecodeWriteableSection, TARGET_POINTER_SIZE);
     }
 
     {
@@ -480,10 +478,10 @@ void ZapImage::AllocateVirtualSections()
         m_pHotCodeSection = NewVirtualSection(pTextSection, IBCProfiledSection | HotRange | CodeSection, codeSectionAlign);
         m_pHotCodeSection->SetDefaultFill(DEFAULT_CODE_BUFFER_INIT);
 
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
         m_pHotUnwindDataSection = NewVirtualSection(pTextSection, IBCProfiledSection | HotRange | UnwindDataSection, sizeof(DWORD)); // .rdata area
 
-        // All RuntimeFunctionSections have to be together for WIN64EXCEPTIONS
+        // All RuntimeFunctionSections have to be together for FEATURE_EH_FUNCLETS
         m_pHotRuntimeFunctionSection = NewVirtualSection(pTextSection, IBCProfiledSection | HotRange | RuntimeFunctionSection, sizeof(DWORD));  // .pdata area
         m_pRuntimeFunctionSection = NewVirtualSection(pTextSection, IBCProfiledSection | WarmRange  | ColdRange | RuntimeFunctionSection, sizeof(DWORD));
         m_pColdRuntimeFunctionSection = NewVirtualSection(pTextSection, IBCProfiledSection | IBCUnProfiledSection | ColdRange | RuntimeFunctionSection, sizeof(DWORD));
@@ -491,7 +489,7 @@ void ZapImage::AllocateVirtualSections()
         // The following sentinel section is just a padding for RuntimeFunctionSection - Apply same classification 
         NewVirtualSection(pTextSection, IBCProfiledSection | IBCUnProfiledSection | ColdRange | RuntimeFunctionSection, sizeof(DWORD))
             ->Place(new (GetHeap()) ZapBlobPtr((PVOID)&dwRuntimeFunctionSectionSentinel, sizeof(DWORD)));
-#endif  // defined(WIN64EXCEPTIONS)
+#endif  // defined(FEATURE_EH_FUNCLETS)
 
         m_pStubsSection = NewVirtualSection(pTextSection, IBCProfiledSection | HotColdSortedRange | StubsSection);
         m_pReadOnlyDataSection = NewVirtualSection(pTextSection, IBCProfiledSection | HotColdSortedRange | ReadonlyDataSection);
@@ -501,7 +499,7 @@ void ZapImage::AllocateVirtualSections()
         m_pStubDispatchDataSection = NewVirtualSection(pTextSection, IBCProfiledSection | HotColdSortedRange | StubDispatchDataSection, sizeof(DWORD));
 
         m_pHotRuntimeFunctionLookupSection = NewVirtualSection(pTextSection, IBCProfiledSection | HotRange | RuntimeFunctionSection, sizeof(DWORD));
-#if !defined(WIN64EXCEPTIONS)
+#if !defined(FEATURE_EH_FUNCLETS)
         m_pHotRuntimeFunctionSection = NewVirtualSection(pTextSection, IBCProfiledSection | HotRange | RuntimeFunctionSection, sizeof(DWORD));
 
         // The following sentinel section is just a padding for RuntimeFunctionSection - Apply same classification 
@@ -520,8 +518,8 @@ void ZapImage::AllocateVirtualSections()
         // actually find any duplicates and put those in a small section.  For the rest, where there wasn't a duplicate in the entire image, we leave the
         // singleton in its normal place in the READONLY_HOT section, which was selected carefully by IBC.
         //
-        m_pPreloadSections[CORCOMPILE_SECTION_READONLY_SHARED_HOT] = NewVirtualSection(pTextSection, IBCProfiledSection | HotRange | ReadonlySharedSection, sizeof(TADDR));
-        m_pPreloadSections[CORCOMPILE_SECTION_READONLY_HOT] = NewVirtualSection(pTextSection, IBCProfiledSection | HotRange | ReadonlySection, sizeof(TADDR));
+        m_pPreloadSections[CORCOMPILE_SECTION_READONLY_SHARED_HOT] = NewVirtualSection(pTextSection, IBCProfiledSection | HotRange | ReadonlySharedSection, TARGET_POINTER_SIZE);
+        m_pPreloadSections[CORCOMPILE_SECTION_READONLY_HOT] = NewVirtualSection(pTextSection, IBCProfiledSection | HotRange | ReadonlySection, TARGET_POINTER_SIZE);
 
         //
         // GC Info for methods which were touched during profiling but didn't explicitly have
@@ -537,7 +535,7 @@ void ZapImage::AllocateVirtualSections()
 
         //ILMetadata/Resources sections are reported as a statically known warm ranges for now.
         m_pILMetaDataSection = NewVirtualSection(pTextSection, IBCProfiledSection | HotColdSortedRange | ILMetadataSection, sizeof(DWORD));
-#endif  // _TARGET_ARM
+#endif  // _TARGET_ARM_
 
 #if defined(_TARGET_ARM_)
         if (!bigResourceSection) // for ARM, put the resource section at the end if it's very large - see comment above
@@ -551,7 +549,7 @@ void ZapImage::AllocateVirtualSections()
         m_pCodeSection->SetDefaultFill(DEFAULT_CODE_BUFFER_INIT);
 
         m_pRuntimeFunctionLookupSection = NewVirtualSection(pTextSection, IBCProfiledSection | WarmRange | ColdRange | RuntimeFunctionSection, sizeof(DWORD));
-#if !defined(WIN64EXCEPTIONS)
+#if !defined(FEATURE_EH_FUNCLETS)
         m_pRuntimeFunctionSection = NewVirtualSection(pTextSection, IBCProfiledSection | WarmRange  | ColdRange | RuntimeFunctionSection, sizeof(DWORD));
 
         // The following sentinel section is just a padding for RuntimeFunctionSection - Apply same classification 
@@ -564,14 +562,17 @@ void ZapImage::AllocateVirtualSections()
         if (IsReadyToRunCompilation())
         {
             m_pAvailableTypesSection = NewVirtualSection(pTextSection, IBCUnProfiledSection | WarmRange | ReadonlySection);
+            m_pAttributePresenceSection = NewVirtualSection(pTextSection, IBCUnProfiledSection | WarmRange | ReadonlyDataSection, 16/* Must be 16 byte aligned */);
         }
 #endif    
 
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
         m_pUnwindDataSection = NewVirtualSection(pTextSection, IBCProfiledSection | WarmRange | ColdRange | UnwindDataSection, sizeof(DWORD));
-#endif // defined(WIN64EXCEPTIONS)
+#endif // defined(FEATURE_EH_FUNCLETS)
 
-        m_pPreloadSections[CORCOMPILE_SECTION_READONLY_WARM] = NewVirtualSection(pTextSection, IBCProfiledSection | WarmRange | ReadonlySection, sizeof(TADDR));
+        m_pPreloadSections[CORCOMPILE_SECTION_READONLY_WARM] = NewVirtualSection(pTextSection, IBCProfiledSection | WarmRange | ReadonlySection, TARGET_POINTER_SIZE);
+        m_pPreloadSections[CORCOMPILE_SECTION_READONLY_VCHUNKS] = NewVirtualSection(pTextSection, IBCProfiledSection | WarmRange | ReadonlySection, TARGET_POINTER_SIZE);
+        m_pPreloadSections[CORCOMPILE_SECTION_READONLY_DICTIONARY] = NewVirtualSection(pTextSection, IBCProfiledSection | WarmRange | ReadonlySection, TARGET_POINTER_SIZE);
 
         //
         // GC Info for methods which were not touched in profiling
@@ -580,7 +581,7 @@ void ZapImage::AllocateVirtualSections()
 
         m_pDelayLoadInfoDelayListSectionCold = NewVirtualSection(pTextSection, IBCProfiledSection | ColdRange | DelayLoadInfoDelayListSection, sizeof(DWORD));
 
-        m_pPreloadSections[CORCOMPILE_SECTION_READONLY_COLD] = NewVirtualSection(pTextSection, IBCProfiledSection | ColdRange | ReadonlySection, sizeof(TADDR));
+        m_pPreloadSections[CORCOMPILE_SECTION_READONLY_COLD] = NewVirtualSection(pTextSection, IBCProfiledSection | ColdRange | ReadonlySection, TARGET_POINTER_SIZE);
 
         //
         // Allocate the cold code section near the end of the image
@@ -602,7 +603,7 @@ void ZapImage::AllocateVirtualSections()
 #endif // _TARGET_ARM_
         m_pColdCodeMapSection = NewVirtualSection(pTextSection, IBCProfiledSection | IBCUnProfiledSection | ColdRange | CodeManagerSection, sizeof(DWORD));
 
-#if !defined(WIN64EXCEPTIONS)
+#if !defined(FEATURE_EH_FUNCLETS)
         m_pColdRuntimeFunctionSection = NewVirtualSection(pTextSection, IBCProfiledSection | IBCUnProfiledSection | ColdRange | RuntimeFunctionSection, sizeof(DWORD));
 
         // The following sentinel section is just a padding for RuntimeFunctionSection - Apply same classification 
@@ -610,9 +611,9 @@ void ZapImage::AllocateVirtualSections()
             ->Place(new (GetHeap()) ZapBlobPtr((PVOID)&dwRuntimeFunctionSectionSentinel, sizeof(DWORD)));
 #endif
 
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
         m_pColdUnwindDataSection = NewVirtualSection(pTextSection, IBCProfiledSection | IBCUnProfiledSection | ColdRange | UnwindDataSection, sizeof(DWORD));
-#endif // defined(WIN64EXCEPTIONS)
+#endif // defined(FEATURE_EH_FUNCLETS)
 
         //
         // Allocate space for compressed LookupMaps (ridmaps). This needs to come after the .data physical
@@ -666,9 +667,9 @@ void ZapImage::Preallocate()
     if (m_pILMetaData != NULL)
         m_pILMetaData->Preallocate(cbILImage);
     m_pGCInfoTable->Preallocate(cbILImage);
-#ifdef WIN64EXCEPTIONS
+#ifdef FEATURE_EH_FUNCLETS
     m_pUnwindDataTable->Preallocate(cbILImage);
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
     m_pDebugInfoTable->Preallocate(cbILImage);
 }
 
@@ -689,7 +690,7 @@ void ZapImage::SetPdbFileName(const SString &strFileName)
     m_pdbFileName.Set(strFileName);
 }
 
-#ifdef WIN64EXCEPTIONS
+#ifdef FEATURE_EH_FUNCLETS
 void ZapImage::SetRuntimeFunctionsDirectoryEntry()
 {
     //
@@ -732,7 +733,7 @@ void ZapImage::SetRuntimeFunctionsDirectoryEntry()
         SetDirectoryEntry(IMAGE_DIRECTORY_ENTRY_EXCEPTION, pAllRuntimeFunctionSections);
     }
 }
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 
 // Assign RVAs to all ZapNodes
 void ZapImage::ComputeRVAs()
@@ -747,7 +748,7 @@ void ZapImage::ComputeRVAs()
 
     m_pInnerPtrs->Resolve();
 
-#ifdef WIN64EXCEPTIONS
+#ifdef FEATURE_EH_FUNCLETS
     SetRuntimeFunctionsDirectoryEntry();
 #endif
 
@@ -1025,8 +1026,8 @@ HANDLE ZapImage::GenerateFile(LPCWSTR wszOutputFileName, CORCOMPILE_NGEN_SIGNATU
     {    
         // Write the debug directory entry for the NGEN PDB
         RSDS rsds = {0};
-        
-        rsds.magic = 'SDSR';
+
+        rsds.magic = VAL32(0x53445352); // "SDSR";
         rsds.age = 1;
         // our PDB signature will be the same as our NGEN signature.  
         // However we want the printed version of the GUID to be be the same as the
@@ -1080,23 +1081,23 @@ HANDLE ZapImage::GenerateFile(LPCWSTR wszOutputFileName, CORCOMPILE_NGEN_SIGNATU
 }
 
 
-HANDLE ZapImage::SaveImage(LPCWSTR wszOutputFileName, CORCOMPILE_NGEN_SIGNATURE * pNativeImageSig)
+HANDLE ZapImage::SaveImage(LPCWSTR wszOutputFileName, LPCWSTR wszDllPath, CORCOMPILE_NGEN_SIGNATURE * pNativeImageSig)
 {
-    if (!IsReadyToRunCompilation())
+    if(!IsReadyToRunCompilation() || IsLargeVersionBubbleEnabled())
     {
         OutputManifestMetadata();
     }
 
     OutputTables();
 
-	// Create a empty export table.  This makes tools like symchk not think
-	// that native images are resoure-only DLLs.  It is important to NOT
-	// be a resource-only DLL because those DLL's PDBS are not put up on the
-	// symbol server and we want NEN PDBS to be placed there.  
-	ZapPEExports* exports = new(GetHeap()) ZapPEExports(wszOutputFileName);
-	m_pDebugSection->Place(exports);
-	SetDirectoryEntry(IMAGE_DIRECTORY_ENTRY_EXPORT, exports);
-
+    // Create a empty export table.  This makes tools like symchk not think
+    // that native images are resoure-only DLLs.  It is important to NOT
+    // be a resource-only DLL because those DLL's PDBS are not put up on the
+    // symbol server and we want NEN PDBS to be placed there.  
+    ZapPEExports* exports = new(GetHeap()) ZapPEExports(wszDllPath);
+    m_pDebugSection->Place(exports);
+    SetDirectoryEntry(IMAGE_DIRECTORY_ENTRY_EXPORT, exports);
+    
     ComputeRVAs();
 
     if (!IsReadyToRunCompilation())
@@ -1106,6 +1107,10 @@ HANDLE ZapImage::SaveImage(LPCWSTR wszOutputFileName, CORCOMPILE_NGEN_SIGNATURE 
 
     HANDLE hFile = GenerateFile(wszOutputFileName, pNativeImageSig);
 
+    if (m_zapper->m_pOpt->m_verbose)
+    {
+        PrintStats(wszOutputFileName);
+    }
 
     return hFile;
 }
@@ -1116,12 +1121,12 @@ void ZapImage::PrintStats(LPCWSTR wszOutputFileName)
     ACCUM_SIZE(m_stats->m_gcInfoSize, m_pHotTouchedGCSection);
     ACCUM_SIZE(m_stats->m_gcInfoSize, m_pHotGCSection);
     ACCUM_SIZE(m_stats->m_gcInfoSize, m_pGCSection);
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
     ACCUM_SIZE(m_stats->m_unwindInfoSize, m_pUnwindDataSection);
     ACCUM_SIZE(m_stats->m_unwindInfoSize, m_pHotRuntimeFunctionSection);
     ACCUM_SIZE(m_stats->m_unwindInfoSize, m_pRuntimeFunctionSection);
     ACCUM_SIZE(m_stats->m_unwindInfoSize, m_pColdRuntimeFunctionSection);
-#endif // defined(WIN64EXCEPTIONS)
+#endif // defined(FEATURE_EH_FUNCLETS)
 
     //
     // Get the size of the input & output files
@@ -1159,8 +1164,6 @@ void ZapImage::PrintStats(LPCWSTR wszOutputFileName)
     ACCUM_SIZE(m_stats->m_dynamicInfoDelayListSize, m_pDelayLoadInfoDelayListSectionEager);
     ACCUM_SIZE(m_stats->m_dynamicInfoDelayListSize, m_pDelayLoadInfoDelayListSectionHot);
     ACCUM_SIZE(m_stats->m_dynamicInfoDelayListSize, m_pDelayLoadInfoDelayListSectionCold);
-
-    ACCUM_SIZE(m_stats->m_importTableSize, m_pImportTable);
 
     ACCUM_SIZE(m_stats->m_debuggingTableSize, m_pDebugSection);
     ACCUM_SIZE(m_stats->m_headerSectionSize, m_pGCSection);
@@ -1238,7 +1241,7 @@ void ZapImage::CalculateZapBaseAddress()
 #if defined(_TARGET_X86_)
                 // We use 30000000 for an exe
                 baseAddress = 0x30000000;
-#elif defined(_WIN64)
+#elif defined(_TARGET_64BIT_)
                 // We use 04000000 for an exe
                 // which is remapped to 0x642`88000000 on x64
                 baseAddress = 0x04000000;
@@ -1249,7 +1252,7 @@ void ZapImage::CalculateZapBaseAddress()
 #if defined(_TARGET_X86_)
                 // We start a 31000000 for the main assembly with the manifest
                 baseAddress = 0x31000000;
-#elif defined(_WIN64)
+#elif defined(_TARGET_64BIT_)
                 // We start a 05000000 for the main assembly with the manifest
                 // which is remapped to 0x642`8A000000 on x64
                 baseAddress = 0x05000000;
@@ -1279,6 +1282,12 @@ void ZapImage::CalculateZapBaseAddress()
         }
     }
 
+    if (m_zapper->GetCustomBaseAddress() != 0)
+    {
+        //set baseAddress here from crossgen options
+        baseAddress = m_zapper->GetCustomBaseAddress();
+    }
+
     // Round to a multiple of 64K
     // 64K is the allocation granularity of VirtualAlloc. (Officially this number is not a constant -
     // we should be querying the system for its allocation granularity, but we do this all over the place
@@ -1301,7 +1310,7 @@ void ZapImage::CalculateZapBaseAddress()
     // upper address range used on 64-bit platforms
     //
 #if USE_UPPER_ADDRESS
-#if defined(_WIN64)
+#if defined(_TARGET_64BIT_)
     if (baseAddress < 0x80000000)
     {
         if (baseAddress < 0x40000000)
@@ -1494,7 +1503,7 @@ void ZapImage::OutputTables()
     }
 
     CopyDebugDirEntry();
-    CopyWin32VersionResource();
+    CopyWin32Resources();
 
     if (m_pILMetaData != NULL)
     {
@@ -1515,7 +1524,7 @@ void ZapImage::OutputTables()
     {
         USHORT dllCharacteristics = 0;
 
-#ifndef _WIN64
+#ifndef _TARGET_64BIT_
         dllCharacteristics |= IMAGE_DLLCHARACTERISTICS_NO_SEH;
 #endif
 
@@ -1533,6 +1542,10 @@ void ZapImage::OutputTables()
 #endif // _DEBUG
         {
             dllCharacteristics |= IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE;
+#ifdef _TARGET_64BIT_
+            // Large address aware, required for High Entry VA, is always enabled for 64bit native images.
+            dllCharacteristics |= IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA;
+#endif
         }
 
         SetDllCharacteristics(dllCharacteristics);
@@ -1545,8 +1558,8 @@ void ZapImage::OutputTables()
         SetSizeOfStackCommit(m_ModuleDecoder.GetSizeOfStackCommit());
     }
 
-#if defined(FEATURE_PAL)
-    // PAL library requires native image sections to align to page bounaries.
+#if defined(FEATURE_PAL) && !defined(_TARGET_64BIT_)
+    // To minimize wasted VA space on 32 bit systems align file to page bounaries (presumed to be 4K).
     SetFileAlignment(0x1000);
 #elif defined(_TARGET_ARM_) && defined(FEATURE_CORESYSTEM)
     if (!IsReadyToRunCompilation())
@@ -1588,13 +1601,53 @@ ZapImage::CompileStatus ZapImage::CompileProfileDataWorker(mdToken token, unsign
     return TryCompileMethodDef(token, methodProfilingDataFlags);
 }
 
-void ZapImage::CompileProfileData()
+//  ProfileDisableInlining
+//     Before we start compiling any methods we may need to suppress the inlining
+//     of certain methods based upon our profile data.
+//     This method will arrange to disable this inlining.
+//
+void ZapImage::ProfileDisableInlining()
 {
+    // We suppress the inlining of any Hot methods that have the ExcludeHotMethodCode flag.
+    // We want such methods to be Jitted at runtime rather than compiled in the AOT native image.
+    // The inlining of such a method also need to be suppressed.
+    //
+    ProfileDataSection* methodProfileData = &(m_profileDataSections[MethodProfilingData]);
+    if (methodProfileData->tableSize > 0)
+    {
+        for (DWORD i = 0; i < methodProfileData->tableSize; i++)
+        {
+            CORBBTPROF_TOKEN_INFO * pTokenInfo = &(methodProfileData->pTable[i]);
+            unsigned methodProfilingDataFlags = pTokenInfo->flags;
+
+            // Hot methods can be marked to be excluded from the AOT native image.
+            // We also need to disable inlining of such methods.
+            //
+            if ((methodProfilingDataFlags & (1 << DisableInlining)) != 0)
+            {
+                // Disable the inlining of this method
+                //
+                // @ToDo: Figure out how to disable inlining for this method.               
+            }
+        }
+    }
+}
+
+//  CompileHotRegion
+//     Performs the compilation and placement for all methods in the the "Hot" code region
+//     Methods placed in this region typically correspond to all of the methods that were
+//     executed during any of the profiling scenarios.
+//
+void ZapImage::CompileHotRegion()
+{
+    // Compile all of the methods that were executed during profiling into the "Hot" code region.
+    //
     BeginRegion(CORINFO_REGION_HOT);
 
     CorProfileData* pProfileData = GetProfileData();
         
-    if (m_profileDataSections[MethodProfilingData].tableSize > 0)
+    ProfileDataSection* methodProfileData = &(m_profileDataSections[MethodProfilingData]);
+    if (methodProfileData->tableSize > 0)
     {
         // record the start of hot IBC methods.
         m_iIBCMethod = m_MethodCompilationOrder.GetCount();
@@ -1602,19 +1655,21 @@ void ZapImage::CompileProfileData()
         //
         // Compile the hot methods in the order specified in the MethodProfilingData
         //
-        for (DWORD i = 0; i < m_profileDataSections[MethodProfilingData].tableSize; i++)
+        for (DWORD i = 0; i < methodProfileData->tableSize; i++)
         {
-            unsigned methodProfilingDataFlags = m_profileDataSections[MethodProfilingData].pTable[i].flags;
-            _ASSERTE(methodProfilingDataFlags != 0);
+            CompileStatus compileResult = NOT_COMPILED;
+            CORBBTPROF_TOKEN_INFO * pTokenInfo = &(methodProfileData->pTable[i]);
 
-            mdToken token = m_profileDataSections[MethodProfilingData].pTable[i].token;
+            mdToken token = pTokenInfo->token;
+            unsigned methodProfilingDataFlags = pTokenInfo->flags;
+            _ASSERTE(methodProfilingDataFlags != 0);
 
             if (TypeFromToken(token) == mdtMethodDef)
             {
                 //
                 // Compile a non-generic method
                 // 
-                CompileProfileDataWorker(token, methodProfilingDataFlags);
+                compileResult = CompileProfileDataWorker(token, methodProfilingDataFlags);
             }
             else if (TypeFromToken(token) == ibcMethodSpec)
             {
@@ -1638,10 +1693,23 @@ void ZapImage::CompileProfileData()
                     {
                         m_pPreloader->AddMethodToTransitiveClosureOfInstantiations(pMethod);
 
-                        TryCompileInstantiatedMethod(pMethod, methodProfilingDataFlags);
+                        compileResult = TryCompileInstantiatedMethod(pMethod, methodProfilingDataFlags);
+                    }
+                    else
+                    {
+                        // This generic/parameterized method is not part of the native image
+                        // Either the IBC type  specified no longer exists or it is a SIMD types
+                        // or the type can't be loaded in a ReadyToRun native image because of
+                        // a cross-module type dependencies.
+                        //
+                        compileResult = COMPILE_EXCLUDED;
                     }
                 }
             }
+
+            // Update the 'flags' and 'compileResult' saved in the profileDataHashTable hash table.
+            //
+            hashBBUpdateFlagsAndCompileResult(token, methodProfilingDataFlags, compileResult);
         }
         // record the start of hot Generics methods.
         m_iGenericsMethod = m_MethodCompilationOrder.GetCount();
@@ -1653,71 +1721,91 @@ void ZapImage::CompileProfileData()
     EndRegion(CORINFO_REGION_HOT);
 }
 
+//  CompileColdRegion
+//     Performs the compilation and placement for all methods in the the "Cold" code region
+//     Methods placed in this region typically correspond to all of the methods that were
+//     NOT executed during any of the profiling scenarios.
+//
+void ZapImage::CompileColdRegion()
+{
+    // Compile all of the methods that were NOT executed during profiling into the "Cold" code region.
+    //
+
+    BeginRegion(CORINFO_REGION_COLD);
+    
+    IMDInternalImport * pMDImport = m_pMDImport;
+    
+    HENUMInternalHolder hEnum(pMDImport);
+    hEnum.EnumAllInit(mdtMethodDef);
+    
+    mdMethodDef md;
+    while (pMDImport->EnumNext(&hEnum, &md))
+    {
+        //
+        // Compile the remaining methods that weren't compiled during the CompileHotRegion phase
+        //
+        TryCompileMethodDef(md, 0);
+    }
+
+    // Compile any generic code which lands in this LoaderModule
+    // that resulted from the above compilations
+    CORINFO_METHOD_HANDLE handle = m_pPreloader->NextUncompiledMethod();
+    while (handle != NULL)
+    {
+        TryCompileInstantiatedMethod(handle, 0);
+        handle = m_pPreloader->NextUncompiledMethod();
+    }
+    
+    EndRegion(CORINFO_REGION_COLD);
+}
+
+//  PlaceMethodIL
+//     Copy the IL for all method into the AOT native image
+//
+void ZapImage::PlaceMethodIL()
+{
+    // Place the IL for all of the methods 
+    //
+    IMDInternalImport * pMDImport = m_pMDImport;
+    HENUMInternalHolder hEnum(pMDImport);
+    hEnum.EnumAllInit(mdtMethodDef);
+    
+    mdMethodDef md;
+    while (pMDImport->EnumNext(&hEnum, &md))
+    {
+        if (m_pILMetaData != NULL)
+        {
+            // Copy IL for all methods. We treat errors during copying IL 
+            // over as fatal error. These errors are typically caused by 
+            // corrupted IL images.
+            // 
+            m_pILMetaData->EmitMethodIL(md);
+        }
+    }
+}
+
 void ZapImage::Compile()
 {
     //
-    // First, compile methods in the load order array.
+    // Compile all of the methods for our AOT native image
     //
+
     bool doNothingNgen = false;
 #ifdef _DEBUG
     static ConfigDWORD fDoNothingNGen;
     doNothingNgen = !!fDoNothingNGen.val(CLRConfig::INTERNAL_ZapDoNothing);
 #endif
 
+    ProfileDisableInlining();
+
     if (!doNothingNgen)
     {
-        //
-        // Compile the methods specified by the IBC profile data
-        // 
-        CompileProfileData();
+        CompileHotRegion();
 
-        BeginRegion(CORINFO_REGION_COLD);
-
-
-        IMDInternalImport * pMDImport = m_pMDImport;
-
-        HENUMInternalHolder hEnum(pMDImport);
-        hEnum.EnumAllInit(mdtMethodDef);
-
-        mdMethodDef md;
-        while (pMDImport->EnumNext(&hEnum, &md))
-        {
-            if (m_pILMetaData != NULL)
-            {
-                // Copy IL for all methods. We treat errors during copying IL 
-                // over as fatal error. These errors are typically caused by 
-                // corrupted IL images.
-                // 
-                m_pILMetaData->EmitMethodIL(md);
-            }
-
-            //
-            // Compile the remaining methods that weren't compiled during the CompileProfileData phase
-            //
-            TryCompileMethodDef(md, 0);
-        }
-
-        // Compile any generic code which lands in this LoaderModule
-        // that resulted from the above compilations
-        CORINFO_METHOD_HANDLE handle = m_pPreloader->NextUncompiledMethod();
-        while (handle != NULL)
-        {
-            TryCompileInstantiatedMethod(handle, 0);
-            handle = m_pPreloader->NextUncompiledMethod();
-        }
-
-        EndRegion(CORINFO_REGION_COLD);
-
-        // If we want ngen to fail when we create partial ngen images we can
-        // throw an NGEN failure HRESULT here.
-#if 0
-        if (m_zapper->m_failed)
-        {
-            ThrowHR(NGEN_E_TP_PARTIAL_IMAGE); 
-        }
-#endif
-
+        CompileColdRegion();
     }
+
+    PlaceMethodIL();
 
     // Compute a preferred class layout order based on analyzing the graph
     // of which classes contain calls to other classes.
@@ -1752,7 +1840,13 @@ void ZapImage::Compile()
         OutputEntrypointsTableForReadyToRun();
         OutputDebugInfoForReadyToRun();
         OutputTypesTableForReadyToRun(m_pMDImport);
+        OutputAttributePresenceFilter(m_pMDImport);
         OutputInliningTableForReadyToRun();
+        OutputProfileDataForReadyToRun();
+        if (IsLargeVersionBubbleEnabled())
+        {
+            OutputManifestMetadataForReadyToRun();
+        }
     }
     else
 #endif
@@ -1858,65 +1952,18 @@ ZapImage::CompileStatus ZapImage::TryCompileMethodDef(mdMethodDef md, unsigned m
     CORINFO_METHOD_HANDLE handle = NULL;
     CompileStatus         result = NOT_COMPILED;
 
-    EX_TRY
+    if (ShouldCompileMethodDef(md))
     {
-        if (ShouldCompileMethodDef(md))
-            handle = m_pPreloader->LookupMethodDef(md);
-        else
-            result = COMPILE_EXCLUDED;
-    }
-    EX_CATCH
-    {
-        // Continue unwinding if fatal error was hit.
-        if (FAILED(g_hrFatalError))
-            ThrowHR(g_hrFatalError);
-
-        // COM introduces the notion of a vtable gap method, which is not a real method at all but instead
-        // aids in the explicit layout of COM interop vtables. These methods have no implementation and no
-        // direct runtime state tracking them. Trying to lookup a method handle for a vtable gap method will
-        // throw an exception but we choose to let that happen and filter out the warning here in the
-        // handler because (a) vtable gap methods are rare and (b) it's not all that cheap to identify them
-        // beforehand.
-        if (IsVTableGapMethod(md))
+        handle = m_pPreloader->LookupMethodDef(md);
+        if (handle == nullptr)
         {
-            handle = NULL;
-        }
-        else
-        {
-            Exception *ex = GET_EXCEPTION();
-            HRESULT hrException = ex->GetHR();
-
-            StackSString message;
-            ex->GetMessage(message);
-
-            CorZapLogLevel level;
-
-#ifdef CROSSGEN_COMPILE
-            // Warnings should not go to stderr during crossgen
-            level = CORZAP_LOGLEVEL_WARNING;
-#else
-            level = CORZAP_LOGLEVEL_ERROR;
-#endif
-
-            // FileNotFound errors here can be converted into a single error string per ngen compile, and the detailed error is available with verbose logging
-            if (hrException == COR_E_FILENOTFOUND)
-            {
-                StackSString logMessage(W("System.IO.FileNotFoundException: "));
-                logMessage.Append(message);
-                FileNotFoundError(logMessage.GetUnicode());
-                level = CORZAP_LOGLEVEL_INFO;
-            }
-
-            m_zapper->Print(level, W("%s while compiling method token 0x%x\n"), message.GetUnicode(), md);
-
             result = LOOKUP_FAILED;
-
-            m_zapper->m_failed = TRUE;
-            if (m_stats)
-                m_stats->m_failedMethods++;
         }
     }
-    EX_END_CATCH(SwallowAllExceptions);
+    else
+    {
+        result = COMPILE_EXCLUDED;
+    }
 
     if (handle == NULL)
         return result;
@@ -2021,20 +2068,64 @@ ZapImage::CompileStatus ZapImage::TryCompileMethodWorker(CORINFO_METHOD_HANDLE h
     }
 #endif
 
+    // Do we have a profile entry for this method?
+    //
     if (methodProfilingDataFlags != 0)
     {
         // Report the profiling data flags for layout of the EE datastructures
         m_pPreloader->SetMethodProfilingFlags(handle, methodProfilingDataFlags);
 
-        // Only proceed with compilation if the code is hot
+        // Hot methods can be marked to be excluded from the AOT native image.
+        // A Jitted method executes faster than a ReadyToRun compiled method.
+        //
+        if ((methodProfilingDataFlags & (1 << ExcludeHotMethodCode)) != 0)
+        {
+            // returning COMPILE_HOT_EXCLUDED excludes this method from the AOT native image
+            return COMPILE_HOT_EXCLUDED;
+        }
+
+        // Cold methods can be marked to be excluded from the AOT native image.
+        // We can reduced the size of the AOT native image by selectively
+        // excluding the code for some of the cold methods.
+        //
+        if ((methodProfilingDataFlags & (1 << ExcludeColdMethodCode)) != 0)
+        {
+            // returning COMPILE_COLD_EXCLUDED excludes this method from the AOT native image
+            return COMPILE_COLD_EXCLUDED;
+        }
+
+        // If the code was never executed based on the profile data
+        // then don't compile this method now. Wait until until later
+        // when we are compiling the methods in the cold section.
         //
         if ((methodProfilingDataFlags & (1 << ReadMethodCode)) == 0)
+        {
+            // returning NOT_COMPILED will defer until later the compilation of this method
             return NOT_COMPILED;
+        }
     }
-    else
+    else  // we are compiling methods for the cold region
     {
-        if (m_zapper->m_pOpt->m_fPartialNGen)
-            return COMPILE_EXCLUDED;
+        // Retrieve any information that we have about a previous compilation attempt of this method
+        const ProfileDataHashEntry* pEntry = profileDataHashTable.LookupPtr(md);
+        
+        // When Partial Ngen is specified we will omit the AOT native code for every
+        // method that does not have profile data
+        //
+        if (pEntry == nullptr && m_zapper->m_pOpt->m_fPartialNGen)
+        {
+            // returning COMPILE_COLD_EXCLUDED excludes this method from the AOT native image
+            return COMPILE_COLD_EXCLUDED;
+        }
+
+        if (pEntry != nullptr)
+        { 
+            if ((pEntry->status == COMPILE_HOT_EXCLUDED) || (pEntry->status == COMPILE_COLD_EXCLUDED))
+            {
+                // returning COMPILE_HOT_EXCLUDED excludes this method from the AOT native image
+                return pEntry->status;
+            }
+        }
     }
 
     // Have we already compiled it?
@@ -2045,13 +2136,6 @@ ZapImage::CompileStatus ZapImage::TryCompileMethodWorker(CORINFO_METHOD_HANDLE h
 
     CompileStatus result = NOT_COMPILED;
     
-    // This is an entry point into the JIT which can call back into the VM. There are methods in the
-    // JIT that will swallow exceptions and only the VM guarentees that exceptions caught or swallowed
-    // with restore the debug state of the stack guards. So it is necessary to ensure that the status
-    // is restored on return from the call into the JIT, which this light-weight transition macro
-    // will do.
-    REMOVE_STACK_GUARD;
-
     CORINFO_MODULE_HANDLE module;
 
     // We only compile IL_STUBs from the current assembly
@@ -2076,28 +2160,44 @@ ZapImage::CompileStatus ZapImage::TryCompileMethodWorker(CORINFO_METHOD_HANDLE h
         Exception *ex = GET_EXCEPTION();
         HRESULT hrException = ex->GetHR();
 
+        CorZapLogLevel level;
+
+#ifdef CROSSGEN_COMPILE
+        // Warnings should not go to stderr during crossgen
+        level = CORZAP_LOGLEVEL_WARNING;
+#else
+        level = CORZAP_LOGLEVEL_ERROR;
+
+        m_zapper->m_failed = TRUE;
+#endif
+
+        result = COMPILE_FAILED;
+
 #ifdef FEATURE_READYTORUN_COMPILER
-        // NYI features in R2R - Stop crossgen from spitting unnecessary messages to the console
-        if (IsReadyToRunCompilation() && hrException == E_NOTIMPL)
+        // NYI features in R2R - Stop crossgen from spitting unnecessary
+        //     messages to the console
+        if (IsReadyToRunCompilation())
         {
-            result = NOT_COMPILED;
+            // When compiling the method we may receive an exeception when the
+            // method uses a feature that is Not Implemented for ReadyToRun 
+            // or a Type Load exception if the method uses for a SIMD type.
+            //
+            // We skip the compilation of such methods and we don't want to
+            // issue a warning or error
+            //
+            if ((hrException == E_NOTIMPL) || (hrException == (HRESULT)IDS_CLASSLOAD_GENERAL))
+            {
+                result = NOT_COMPILED;
+                level = CORZAP_LOGLEVEL_INFO;
+            }
         }
-        else
 #endif
         {
             StackSString message;
             ex->GetMessage(message);
 
-            CorZapLogLevel level;
-
-    #ifdef CROSSGEN_COMPILE
-            // Warnings should not go to stderr during crossgen
-            level = CORZAP_LOGLEVEL_WARNING;
-    #else
-            level = CORZAP_LOGLEVEL_ERROR;
-    #endif
-
-            // FileNotFound errors here can be converted into a single error string per ngen compile, and the detailed error is available with verbose logging
+            // FileNotFound errors here can be converted into a single error string per ngen compile, 
+            //  and the detailed error is available with verbose logging
             if (hrException == COR_E_FILENOTFOUND)
             {
                 StackSString logMessage(W("System.IO.FileNotFoundException: "));
@@ -2108,10 +2208,7 @@ ZapImage::CompileStatus ZapImage::TryCompileMethodWorker(CORINFO_METHOD_HANDLE h
 
             m_zapper->Print(level, W("%s while compiling method %s\n"), message.GetUnicode(), zapInfo.m_currentMethodName.GetUnicode());
 
-            result = COMPILE_FAILED;
-            m_zapper->m_failed = TRUE;
-
-            if (m_stats != NULL)
+            if ((result == COMPILE_FAILED) && (m_stats != NULL))
             {
                 if (!m_zapper->m_pOpt->m_compilerFlags.IsSet(CORJIT_FLAGS::CORJIT_FLAG_IL_STUB))
                     m_stats->m_failedMethods++;
@@ -2149,20 +2246,20 @@ BOOL ZapImage::ShouldCompileMethodDef(mdMethodDef md)
     mdToken tkExtends;
     if (td != mdTypeDefNil)
     {
-        m_pMDImport->GetTypeDefProps(td, NULL, &tkExtends);
+        IfFailThrow(m_pMDImport->GetTypeDefProps(td, NULL, &tkExtends));
         
         mdAssembly tkAssembly;
         DWORD dwAssemblyFlags;
         
-        m_pMDImport->GetAssemblyFromScope(&tkAssembly);
+        IfFailThrow(m_pMDImport->GetAssemblyFromScope(&tkAssembly));
         if (TypeFromToken(tkAssembly) == mdtAssembly)
         {
-            m_pMDImport->GetAssemblyProps(tkAssembly,
+            IfFailThrow(m_pMDImport->GetAssemblyProps(tkAssembly,
                                             NULL, NULL,     // Public Key
                                             NULL,           // Hash Algorithm
                                             NULL,           // Name
                                             NULL,           // MetaData
-                                            &dwAssemblyFlags);
+                                            &dwAssemblyFlags));
             
             if (IsAfContentType_WindowsRuntime(dwAssemblyFlags))
             {
@@ -2170,7 +2267,7 @@ BOOL ZapImage::ShouldCompileMethodDef(mdMethodDef md)
                 {
                     LPCSTR szNameSpace = NULL;
                     LPCSTR szName = NULL;
-                    m_pMDImport->GetNameOfTypeRef(tkExtends, &szNameSpace, &szName);
+                    IfFailThrow(m_pMDImport->GetNameOfTypeRef(tkExtends, &szNameSpace, &szName));
                     
                     if (!strcmp(szNameSpace, "System") && !_stricmp((szName), "Attribute"))
                     {
@@ -2359,7 +2456,6 @@ HRESULT ZapImage::LocateProfileData()
         return S_FALSE;
     }
 
-#if !defined(FEATURE_PAL)
     //
     // See if there's profile data in the resource section of the PE
     //
@@ -2374,7 +2470,6 @@ HRESULT ZapImage::LocateProfileData()
     static ConfigDWORD g_UseIBCFile;
     if (g_UseIBCFile.val(CLRConfig::EXTERNAL_UseIBCFile) != 1)
         return S_OK;
-#endif
 
     //
     // Couldn't find profile resource--let's see if there's an ibc file to use instead
@@ -2509,6 +2604,12 @@ HRESULT ZapImage::parseProfileData()
         READ(entry,CORBBTPROF_SECTION_TABLE_ENTRY);
 
         SectionFormat format = sectionHeader->Entries[i].FormatID;
+        _ASSERTE(format >= 0);
+        if (format < 0)
+        {
+            continue;
+        }
+
         if (convertFromV1)
         {
             if (format < LastTokenFlagSection)
@@ -3183,7 +3284,7 @@ HRESULT ZapImage::RehydrateProfileData()
     return hr;
 }
 
-HRESULT ZapImage::hashBBProfileData ()
+HRESULT ZapImage::hashMethodBlockCounts()
 {
     ProfileDataSection * DataSection_MethodBlockCounts = & m_profileDataSections[MethodBlockCounts];
 
@@ -3197,7 +3298,7 @@ HRESULT ZapImage::hashBBProfileData ()
     CORBBTPROF_METHOD_BLOCK_COUNTS_SECTION_HEADER *mbcHeader;
     READ(mbcHeader,CORBBTPROF_METHOD_BLOCK_COUNTS_SECTION_HEADER);
 
-    for (ULONG i = 0; i < mbcHeader->NumMethods; i++)
+    for (DWORD i = 0; i < mbcHeader->NumMethods; i++)
     {
         ProfileDataHashEntry newEntry;
         newEntry.pos = profileReader.GetCurrentPos();
@@ -3206,6 +3307,8 @@ HRESULT ZapImage::hashBBProfileData ()
         READ(methodHeader,CORBBTPROF_METHOD_HEADER);
         newEntry.md   = methodHeader->method.token;
         newEntry.size = methodHeader->size;
+        newEntry.flags = 0;
+        newEntry.status = NOT_COMPILED;
 
         // Add the new entry to the table
         profileDataHashTable.Add(newEntry);
@@ -3216,6 +3319,33 @@ HRESULT ZapImage::hashBBProfileData ()
     }
 
     return S_OK;
+}
+
+void ZapImage::hashBBUpdateFlagsAndCompileResult(mdToken token, unsigned methodProfilingDataFlags, ZapImage::CompileStatus compileResult)
+{
+    // SHash only supports replacing an entry so we setup our newEntry and then perform a lookup
+    //
+    ProfileDataHashEntry newEntry;
+    newEntry.md = token;
+    newEntry.flags = methodProfilingDataFlags;
+    newEntry.status = compileResult;
+
+    const ProfileDataHashEntry* pEntry = profileDataHashTable.LookupPtr(token);
+    if (pEntry != nullptr)
+    {
+        assert(pEntry->md == newEntry.md);
+        assert(pEntry->flags == 0);   // the flags should not be set at this point.
+
+        // Copy and keep the two fleids that were previously set
+        newEntry.size = pEntry->size;
+        newEntry.pos = pEntry->pos;
+    }
+    else // We have a method that doesn't have basic block counts
+    {
+        newEntry.size = 0;
+        newEntry.pos = 0;
+    }
+    profileDataHashTable.AddOrReplace(newEntry);
 }
 
 void ZapImage::LoadProfileData()
@@ -3235,7 +3365,7 @@ void ZapImage::LoadProfileData()
             hr = parseProfileData();
             if (hr == S_OK)
             {
-                hr = hashBBProfileData();
+                hr = hashMethodBlockCounts();
             }
         }
     }
@@ -3256,6 +3386,13 @@ void ZapImage::LoadProfileData()
             m_zapper->Warning(W("Warning: Invalid profile data was ignored for %s\n"), m_pModuleFileName);
         }
     }
+
+#ifdef CROSSGEN_COMPILE
+    if (m_zapper->m_pOpt->m_fPartialNGen && (m_pRawProfileData == NULL || m_cRawProfileData == 0))
+    {
+        ThrowHR(CLR_E_CROSSGEN_NO_IBC_DATA_FOUND);
+    }
+#endif
 }
 
 // Initializes our form of the profile data stored in the assembly.
@@ -3407,21 +3544,60 @@ void ZapImage::FileNotFoundError(LPCWSTR pszMessage)
     fileNotFoundErrorsTable.Append(message);
 }
 
-void ZapImage::Error(mdToken token, HRESULT hr, LPCWSTR message)
+void ZapImage::Error(mdToken token, HRESULT hr, UINT resID,  LPCWSTR message)
 {
     // Missing dependencies are reported as fatal errors in code:CompilationDomain::BindAssemblySpec.
     // Avoid printing redundant error message for them.
     if (FAILED(g_hrFatalError))
         ThrowHR(g_hrFatalError);
 
+    // COM introduces the notion of a vtable gap method, which is not a real method at all but instead
+    // aids in the explicit layout of COM interop vtables. These methods have no implementation and no
+    // direct runtime state tracking them. Trying to lookup a method handle for a vtable gap method will
+    // throw an exception but we choose to let that happen and filter out the warning here in the
+    // handler because (a) vtable gap methods are rare and (b) it's not all that cheap to identify them
+    // beforehand.
+    if ((TypeFromToken(token) == mdtMethodDef) && IsVTableGapMethod(token))
+    {
+        return;
+    }
+
     CorZapLogLevel level = CORZAP_LOGLEVEL_ERROR;
+
+    // Some warnings are demoted to informational level
+    if (resID == IDS_EE_SIMD_NGEN_DISALLOWED)
+    {
+        // Supress printing of "Target-dependent SIMD vector types may not be used with ngen."
+        level = CORZAP_LOGLEVEL_INFO;
+    }
+
+    if (resID == IDS_EE_HWINTRINSIC_NGEN_DISALLOWED)
+    {
+        // Supress printing of "Hardware intrinsics may not be used with ngen."
+        level = CORZAP_LOGLEVEL_INFO;
+    }
+
+#ifdef CROSSGEN_COMPILE
+    if ((resID == IDS_IBC_MISSING_EXTERNAL_TYPE) ||
+        (resID == IDS_IBC_MISSING_EXTERNAL_METHOD))
+    {
+        // Suppress printing IBC related warnings except in verbose mode.
+        if (m_zapper->m_pOpt->m_ignoreErrors && !m_zapper->m_pOpt->m_verbose)
+            return;
+
+        // Supress printing of "The generic type/method specified by the IBC data is not available to this assembly"
+        level = CORZAP_LOGLEVEL_INFO;
+    }   
+#endif        
 
     if (m_zapper->m_pOpt->m_ignoreErrors)
     {
 #ifdef CROSSGEN_COMPILE
         // Warnings should not go to stderr during crossgen
         if (level == CORZAP_LOGLEVEL_ERROR)
+        {
             level = CORZAP_LOGLEVEL_WARNING;
+        }
 #endif
         m_zapper->Print(level, W("Warning: "));
     }

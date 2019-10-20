@@ -64,12 +64,10 @@ inline void AccessCheckOptions::Initialize(
     BOOL                 throwIfTargetIsInaccessible,
     MethodTable *        pTargetMT,
     MethodDesc *         pTargetMethod, 
-    FieldDesc *          pTargetField,
-    BOOL                 skipCheckForCriticalCode /*=FALSE*/)
+    FieldDesc *          pTargetField)
 {
     CONTRACTL 
     {
-        SO_TOLERANT;
         THROWS;
         GC_TRIGGERS;
         MODE_ANY;
@@ -90,7 +88,6 @@ inline void AccessCheckOptions::Initialize(
     m_pTargetMT = pTargetMT;
     m_pTargetMethod = pTargetMethod; 
     m_pTargetField = pTargetField;
-    m_fSkipCheckForCriticalCode = skipCheckForCriticalCode;
 }
 
 //******************************************************************************

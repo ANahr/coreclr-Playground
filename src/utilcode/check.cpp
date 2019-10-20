@@ -30,19 +30,6 @@ DEBUG_NOINLINE BOOL CHECK::EnforceAssert_StaticCheckOnly()
 // Need a place to stick this, there is no contract.cpp...
 BOOL BaseContract::s_alwaysEnforceContracts = 1;
 
-
-void PAL_TryMarker::Enter()
-{
-    SCAN_SCOPE_BEGIN;
-    STATIC_CONTRACT_THROWS;
-};
-
-void PAL_TryMarker::Leave()
-{
-    SCAN_SCOPE_END;
-};
-
-
 #define SPECIALIZE_CONTRACT_VIOLATION_HOLDER(mask)                              \
 template<> void ContractViolationHolder<mask>::Enter()                          \
 {                                                                               \
@@ -75,7 +62,6 @@ SPECIALIZED_VIOLATION(GCViolation);
 SPECIALIZED_VIOLATION(ModeViolation);
 SPECIALIZED_VIOLATION(FaultViolation);
 SPECIALIZED_VIOLATION(FaultNotFatal);
-SPECIALIZED_VIOLATION(SOToleranceViolation);
 SPECIALIZED_VIOLATION(HostViolation);
 SPECIALIZED_VIOLATION(TakesLockViolation);
 SPECIALIZED_VIOLATION(LoadsTypeViolation);
@@ -85,26 +71,21 @@ SPECIALIZED_VIOLATION(LoadsTypeViolation);
 
 SPECIALIZED_VIOLATION(ThrowsViolation|GCViolation);
 SPECIALIZED_VIOLATION(ThrowsViolation|GCViolation|TakesLockViolation);
-SPECIALIZED_VIOLATION(ThrowsViolation|SOToleranceViolation);
 SPECIALIZED_VIOLATION(ThrowsViolation|ModeViolation);
 SPECIALIZED_VIOLATION(ThrowsViolation|FaultNotFatal);
 SPECIALIZED_VIOLATION(ThrowsViolation|FaultViolation);
 SPECIALIZED_VIOLATION(ThrowsViolation|TakesLockViolation);
-SPECIALIZED_VIOLATION(ThrowsViolation|FaultViolation|SOToleranceViolation);
 SPECIALIZED_VIOLATION(ThrowsViolation|FaultViolation|TakesLockViolation);
 SPECIALIZED_VIOLATION(ThrowsViolation|FaultViolation|GCViolation);
 SPECIALIZED_VIOLATION(ThrowsViolation|FaultViolation|GCViolation|TakesLockViolation|LoadsTypeViolation);
 SPECIALIZED_VIOLATION(ThrowsViolation|FaultViolation|GCViolation|ModeViolation);
 SPECIALIZED_VIOLATION(ThrowsViolation|FaultViolation|GCViolation|ModeViolation|FaultNotFatal);
 SPECIALIZED_VIOLATION(ThrowsViolation|FaultViolation|GCViolation|ModeViolation|FaultNotFatal|TakesLockViolation);
-SPECIALIZED_VIOLATION(GCViolation|SOToleranceViolation);
 SPECIALIZED_VIOLATION(GCViolation|FaultViolation);
-SPECIALIZED_VIOLATION(GCViolation|FaultViolation|SOToleranceViolation);
-SPECIALIZED_VIOLATION(GCViolation|FaultViolation|ModeViolation|SOToleranceViolation);
-SPECIALIZED_VIOLATION(GCViolation|ModeViolation|SOToleranceViolation);
-SPECIALIZED_VIOLATION(GCViolation|ModeViolation|SOToleranceViolation|FaultNotFatal);
-SPECIALIZED_VIOLATION(GCViolation|ModeViolation|SOToleranceViolation|FaultNotFatal|TakesLockViolation);
+SPECIALIZED_VIOLATION(GCViolation|FaultNotFatal|ModeViolation);
 SPECIALIZED_VIOLATION(GCViolation|FaultNotFatal|TakesLockViolation);
+SPECIALIZED_VIOLATION(GCViolation|FaultNotFatal|TakesLockViolation|ModeViolation);
+SPECIALIZED_VIOLATION(GCViolation|ModeViolation);
 SPECIALIZED_VIOLATION(FaultViolation|FaultNotFatal);
 SPECIALIZED_VIOLATION(FaultNotFatal|TakesLockViolation);
 
@@ -121,7 +102,6 @@ SPECIALIZED_VIOLATION(FaultNotFatal|TakesLockViolation);
 
 void CHECK::Trigger(LPCSTR reason) 
 {
-    STATIC_CONTRACT_SO_NOT_MAINLINE;
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
 
@@ -168,7 +148,6 @@ void CHECK::Trigger(LPCSTR reason)
 
 void CHECK::Setup(LPCSTR message, LPCSTR condition, LPCSTR file, INT line) 
 {
-    STATIC_CONTRACT_SO_NOT_MAINLINE;
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
     STATIC_CONTRACT_SUPPORTS_DAC_HOST_ONLY;
@@ -222,7 +201,6 @@ void CHECK::Setup(LPCSTR message, LPCSTR condition, LPCSTR file, INT line)
 
 LPCSTR CHECK::FormatMessage(LPCSTR messageFormat, ...)
 {
-    STATIC_CONTRACT_SO_NOT_MAINLINE;
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
 
@@ -279,7 +257,6 @@ LPCSTR CHECK::AllocateDynamicMessage(const SString &s)
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_SO_NOT_MAINLINE;
 
     // Make a copy of it.
     StackScratchBuffer buffer;

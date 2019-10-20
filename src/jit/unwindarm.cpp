@@ -16,6 +16,165 @@ XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 #pragma hdrstop
 #endif
 
+#if defined(_TARGET_ARM_) && defined(_TARGET_UNIX_)
+short Compiler::mapRegNumToDwarfReg(regNumber reg)
+{
+    short dwarfReg = DWARF_REG_ILLEGAL;
+
+    switch (reg)
+    {
+        case REG_R0:
+            dwarfReg = 0;
+            break;
+        case REG_R1:
+            dwarfReg = 1;
+            break;
+        case REG_R2:
+            dwarfReg = 2;
+            break;
+        case REG_R3:
+            dwarfReg = 3;
+            break;
+        case REG_R4:
+            dwarfReg = 4;
+            break;
+        case REG_R5:
+            dwarfReg = 5;
+            break;
+        case REG_R6:
+            dwarfReg = 6;
+            break;
+        case REG_R7:
+            dwarfReg = 7;
+            break;
+        case REG_R8:
+            dwarfReg = 8;
+            break;
+        case REG_R9:
+            dwarfReg = 9;
+            break;
+        case REG_R10:
+            dwarfReg = 10;
+            break;
+        case REG_R11:
+            dwarfReg = 11;
+            break;
+        case REG_R12:
+            dwarfReg = 12;
+            break;
+        case REG_R13:
+            dwarfReg = 13;
+            break;
+        case REG_R14:
+            dwarfReg = 14;
+            break;
+        case REG_R15:
+            dwarfReg = 15;
+            break;
+        case REG_F0:
+            dwarfReg = 64;
+            break;
+        case REG_F1:
+            dwarfReg = 65;
+            break;
+        case REG_F2:
+            dwarfReg = 66;
+            break;
+        case REG_F3:
+            dwarfReg = 67;
+            break;
+        case REG_F4:
+            dwarfReg = 68;
+            break;
+        case REG_F5:
+            dwarfReg = 69;
+            break;
+        case REG_F6:
+            dwarfReg = 70;
+            break;
+        case REG_F7:
+            dwarfReg = 71;
+            break;
+        case REG_F8:
+            dwarfReg = 72;
+            break;
+        case REG_F9:
+            dwarfReg = 73;
+            break;
+        case REG_F10:
+            dwarfReg = 74;
+            break;
+        case REG_F11:
+            dwarfReg = 75;
+            break;
+        case REG_F12:
+            dwarfReg = 76;
+            break;
+        case REG_F13:
+            dwarfReg = 77;
+            break;
+        case REG_F14:
+            dwarfReg = 78;
+            break;
+        case REG_F15:
+            dwarfReg = 79;
+            break;
+        case REG_F16:
+            dwarfReg = 80;
+            break;
+        case REG_F17:
+            dwarfReg = 81;
+            break;
+        case REG_F18:
+            dwarfReg = 82;
+            break;
+        case REG_F19:
+            dwarfReg = 83;
+            break;
+        case REG_F20:
+            dwarfReg = 84;
+            break;
+        case REG_F21:
+            dwarfReg = 85;
+            break;
+        case REG_F22:
+            dwarfReg = 86;
+            break;
+        case REG_F23:
+            dwarfReg = 87;
+            break;
+        case REG_F24:
+            dwarfReg = 88;
+            break;
+        case REG_F25:
+            dwarfReg = 89;
+            break;
+        case REG_F26:
+            dwarfReg = 90;
+            break;
+        case REG_F27:
+            dwarfReg = 91;
+            break;
+        case REG_F28:
+            dwarfReg = 92;
+            break;
+        case REG_F29:
+            dwarfReg = 93;
+            break;
+        case REG_F30:
+            dwarfReg = 94;
+            break;
+        case REG_F31:
+            dwarfReg = 95;
+            break;
+        default:
+            noway_assert(!"unexpected REG_NUM");
+    }
+
+    return dwarfReg;
+}
+#endif // _TARGET_ARM_ && _TARGET_UNIX_
+
 #ifdef _TARGET_ARMARCH_
 
 /*XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
@@ -30,6 +189,14 @@ XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 void Compiler::unwindBegProlog()
 {
     assert(compGeneratingProlog);
+
+#if defined(_TARGET_UNIX_)
+    if (generateCFIUnwindCodes())
+    {
+        unwindBegPrologCFI();
+        return;
+    }
+#endif // _TARGET_UNIX_
 
     FuncInfoDsc* func = funCurrentFunc();
 
@@ -54,6 +221,14 @@ void Compiler::unwindEndProlog()
 void Compiler::unwindBegEpilog()
 {
     assert(compGeneratingEpilog);
+
+#if defined(_TARGET_UNIX_)
+    if (generateCFIUnwindCodes())
+    {
+        return;
+    }
+#endif // _TARGET_UNIX_
+
     funCurrentFunc()->uwi.AddEpilog();
 }
 
@@ -193,6 +368,19 @@ void Compiler::unwindPushMaskInt(regMaskTP maskInt)
             ~(RBM_R0 | RBM_R1 | RBM_R2 | RBM_R3 | RBM_R4 | RBM_R5 | RBM_R6 | RBM_R7 | RBM_R8 | RBM_R9 | RBM_R10 |
               RBM_R11 | RBM_R12 | RBM_LR)) == 0);
 
+#if defined(_TARGET_UNIX_)
+    if (generateCFIUnwindCodes())
+    {
+        // If we are pushing LR, we should give unwind codes in terms of caller's PC
+        if (maskInt & RBM_LR)
+        {
+            maskInt = (maskInt & ~RBM_LR) | RBM_PC;
+        }
+        unwindPushPopMaskCFI(maskInt, false);
+        return;
+    }
+#endif // _TARGET_UNIX_
+
     bool useOpsize16 = ((maskInt & (RBM_LOW_REGS | RBM_LR)) == maskInt); // Can PUSH use the 16-bit encoding?
     unwindPushPopMaskInt(maskInt, useOpsize16);
 }
@@ -201,11 +389,27 @@ void Compiler::unwindPushMaskFloat(regMaskTP maskFloat)
 {
     // Only floating point registers should be in maskFloat
     assert((maskFloat & RBM_ALLFLOAT) == maskFloat);
+
+#if defined(_TARGET_UNIX_)
+    if (generateCFIUnwindCodes())
+    {
+        unwindPushPopMaskCFI(maskFloat, true);
+        return;
+    }
+#endif // _TARGET_UNIX_
+
     unwindPushPopMaskFloat(maskFloat);
 }
 
 void Compiler::unwindPopMaskInt(regMaskTP maskInt)
 {
+#if defined(_TARGET_UNIX_)
+    if (generateCFIUnwindCodes())
+    {
+        return;
+    }
+#endif // _TARGET_UNIX_
+
     // Only r0-r12 and lr and pc are supported (pc is mapped to lr when encoding)
     assert((maskInt &
             ~(RBM_R0 | RBM_R1 | RBM_R2 | RBM_R3 | RBM_R4 | RBM_R5 | RBM_R6 | RBM_R7 | RBM_R8 | RBM_R9 | RBM_R10 |
@@ -227,6 +431,13 @@ void Compiler::unwindPopMaskInt(regMaskTP maskInt)
 
 void Compiler::unwindPopMaskFloat(regMaskTP maskFloat)
 {
+#if defined(_TARGET_UNIX_)
+    if (generateCFIUnwindCodes())
+    {
+        return;
+    }
+#endif // _TARGET_UNIX_
+
     // Only floating point registers should be in maskFloat
     assert((maskFloat & RBM_ALLFLOAT) == maskFloat);
     unwindPushPopMaskFloat(maskFloat);
@@ -234,6 +445,17 @@ void Compiler::unwindPopMaskFloat(regMaskTP maskFloat)
 
 void Compiler::unwindAllocStack(unsigned size)
 {
+#if defined(_TARGET_UNIX_)
+    if (generateCFIUnwindCodes())
+    {
+        if (compGeneratingProlog)
+        {
+            unwindAllocStackCFI(size);
+        }
+        return;
+    }
+#endif // _TARGET_UNIX_
+
     UnwindInfo* pu = &funCurrentFunc()->uwi;
 
     assert(size % 4 == 0);
@@ -277,6 +499,17 @@ void Compiler::unwindAllocStack(unsigned size)
 
 void Compiler::unwindSetFrameReg(regNumber reg, unsigned offset)
 {
+#if defined(_TARGET_UNIX_)
+    if (generateCFIUnwindCodes())
+    {
+        if (compGeneratingProlog)
+        {
+            unwindSetFrameRegCFI(reg, offset);
+        }
+        return;
+    }
+#endif // _TARGET_UNIX_
+
     UnwindInfo* pu = &funCurrentFunc()->uwi;
 
     // Arm unwind info does not allow offset
@@ -294,6 +527,13 @@ void Compiler::unwindSaveReg(regNumber reg, unsigned offset)
 
 void Compiler::unwindBranch16()
 {
+#if defined(_TARGET_UNIX_)
+    if (generateCFIUnwindCodes())
+    {
+        return;
+    }
+#endif // _TARGET_UNIX_
+
     UnwindInfo* pu = &funCurrentFunc()->uwi;
 
     // TODO-CQ: need to handle changing the exit code from 0xFF to 0xFD. Currently, this will waste an extra 0xFF at the
@@ -303,6 +543,13 @@ void Compiler::unwindBranch16()
 
 void Compiler::unwindNop(unsigned codeSizeInBytes) // codeSizeInBytes is 2 or 4 bytes for Thumb2 instruction
 {
+#if defined(_TARGET_UNIX_)
+    if (generateCFIUnwindCodes())
+    {
+        return;
+    }
+#endif // _TARGET_UNIX_
+
     UnwindInfo* pu = &funCurrentFunc()->uwi;
 
 #ifdef DEBUG
@@ -337,14 +584,24 @@ void Compiler::unwindNop(unsigned codeSizeInBytes) // codeSizeInBytes is 2 or 4 
 // for them.
 void Compiler::unwindPadding()
 {
+#if defined(_TARGET_UNIX_)
+    if (generateCFIUnwindCodes())
+    {
+        return;
+    }
+#endif // _TARGET_UNIX_
+
     UnwindInfo* pu = &funCurrentFunc()->uwi;
-    genEmitter->emitUnwindNopPadding(pu->GetCurrentEmitterLocation(), this);
+    GetEmitter()->emitUnwindNopPadding(pu->GetCurrentEmitterLocation(), this);
 }
 
 // Ask the VM to reserve space for the unwind information for the function and
 // all its funclets.
 void Compiler::unwindReserve()
 {
+    assert(!compGeneratingProlog);
+    assert(!compGeneratingEpilog);
+
     assert(compFuncInfoCount > 0);
     for (unsigned funcIdx = 0; funcIdx < compFuncInfoCount; funcIdx++)
     {
@@ -356,6 +613,21 @@ void Compiler::unwindReserveFunc(FuncInfoDsc* func)
 {
     BOOL isFunclet          = (func->funKind == FUNC_ROOT) ? FALSE : TRUE;
     bool funcHasColdSection = false;
+
+#if defined(_TARGET_UNIX_)
+    if (generateCFIUnwindCodes())
+    {
+        DWORD unwindCodeBytes = 0;
+        if (fgFirstColdBlock != nullptr)
+        {
+            eeReserveUnwindInfo(isFunclet, true /*isColdCode*/, unwindCodeBytes);
+        }
+        unwindCodeBytes = (DWORD)(func->cfiCodes->size() * sizeof(CFI_CODE));
+        eeReserveUnwindInfo(isFunclet, false /*isColdCode*/, unwindCodeBytes);
+
+        return;
+    }
+#endif // _TARGET_UNIX_
 
     // If there is cold code, split the unwind data between the hot section and the
     // cold section. This needs to be done before we split into fragments, as each
@@ -414,6 +686,14 @@ void Compiler::unwindEmitFunc(FuncInfoDsc* func, void* pHotCode, void* pColdCode
     static_assert_no_msg(FUNC_ROOT == (FuncKind)CORJIT_FUNC_ROOT);
     static_assert_no_msg(FUNC_HANDLER == (FuncKind)CORJIT_FUNC_HANDLER);
     static_assert_no_msg(FUNC_FILTER == (FuncKind)CORJIT_FUNC_FILTER);
+
+#if defined(_TARGET_UNIX_)
+    if (generateCFIUnwindCodes())
+    {
+        unwindEmitFuncCFI(func, pHotCode, pColdCode);
+        return;
+    }
+#endif // _TARGET_UNIX_
 
     func->uwi.Allocate((CorJitFuncKind)func->funKind, pHotCode, pColdCode, true);
 
@@ -862,12 +1142,12 @@ void UnwindEpilogInfo::CaptureEmitLocation()
 {
     noway_assert(epiEmitLocation == NULL); // This function is only called once per epilog
     epiEmitLocation = new (uwiComp, CMK_UnwindInfo) emitLocation();
-    epiEmitLocation->CaptureLocation(uwiComp->genEmitter);
+    epiEmitLocation->CaptureLocation(uwiComp->GetEmitter());
 }
 
 void UnwindEpilogInfo::FinalizeOffset()
 {
-    epiStartOffset = epiEmitLocation->CodeOffset(uwiComp->genEmitter);
+    epiStartOffset = epiEmitLocation->CodeOffset(uwiComp->GetEmitter());
 }
 
 #ifdef DEBUG
@@ -920,7 +1200,7 @@ void UnwindFragmentInfo::FinalizeOffset()
     }
     else
     {
-        ufiStartOffset = ufiEmitLoc->CodeOffset(uwiComp->genEmitter);
+        ufiStartOffset = ufiEmitLoc->CodeOffset(uwiComp->GetEmitter());
     }
 
     for (UnwindEpilogInfo* pEpi = ufiEpilogList; pEpi != NULL; pEpi = pEpi->epiNext)
@@ -1001,7 +1281,7 @@ void UnwindFragmentInfo::SplitEpilogCodes(emitLocation* emitLoc, UnwindFragmentI
     UnwindEpilogInfo* pEpiPrev;
     UnwindEpilogInfo* pEpi;
 
-    UNATIVE_OFFSET splitOffset = emitLoc->CodeOffset(uwiComp->genEmitter);
+    UNATIVE_OFFSET splitOffset = emitLoc->CodeOffset(uwiComp->GetEmitter());
 
     for (pEpiPrev = NULL, pEpi = pSplitFrom->ufiEpilogList; pEpi != NULL; pEpiPrev = pEpi, pEpi = pEpi->epiNext)
     {
@@ -1043,7 +1323,7 @@ void UnwindFragmentInfo::SplitEpilogCodes(emitLocation* emitLoc, UnwindFragmentI
 
 bool UnwindFragmentInfo::IsAtFragmentEnd(UnwindEpilogInfo* pEpi)
 {
-    return uwiComp->genEmitter->emitIsFuncEnd(pEpi->epiEmitLocation, (ufiNext == NULL) ? NULL : ufiNext->ufiEmitLoc);
+    return uwiComp->GetEmitter()->emitIsFuncEnd(pEpi->epiEmitLocation, (ufiNext == NULL) ? NULL : ufiNext->ufiEmitLoc);
 }
 
 // Merge the unwind codes as much as possible.
@@ -1500,7 +1780,7 @@ void UnwindInfo::InitUnwindInfo(Compiler* comp, emitLocation* startLoc, emitLoca
     // However, its constructor needs to be explicitly called, since the constructor for
     // UnwindInfo is not called.
 
-    uwiFragmentFirst.UnwindFragmentInfo::UnwindFragmentInfo(comp, startLoc, false);
+    new (&uwiFragmentFirst, jitstd::placement_t()) UnwindFragmentInfo(comp, startLoc, false);
 
     uwiFragmentLast = &uwiFragmentFirst;
 
@@ -1589,7 +1869,7 @@ void UnwindInfo::Split()
     }
     else
     {
-        startOffset = uwiFragmentLast->ufiEmitLoc->CodeOffset(uwiComp->genEmitter);
+        startOffset = uwiFragmentLast->ufiEmitLoc->CodeOffset(uwiComp->GetEmitter());
     }
 
     if (uwiEndLoc == NULL)
@@ -1606,7 +1886,7 @@ void UnwindInfo::Split()
     }
     else
     {
-        endOffset = uwiEndLoc->CodeOffset(uwiComp->genEmitter);
+        endOffset = uwiEndLoc->CodeOffset(uwiComp->GetEmitter());
     }
 
     assert(endOffset > startOffset); // there better be at least 1 byte of code
@@ -1641,8 +1921,8 @@ void UnwindInfo::Split()
 #endif // DEBUG
 
     // Call the emitter to do the split, and call us back for every split point it chooses.
-    uwiComp->genEmitter->emitSplit(uwiFragmentLast->ufiEmitLoc, uwiEndLoc, maxFragmentSize, (void*)this,
-                                   EmitSplitCallback);
+    uwiComp->GetEmitter()->emitSplit(uwiFragmentLast->ufiEmitLoc, uwiEndLoc, maxFragmentSize, (void*)this,
+                                     EmitSplitCallback);
 
 #ifdef DEBUG
     // Did the emitter split the function/funclet into as many fragments as we asked for?
@@ -1710,7 +1990,7 @@ void UnwindInfo::Allocate(CorJitFuncKind funKind, void* pHotCode, void* pColdCod
     }
     else
     {
-        endOffset = uwiEndLoc->CodeOffset(uwiComp->genEmitter);
+        endOffset = uwiEndLoc->CodeOffset(uwiComp->GetEmitter());
     }
 
     for (pFrag = &uwiFragmentFirst; pFrag != NULL; pFrag = pFrag->ufiNext)
@@ -1737,7 +2017,7 @@ void UnwindInfo::AddEpilog()
 unsigned UnwindInfo::GetInstructionSize()
 {
     assert(uwiInitialized == UWI_INITIALIZED_PATTERN);
-    return uwiComp->genEmitter->emitGetInstructionSize(uwiCurLoc);
+    return uwiComp->GetEmitter()->emitGetInstructionSize(uwiCurLoc);
 }
 
 #endif // defined(_TARGET_ARM_)
@@ -1746,7 +2026,7 @@ void UnwindInfo::CaptureLocation()
 {
     assert(uwiInitialized == UWI_INITIALIZED_PATTERN);
     assert(uwiCurLoc != NULL);
-    uwiCurLoc->CaptureLocation(uwiComp->genEmitter);
+    uwiCurLoc->CaptureLocation(uwiComp->GetEmitter());
 }
 
 void UnwindInfo::AddFragment(emitLocation* emitLoc)
@@ -1889,7 +2169,7 @@ DWORD DumpRegSetRange(const char* const rtype, DWORD start, DWORD end, DWORD lr)
 {
     assert(start <= end);
     DWORD printed  = 0;
-    DWORD rtypeLen = strlen(rtype);
+    DWORD rtypeLen = (DWORD)strlen(rtype);
 
     printf("{");
     ++printed;
@@ -2039,7 +2319,7 @@ void DumpUnwindInfo(Compiler*         comp,
     else
     {
         printf("  --- One epilog, unwind codes at %u\n", epilogCount);
-        assert(epilogCount < sizeof(epilogStartAt) / sizeof(epilogStartAt[0]));
+        assert(epilogCount < _countof(epilogStartAt));
         epilogStartAt[epilogCount] = true; // the one and only epilog starts its unwind codes at this offset
     }
 

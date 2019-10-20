@@ -54,7 +54,7 @@ public:
 };
 
 // Helper to allocate stackwalk datastructures for given parameters.
-// This is allocated on the local heap (and not via the forDbi allocatoror on the dac-cache), and then 
+// This is allocated on the local heap (and not via the forDbi allocator on the dac-cache), and then 
 // freed via code:DacDbiInterfaceImpl::DeleteStackWalk
 // 
 // Throws on error (mainly OOM).
@@ -505,12 +505,9 @@ void DacDbiInterfaceImpl::EnumerateInternalFrames(VMPTR_Thread                  
                         PTR_IUnknown pUnk          = dac_cast<PTR_IUnknown>(*dac_cast<PTR_TADDR>(pUnkStackSlot));
                         ComCallWrapper * pCCW      = ComCallWrapper::GetWrapperFromIP(pUnk);
 
-                        if (!pCCW->NeedToSwitchDomains(pAppDomain->GetId()))
-                        {
-                            ComCallMethodDesc * pCMD = NULL;
-                            pCMD = dac_cast<PTR_ComCallMethodDesc>(pCOMFrame->ComMethodFrame::GetDatum());
-                            pMD  = pCMD->GetInterfaceMethodDesc();
-                        }
+                        ComCallMethodDesc * pCMD = NULL;
+                        pCMD = dac_cast<PTR_ComCallMethodDesc>(pCOMFrame->ComMethodFrame::GetDatum());
+                        pMD  = pCMD->GetInterfaceMethodDesc();
                     }
                 }
                 EX_END_CATCH_ALLOW_DATATARGET_MISSING_MEMORY
@@ -518,7 +515,7 @@ void DacDbiInterfaceImpl::EnumerateInternalFrames(VMPTR_Thread                  
 #endif // FEATURE_COMINTEROP
 
             Module *     pModule = (pMD ? pMD->GetModule() : NULL);
-            DomainFile * pDomainFile = (pModule ? pModule->GetDomainFile(pAppDomain) : NULL);
+            DomainFile * pDomainFile = (pModule ? pModule->GetDomainFile() : NULL);
 
             if (frameData.stubFrame.frameType == STUBFRAME_FUNC_EVAL)
             {
@@ -559,7 +556,7 @@ BOOL DacDbiInterfaceImpl::IsMatchingParentFrame(FramePointer fpToCheck, FramePoi
 {
     DD_ENTER_MAY_THROW;
 
-#ifdef WIN64EXCEPTIONS
+#ifdef FEATURE_EH_FUNCLETS
     StackFrame sfToCheck = StackFrame((UINT_PTR)fpToCheck.GetSPValue());
 
     StackFrame sfParent  = StackFrame((UINT_PTR)fpParent.GetSPValue());
@@ -568,10 +565,10 @@ BOOL DacDbiInterfaceImpl::IsMatchingParentFrame(FramePointer fpToCheck, FramePoi
     // Don't try to compare the StackFrames/FramePointers ourselves.
     return ExceptionTracker::IsUnwoundToTargetParentFrame(sfToCheck, sfParent); 
 
-#else // !WIN64EXCEPTIONS
+#else // !FEATURE_EH_FUNCLETS
     return FALSE;
 
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 }
 
 // Return the stack parameter size of the given method.
@@ -717,7 +714,7 @@ void DacDbiInterfaceImpl::InitFrameData(StackFrameIterator *   pIter,
         DomainFile *pDomainFile = NULL;
         EX_TRY_ALLOW_DATATARGET_MISSING_MEMORY
         {
-            pDomainFile = (pModule ? pModule->GetDomainFile(pAppDomain) : NULL);
+            pDomainFile = (pModule ? pModule->GetDomainFile() : NULL);
             _ASSERTE(pDomainFile != NULL);
         }
         EX_END_CATCH_ALLOW_DATATARGET_MISSING_MEMORY
@@ -910,7 +907,7 @@ void DacDbiInterfaceImpl::InitNativeCodeAddrAndSize(TADDR                      t
 void DacDbiInterfaceImpl::InitParentFrameInfo(CrawlFrame * pCF,
                                               DebuggerIPCE_JITFuncData * pJITFuncData)
 {
-#ifdef WIN64EXCEPTIONS
+#ifdef FEATURE_EH_FUNCLETS
     pJITFuncData->fIsFilterFrame = pCF->IsFilterFunclet();
 
     if (pCF->IsFunclet())
@@ -940,7 +937,7 @@ void DacDbiInterfaceImpl::InitParentFrameInfo(CrawlFrame * pCF,
         pJITFuncData->fpParentOrSelf = FramePointer::MakeFramePointer(sfSelf.SP);
         pJITFuncData->parentNativeOffset = 0;
     }
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 }
 
 // Return the stack parameter size of the given method.
@@ -1152,7 +1149,7 @@ CorDebugInternalFrameType DacDbiInterfaceImpl::GetInternalFrameType(Frame * pFra
 void DacDbiInterfaceImpl::UpdateContextFromRegDisp(REGDISPLAY * pRegDisp,
                                                    T_CONTEXT *  pContext)
 {
-#if defined(_TARGET_X86_)
+#if defined(_TARGET_X86_) && !defined(FEATURE_EH_FUNCLETS)
     // Do a partial copy first.
     pContext->ContextFlags = (CONTEXT_INTEGER | CONTEXT_CONTROL);
 
@@ -1174,9 +1171,9 @@ void DacDbiInterfaceImpl::UpdateContextFromRegDisp(REGDISPLAY * pRegDisp,
     {
         *pContext = *pRegDisp->pContext;
     }
-#else
+#else // _TARGET_X86_ && !FEATURE_EH_FUNCLETS
     *pContext = *pRegDisp->pCurrentContext;
-#endif
+#endif // !_TARGET_X86_ || FEATURE_EH_FUNCLETS
 }
 
 //---------------------------------------------------------------------------------------

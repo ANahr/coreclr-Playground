@@ -27,6 +27,10 @@ EXTERN  g_lowest_address:QWORD
 EXTERN  g_highest_address:QWORD
 EXTERN  g_card_table:QWORD
 
+ifdef FEATURE_MANUALLY_MANAGED_CARD_BUNDLES
+EXTERN g_card_bundle_table:QWORD
+endif
+
 ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
 EXTERN  g_sw_ww_table:QWORD
 EXTERN  g_sw_ww_enabled_for_gc_heap:BYTE
@@ -524,6 +528,16 @@ ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
 
     UpdateCardTable:
         mov     byte ptr [rcx + rax], 0FFh
+ifdef FEATURE_MANUALLY_MANAGED_CARD_BUNDLES
+        mov     rax, 0F0F0F0F0F0F0F0F0h
+        shr     rcx, 0Ah
+        cmp     byte ptr [rcx + rax], 0FFh
+        jne     UpdateCardBundleTable
+        REPRET
+
+    UpdateCardBundleTable:
+        mov     byte ptr [rcx + rax], 0FFh
+endif
         ret
 
     align 16
@@ -571,6 +585,16 @@ else
 
     UpdateCardTable:
         mov     byte ptr [rcx + rax], 0FFh
+ifdef FEATURE_MANUALLY_MANAGED_CARD_BUNDLES
+        mov     rax, 0F0F0F0F0F0F0F0F0h
+        shr     rcx, 0Ah
+        cmp     byte ptr [rcx + rax], 0FFh
+        jne     UpdateCardBundleTable
+        REPRET
+
+    UpdateCardBundleTable:
+        mov     byte ptr [rcx + rax], 0FFh
+endif
         ret
 
     align 16
@@ -582,58 +606,6 @@ endif
     align 16
         nop
 LEAF_END_MARKED JIT_WriteBarrier, _TEXT
-
-ifndef FEATURE_IMPLICIT_TLS
-LEAF_ENTRY GetThread, _TEXT
-        ; the default implementation will just jump to one that returns null until 
-        ; MakeOptimizedTlsGetter is run which will overwrite this with the actual 
-        ; implementation.
-        jmp short GetTLSDummy
-
-        ;
-        ; insert enough NOPS to be able to insert the largest optimized TLS getter 
-        ; that we might need, it is important that the TLS getter doesn't overwrite
-        ; into the dummy getter.
-        ;
-        db (TLS_GETTER_MAX_SIZE_ASM - 2) DUP (0CCh)
-
-LEAF_END GetThread, _TEXT
-
-LEAF_ENTRY GetAppDomain, _TEXT
-        ; the default implementation will just jump to one that returns null until 
-        ; MakeOptimizedTlsGetter is run which will overwrite this with the actual 
-        ; implementation.
-        jmp short GetTLSDummy
-
-        ;
-        ; insert enough NOPS to be able to insert the largest optimized TLS getter 
-        ; that we might need, it is important that the TLS getter doesn't overwrite
-        ; into the dummy getter.
-        ;
-        db (TLS_GETTER_MAX_SIZE_ASM - 2) DUP (0CCh)
-
-LEAF_END GetAppDomain, _TEXT
-
-LEAF_ENTRY GetTLSDummy, _TEXT
-        xor    rax, rax
-        ret
-LEAF_END GetTLSDummy, _TEXT
-
-LEAF_ENTRY ClrFlsGetBlock, _TEXT
-        ; the default implementation will just jump to one that returns null until 
-        ; MakeOptimizedTlsGetter is run which will overwrite this with the actual 
-        ; implementation.
-        jmp short GetTLSDummy
-
-        ;
-        ; insert enough NOPS to be able to insert the largest optimized TLS getter 
-        ; that we might need, it is important that the TLS getter doesn't overwrite
-        ; into the dummy getter.
-        ;
-        db (TLS_GETTER_MAX_SIZE_ASM - 2) DUP (0CCh)
-
-LEAF_END ClrFlsGetBlock, _TEXT
-endif
 
 ; Mark start of the code region that we patch at runtime
 LEAF_ENTRY JIT_PatchedCodeLast, _TEXT
@@ -758,6 +730,19 @@ endif
 
     UpdateCardTable:
         mov     byte ptr [rcx], 0FFh
+ifdef FEATURE_MANUALLY_MANAGED_CARD_BUNDLES
+        ; check if we need to update the card bundle table
+        ; restore destination address from rdi - rdi has been incremented by 8 already
+        lea     rcx, [rdi-8]
+        shr     rcx, 15h
+        add     rcx, [g_card_bundle_table]
+        cmp     byte ptr [rcx], 0FFh
+        jne     UpdateCardBundleTable
+        REPRET
+
+    UpdateCardBundleTable:
+        mov     byte ptr [rcx], 0FFh
+endif
         ret
 
     align 16
@@ -774,7 +759,7 @@ endif
         add     rdi, 8h
         add     rsi, 8h
         ret
-LEAF_END JIT_ByRefWriteBarrier, _TEXT
+LEAF_END_MARKED JIT_ByRefWriteBarrier, _TEXT
 
 
 g_pObjectClass      equ     ?g_pObjectClass@@3PEAVMethodTable@@EA
@@ -805,22 +790,6 @@ LEAF_ENTRY JIT_Stelem_Ref, _TEXT
         ; if we're assigning a null object* then we don't need a write barrier
         test    r8, r8
         jz      AssigningNull
-
-ifdef CHECK_APP_DOMAIN_LEAKS
-        ; get Array TypeHandle
-        mov     r9, [r10 + OFFSETOF__MethodTable__m_ElementType]   ; 10h -> typehandle offset
-        ; check for non-MT
-        test    r9, 2
-        jnz     NoCheck
-
-        ; Check VMflags of element type
-        mov     r9, [r9 + OFFSETOF__MethodTable__m_pEEClass]
-        mov     r9d, dword ptr [r9 + OFFSETOF__EEClass__m_wAuxFlags]
-        test    r9d, EEClassFlags
-        jnz     ArrayStoreCheck_Helper
-
-    NoCheck:
-endif
 
         mov     r9, [r10 + OFFSETOF__MethodTable__m_ElementType]   ; 10h -> typehandle offset
 
@@ -986,12 +955,11 @@ if 0 ne 0
         ;
         ; link the TailCallFrame
         ;
-        CALL_GETTHREAD
-        mov     r14, rax
-        mov     r15, [rax + OFFSETOF__Thread__m_pFrame]        
+        INLINE_GETTHREAD r14
+        mov     r15, [r14 + OFFSETOF__Thread__m_pFrame]        
         mov     [r13 + OFFSETOF_FRAME + OFFSETOF__Frame__m_Next], r15
         lea     r10, [r13 + OFFSETOF_FRAME]
-        mov     [rax + OFFSETOF__Thread__m_pFrame], r10
+        mov     [r14 + OFFSETOF__Thread__m_pFrame], r10
 endif
 
         ; the pretend call would be here
@@ -1024,5 +992,37 @@ endif ; _DEBUG
 
 NESTED_END TailCallHelperStub, _TEXT
 
-        end
+; The following helper will access ("probe") a word on each page of the stack
+; starting with the page right beneath rsp down to the one pointed to by r11.
+; The procedure is needed to make sure that the "guard" page is pushed down below the allocated stack frame.
+; The call to the helper will be emitted by JIT in the function/funclet prolog when large (larger than 0x3000 bytes) stack frame is required.
+;
+; NOTE: this helper will NOT modify a value of rsp and can be defined as a leaf function.
 
+PAGE_SIZE equ 1000h
+
+LEAF_ENTRY JIT_StackProbe, _TEXT
+        ; On entry:
+        ;   r11 - points to the lowest address on the stack frame being allocated (i.e. [InitialSp - FrameSize])
+        ;   rsp - points to some byte on the last probed page
+        ; On exit:
+        ;   rax - is not preserved
+        ;   r11 - is preserved
+        ;
+        ; NOTE: this helper will probe at least one page below the one pointed by rsp.
+
+        mov     rax, rsp               ; rax points to some byte on the last probed page
+        and     rax, -PAGE_SIZE        ; rax points to the **lowest address** on the last probed page
+                                       ; This is done to make the following loop end condition simpler.
+
+ProbeLoop:
+        sub     rax, PAGE_SIZE         ; rax points to the lowest address of the **next page** to probe
+        test    dword ptr [rax], eax   ; rax points to the lowest address on the **last probed** page
+        cmp     rax, r11
+        jg      ProbeLoop              ; If (rax > r11), then we need to probe at least one more page.
+
+        ret
+
+LEAF_END JIT_StackProbe, _TEXT
+
+        end

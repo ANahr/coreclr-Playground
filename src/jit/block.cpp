@@ -16,6 +16,19 @@ XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 #pragma hdrstop
 #endif
 
+#if MEASURE_BLOCK_SIZE
+/* static  */
+size_t BasicBlock::s_Size;
+/* static */
+size_t BasicBlock::s_Count;
+#endif // MEASURE_BLOCK_SIZE
+
+#ifdef DEBUG
+// The max # of tree nodes in any BB
+/* static */
+unsigned BasicBlock::s_nMaxTrees;
+#endif // DEBUG
+
 #ifdef DEBUG
 flowList* ShuffleHelper(unsigned hash, flowList* res)
 {
@@ -51,12 +64,8 @@ unsigned SsaStressHashHelper()
 }
 #endif
 
-EHSuccessorIter::EHSuccessorIter(Compiler* comp, BasicBlock* block)
-    : m_comp(comp)
-    , m_block(block)
-    , m_curRegSucc(nullptr)
-    , m_curTry(comp->ehGetBlockExnFlowDsc(block))
-    , m_remainingRegSuccs(block->NumSucc(comp))
+EHSuccessorIterPosition::EHSuccessorIterPosition(Compiler* comp, BasicBlock* block)
+    : m_remainingRegSuccs(block->NumSucc(comp)), m_curRegSucc(nullptr), m_curTry(comp->ehGetBlockExnFlowDsc(block))
 {
     // If "block" is a "leave helper" block (the empty BBJ_ALWAYS block that pairs with a
     // preceding BBJ_CALLFINALLY block to implement a "leave" IL instruction), then no exceptions
@@ -73,11 +82,11 @@ EHSuccessorIter::EHSuccessorIter(Compiler* comp, BasicBlock* block)
     if (m_curTry == nullptr && m_remainingRegSuccs > 0)
     {
         // Examine the successors to see if any are the start of try blocks.
-        FindNextRegSuccTry();
+        FindNextRegSuccTry(comp, block);
     }
 }
 
-void EHSuccessorIter::FindNextRegSuccTry()
+void EHSuccessorIterPosition::FindNextRegSuccTry(Compiler* comp, BasicBlock* block)
 {
     assert(m_curTry == nullptr);
 
@@ -85,32 +94,32 @@ void EHSuccessorIter::FindNextRegSuccTry()
     while (m_remainingRegSuccs > 0)
     {
         m_remainingRegSuccs--;
-        m_curRegSucc = m_block->GetSucc(m_remainingRegSuccs, m_comp);
-        if (m_comp->bbIsTryBeg(m_curRegSucc))
+        m_curRegSucc = block->GetSucc(m_remainingRegSuccs, comp);
+        if (comp->bbIsTryBeg(m_curRegSucc))
         {
             assert(m_curRegSucc->hasTryIndex()); // Since it is a try begin.
             unsigned newTryIndex = m_curRegSucc->getTryIndex();
 
             // If the try region started by "m_curRegSucc" (represented by newTryIndex) contains m_block,
             // we've already yielded its handler, as one of the EH handler successors of m_block itself.
-            if (m_comp->bbInExnFlowRegions(newTryIndex, m_block))
+            if (comp->bbInExnFlowRegions(newTryIndex, block))
             {
                 continue;
             }
 
             // Otherwise, consider this try.
-            m_curTry = m_comp->ehGetDsc(newTryIndex);
+            m_curTry = comp->ehGetDsc(newTryIndex);
             break;
         }
     }
 }
 
-void EHSuccessorIter::operator++(void)
+void EHSuccessorIterPosition::Advance(Compiler* comp, BasicBlock* block)
 {
     assert(m_curTry != nullptr);
     if (m_curTry->ebdEnclosingTryIndex != EHblkDsc::NO_ENCLOSING_INDEX)
     {
-        m_curTry = m_comp->ehGetDsc(m_curTry->ebdEnclosingTryIndex);
+        m_curTry = comp->ehGetDsc(m_curTry->ebdEnclosingTryIndex);
 
         // If we've gone over into considering try's containing successors,
         // then the enclosing try must have the successor as its first block.
@@ -129,10 +138,10 @@ void EHSuccessorIter::operator++(void)
 
     // We've exhausted all try blocks.
     // See if there are any remaining regular successors that start try blocks.
-    FindNextRegSuccTry();
+    FindNextRegSuccTry(comp, block);
 }
 
-BasicBlock* EHSuccessorIter::operator*()
+BasicBlock* EHSuccessorIterPosition::Current(Compiler* comp, BasicBlock* block)
 {
     assert(m_curTry != nullptr);
     return m_curTry->ExFlowBlock();
@@ -206,7 +215,7 @@ flowList* Compiler::BlockPredsWithEH(BasicBlock* blk)
 //------------------------------------------------------------------------
 // dspBlockILRange(): Display the block's IL range as [XXX...YYY), where XXX and YYY might be "???" for BAD_IL_OFFSET.
 //
-void BasicBlock::dspBlockILRange()
+void BasicBlock::dspBlockILRange() const
 {
     if (bbCodeOffs != BAD_IL_OFFSET)
     {
@@ -324,12 +333,12 @@ void BasicBlock::dspFlags()
     {
         printf("newobj ");
     }
-#if FEATURE_EH_FUNCLETS && defined(_TARGET_ARM_)
+#if defined(FEATURE_EH_FUNCLETS) && defined(_TARGET_ARM_)
     if (bbFlags & BBF_FINALLY_TARGET)
     {
         printf("ftarget ");
     }
-#endif // FEATURE_EH_FUNCLETS && defined(_TARGET_ARM_)
+#endif // defined(FEATURE_EH_FUNCLETS) && defined(_TARGET_ARM_)
     if (bbFlags & BBF_BACKWARD_JUMP)
     {
         printf("bwd ");
@@ -350,17 +359,10 @@ void BasicBlock::dspFlags()
     {
         printf("IBC ");
     }
-#ifdef LEGACY_BACKEND
-    if (bbFlags & BBF_FORWARD_SWITCH)
-    {
-        printf("fswitch ");
-    }
-#else  // !LEGACY_BACKEND
     if (bbFlags & BBF_IS_LIR)
     {
         printf("LIR ");
     }
-#endif // LEGACY_BACKEND
     if (bbFlags & BBF_KEEP_BBJ_ALWAYS)
     {
         printf("KEEP ");
@@ -391,7 +393,7 @@ unsigned BasicBlock::dspPreds()
             printf(",");
             count += 1;
         }
-        printf("BB%02u", pred->flBlock->bbNum);
+        printf(FMT_BB, pred->flBlock->bbNum);
         count += 4;
 
         // Account for %02u only handling 2 digits, but we can display more than that.
@@ -427,7 +429,7 @@ unsigned BasicBlock::dspCheapPreds()
             printf(",");
             count += 1;
         }
-        printf("BB%02u", pred->block->bbNum);
+        printf(FMT_BB, pred->block->bbNum);
         count += 4;
 
         // Account for %02u only handling 2 digits, but we can display more than that.
@@ -453,7 +455,7 @@ unsigned BasicBlock::dspSuccs(Compiler* compiler)
     for (unsigned i = 0; i < numSuccs; i++)
     {
         printf("%s", (count == 0) ? "" : ",");
-        printf("BB%02u", GetSucc(i, compiler)->bbNum);
+        printf(FMT_BB, GetSucc(i, compiler)->bbNum);
         count++;
     }
     return count;
@@ -475,7 +477,7 @@ void BasicBlock::dspJumpKind()
             break;
 
         case BBJ_EHCATCHRET:
-            printf(" -> BB%02u (cret)", bbJumpDest->bbNum);
+            printf(" -> " FMT_BB " (cret)", bbJumpDest->bbNum);
             break;
 
         case BBJ_THROW:
@@ -493,24 +495,24 @@ void BasicBlock::dspJumpKind()
         case BBJ_ALWAYS:
             if (bbFlags & BBF_KEEP_BBJ_ALWAYS)
             {
-                printf(" -> BB%02u (ALWAYS)", bbJumpDest->bbNum);
+                printf(" -> " FMT_BB " (ALWAYS)", bbJumpDest->bbNum);
             }
             else
             {
-                printf(" -> BB%02u (always)", bbJumpDest->bbNum);
+                printf(" -> " FMT_BB " (always)", bbJumpDest->bbNum);
             }
             break;
 
         case BBJ_LEAVE:
-            printf(" -> BB%02u (leave)", bbJumpDest->bbNum);
+            printf(" -> " FMT_BB " (leave)", bbJumpDest->bbNum);
             break;
 
         case BBJ_CALLFINALLY:
-            printf(" -> BB%02u (callf)", bbJumpDest->bbNum);
+            printf(" -> " FMT_BB " (callf)", bbJumpDest->bbNum);
             break;
 
         case BBJ_COND:
-            printf(" -> BB%02u (cond)", bbJumpDest->bbNum);
+            printf(" -> " FMT_BB " (cond)", bbJumpDest->bbNum);
             break;
 
         case BBJ_SWITCH:
@@ -522,7 +524,7 @@ void BasicBlock::dspJumpKind()
             jumpTab = bbJumpSwt->bbsDstTab;
             do
             {
-                printf("%cBB%02u", (jumpTab == bbJumpSwt->bbsDstTab) ? ' ' : ',', (*jumpTab)->bbNum);
+                printf("%c" FMT_BB, (jumpTab == bbJumpSwt->bbsDstTab) ? ' ' : ',', (*jumpTab)->bbNum);
             } while (++jumpTab, --jumpCnt);
 
             printf(" (switch)");
@@ -539,7 +541,7 @@ void BasicBlock::dspBlockHeader(Compiler* compiler,
                                 bool      showFlags /*= false*/,
                                 bool      showPreds /*= true*/)
 {
-    printf("BB%02u ", bbNum);
+    printf(FMT_BB " ", bbNum);
     dspBlockILRange();
     if (showKind)
     {
@@ -570,12 +572,23 @@ void BasicBlock::dspBlockHeader(Compiler* compiler,
     printf("\n");
 }
 
+const char* BasicBlock::dspToString(int blockNumPadding /* = 2*/)
+{
+    static char buffers[3][64]; // static array of 3 to allow 3 concurrent calls in one printf()
+    static int  nextBufferIndex = 0;
+
+    auto& buffer    = buffers[nextBufferIndex];
+    nextBufferIndex = (nextBufferIndex + 1) % _countof(buffers);
+    _snprintf_s(buffer, _countof(buffer), _countof(buffer), FMT_BB "%*s [%04u]", bbNum, blockNumPadding, "", bbID);
+    return buffer;
+}
+
 #endif // DEBUG
 
 // Allocation function for MemoryPhiArg.
 void* BasicBlock::MemoryPhiArg::operator new(size_t sz, Compiler* comp)
 {
-    return comp->compGetMem(sz, CMK_MemoryPhiArg);
+    return comp->getAllocator(CMK_MemoryPhiArg).allocate<char>(sz);
 }
 
 //------------------------------------------------------------------------
@@ -598,7 +611,7 @@ void* BasicBlock::MemoryPhiArg::operator new(size_t sz, Compiler* comp)
 bool BasicBlock::CloneBlockState(
     Compiler* compiler, BasicBlock* to, const BasicBlock* from, unsigned varNum, int varVal)
 {
-    assert(to->bbTreeList == nullptr);
+    assert(to->bbStmtList == nullptr);
 
     to->bbFlags  = from->bbFlags;
     to->bbWeight = from->bbWeight;
@@ -612,18 +625,15 @@ bool BasicBlock::CloneBlockState(
     to->bbCodeOffs    = from->bbCodeOffs;
     to->bbCodeOffsEnd = from->bbCodeOffsEnd;
     VarSetOps::AssignAllowUninitRhs(compiler, to->bbScope, from->bbScope);
-#if FEATURE_STACK_FP_X87
-    to->bbFPStateX87 = from->bbFPStateX87;
-#endif // FEATURE_STACK_FP_X87
     to->bbNatLoopNum = from->bbNatLoopNum;
 #ifdef DEBUG
     to->bbLoopNum     = from->bbLoopNum;
     to->bbTgtStkDepth = from->bbTgtStkDepth;
 #endif // DEBUG
 
-    for (GenTreePtr fromStmt = from->bbTreeList; fromStmt != nullptr; fromStmt = fromStmt->gtNext)
+    for (Statement* fromStmt : from->Statements())
     {
-        auto newExpr = compiler->gtCloneExpr(fromStmt->gtStmt.gtStmtExpr, 0, varNum, varVal);
+        auto newExpr = compiler->gtCloneExpr(fromStmt->GetRootNode(), 0, varNum, varVal);
         if (!newExpr)
         {
             // gtCloneExpr doesn't handle all opcodes, so may fail to clone a statement.
@@ -639,9 +649,6 @@ bool BasicBlock::CloneBlockState(
 // LIR helpers
 void BasicBlock::MakeLIR(GenTree* firstNode, GenTree* lastNode)
 {
-#ifdef LEGACY_BACKEND
-    unreached();
-#else  // !LEGACY_BACKEND
     assert(!IsLIR());
     assert((firstNode == nullptr) == (lastNode == nullptr));
     assert((firstNode == lastNode) || firstNode->Precedes(lastNode));
@@ -649,18 +656,13 @@ void BasicBlock::MakeLIR(GenTree* firstNode, GenTree* lastNode)
     m_firstNode = firstNode;
     m_lastNode  = lastNode;
     bbFlags |= BBF_IS_LIR;
-#endif // LEGACY_BACKEND
 }
 
 bool BasicBlock::IsLIR()
 {
-#ifdef LEGACY_BACKEND
-    return false;
-#else  // !LEGACY_BACKEND
-    const bool isLIR = (bbFlags & BBF_IS_LIR) != 0;
-    assert((bbTreeList == nullptr) || ((isLIR) == !bbTreeList->IsStatement()));
+    assert(isValid());
+    const bool isLIR = ((bbFlags & BBF_IS_LIR) != 0);
     return isLIR;
-#endif // LEGACY_BACKEND
 }
 
 //------------------------------------------------------------------------
@@ -670,16 +672,11 @@ bool BasicBlock::IsLIR()
 //    None.
 //
 // Return Value:
-//    The first statement in the block's bbTreeList.
+//    The first statement in the block's bbStmtList.
 //
-GenTreeStmt* BasicBlock::firstStmt() const
+Statement* BasicBlock::firstStmt() const
 {
-    if (bbTreeList == nullptr)
-    {
-        return nullptr;
-    }
-
-    return bbTreeList->AsStmt();
+    return bbStmtList;
 }
 
 //------------------------------------------------------------------------
@@ -689,18 +686,18 @@ GenTreeStmt* BasicBlock::firstStmt() const
 //    None.
 //
 // Return Value:
-//    The last statement in the block's bbTreeList.
+//    The last statement in the block's bbStmtList.
 //
-GenTreeStmt* BasicBlock::lastStmt() const
+Statement* BasicBlock::lastStmt() const
 {
-    if (bbTreeList == nullptr)
+    if (bbStmtList == nullptr)
     {
         return nullptr;
     }
 
-    GenTree* result = bbTreeList->gtPrev;
-    assert(result && result->gtNext == nullptr);
-    return result->AsStmt();
+    Statement* result = bbStmtList->GetPrevStmt();
+    assert(result != nullptr && result->GetNextStmt() == nullptr);
+    return result;
 }
 
 //------------------------------------------------------------------------
@@ -708,7 +705,7 @@ GenTreeStmt* BasicBlock::lastStmt() const
 //
 GenTree* BasicBlock::firstNode()
 {
-    return IsLIR() ? bbTreeList : Compiler::fgGetFirstNode(firstStmt()->gtStmtExpr);
+    return IsLIR() ? GetFirstLIRNode() : Compiler::fgGetFirstNode(firstStmt()->GetRootNode());
 }
 
 //------------------------------------------------------------------------
@@ -716,7 +713,7 @@ GenTree* BasicBlock::firstNode()
 //
 GenTree* BasicBlock::lastNode()
 {
-    return IsLIR() ? m_lastNode : lastStmt()->gtStmtExpr;
+    return IsLIR() ? m_lastNode : lastStmt()->GetRootNode();
 }
 
 //------------------------------------------------------------------------
@@ -775,7 +772,7 @@ BasicBlock* BasicBlock::GetUniqueSucc()
 // Static vars.
 BasicBlock::MemoryPhiArg* BasicBlock::EmptyMemoryPhiDef = (BasicBlock::MemoryPhiArg*)0x1;
 
-unsigned PtrKeyFuncs<BasicBlock>::GetHashCode(const BasicBlock* ptr)
+unsigned JitPtrKeyFuncs<BasicBlock>::GetHashCode(const BasicBlock* ptr)
 {
 #ifdef DEBUG
     unsigned hash = SsaStressHashHelper();
@@ -803,4 +800,716 @@ bool BasicBlock::isEmpty()
     }
 
     return true;
+}
+
+//------------------------------------------------------------------------
+// isValid: Checks that the basic block doesn't mix statements and LIR lists.
+//
+// Return Value:
+//    True if it a valid basic block.
+//
+bool BasicBlock::isValid()
+{
+    const bool isLIR = ((bbFlags & BBF_IS_LIR) != 0);
+    if (isLIR)
+    {
+        // Should not have statements in LIR.
+        return (bbStmtList == nullptr);
+    }
+    else
+    {
+        // Should not have tree list before LIR.
+        return (GetFirstLIRNode() == nullptr);
+    }
+}
+
+Statement* BasicBlock::FirstNonPhiDef()
+{
+    Statement* stmt = firstStmt();
+    if (stmt == nullptr)
+    {
+        return nullptr;
+    }
+    GenTree* tree = stmt->GetRootNode();
+    while ((tree->OperGet() == GT_ASG && tree->AsOp()->gtOp2->OperGet() == GT_PHI) ||
+           (tree->OperGet() == GT_STORE_LCL_VAR && tree->AsOp()->gtOp1->OperGet() == GT_PHI))
+    {
+        stmt = stmt->GetNextStmt();
+        if (stmt == nullptr)
+        {
+            return nullptr;
+        }
+        tree = stmt->GetRootNode();
+    }
+    return stmt;
+}
+
+Statement* BasicBlock::FirstNonPhiDefOrCatchArgAsg()
+{
+    Statement* stmt = FirstNonPhiDef();
+    if (stmt == nullptr)
+    {
+        return nullptr;
+    }
+    GenTree* tree = stmt->GetRootNode();
+    if ((tree->OperGet() == GT_ASG && tree->AsOp()->gtOp2->OperGet() == GT_CATCH_ARG) ||
+        (tree->OperGet() == GT_STORE_LCL_VAR && tree->AsOp()->gtOp1->OperGet() == GT_CATCH_ARG))
+    {
+        stmt = stmt->GetNextStmt();
+    }
+    return stmt;
+}
+
+/*****************************************************************************
+ *
+ *  Mark a block as rarely run, we also don't want to have a loop in a
+ *   rarely run block, and we set it's weight to zero.
+ */
+
+void BasicBlock::bbSetRunRarely()
+{
+    setBBWeight(BB_ZERO_WEIGHT);
+    if (bbWeight == BB_ZERO_WEIGHT)
+    {
+        bbFlags |= BBF_RUN_RARELY; // This block is never/rarely run
+    }
+}
+
+/*****************************************************************************
+ *
+ *  Can a BasicBlock be inserted after this without altering the flowgraph
+ */
+
+bool BasicBlock::bbFallsThrough()
+{
+    switch (bbJumpKind)
+    {
+
+        case BBJ_THROW:
+        case BBJ_EHFINALLYRET:
+        case BBJ_EHFILTERRET:
+        case BBJ_EHCATCHRET:
+        case BBJ_RETURN:
+        case BBJ_ALWAYS:
+        case BBJ_LEAVE:
+        case BBJ_SWITCH:
+            return false;
+
+        case BBJ_NONE:
+        case BBJ_COND:
+            return true;
+
+        case BBJ_CALLFINALLY:
+            return ((bbFlags & BBF_RETLESS_CALL) == 0);
+
+        default:
+            assert(!"Unknown bbJumpKind in bbFallsThrough()");
+            return true;
+    }
+}
+
+//------------------------------------------------------------------------
+// NumSucc: Returns the count of block successors. See the declaration comment for details.
+//
+// Arguments:
+//    None.
+//
+// Return Value:
+//    Count of block successors.
+//
+unsigned BasicBlock::NumSucc()
+{
+    switch (bbJumpKind)
+    {
+        case BBJ_THROW:
+        case BBJ_RETURN:
+        case BBJ_EHFINALLYRET:
+        case BBJ_EHFILTERRET:
+            return 0;
+
+        case BBJ_CALLFINALLY:
+        case BBJ_ALWAYS:
+        case BBJ_EHCATCHRET:
+        case BBJ_LEAVE:
+        case BBJ_NONE:
+            return 1;
+
+        case BBJ_COND:
+            if (bbJumpDest == bbNext)
+            {
+                return 1;
+            }
+            else
+            {
+                return 2;
+            }
+
+        case BBJ_SWITCH:
+            return bbJumpSwt->bbsCount;
+
+        default:
+            unreached();
+    }
+}
+
+//------------------------------------------------------------------------
+// GetSucc: Returns the requested block successor. See the declaration comment for details.
+//
+// Arguments:
+//    i - index of successor to return. 0 <= i <= NumSucc().
+//
+// Return Value:
+//    Requested successor block
+//
+BasicBlock* BasicBlock::GetSucc(unsigned i)
+{
+    assert(i < NumSucc()); // Index bounds check.
+    switch (bbJumpKind)
+    {
+        case BBJ_CALLFINALLY:
+        case BBJ_ALWAYS:
+        case BBJ_EHCATCHRET:
+        case BBJ_LEAVE:
+            return bbJumpDest;
+
+        case BBJ_NONE:
+            return bbNext;
+
+        case BBJ_COND:
+            if (i == 0)
+            {
+                return bbNext;
+            }
+            else
+            {
+                assert(i == 1);
+                return bbJumpDest;
+            }
+
+        case BBJ_SWITCH:
+            return bbJumpSwt->bbsDstTab[i];
+
+        default:
+            unreached();
+    }
+}
+
+//------------------------------------------------------------------------
+// NumSucc: Returns the count of block successors. See the declaration comment for details.
+//
+// Arguments:
+//    comp - Compiler instance
+//
+// Return Value:
+//    Count of block successors.
+//
+unsigned BasicBlock::NumSucc(Compiler* comp)
+{
+    assert(comp != nullptr);
+
+    switch (bbJumpKind)
+    {
+        case BBJ_THROW:
+        case BBJ_RETURN:
+            return 0;
+
+        case BBJ_EHFINALLYRET:
+        {
+            // The first block of the handler is labelled with the catch type.
+            BasicBlock* hndBeg = comp->fgFirstBlockOfHandler(this);
+            if (hndBeg->bbCatchTyp == BBCT_FINALLY)
+            {
+                return comp->fgNSuccsOfFinallyRet(this);
+            }
+            else
+            {
+                assert(hndBeg->bbCatchTyp == BBCT_FAULT); // We can only BBJ_EHFINALLYRET from FINALLY and FAULT.
+                // A FAULT block has no successors.
+                return 0;
+            }
+        }
+
+        case BBJ_CALLFINALLY:
+        case BBJ_ALWAYS:
+        case BBJ_EHCATCHRET:
+        case BBJ_EHFILTERRET:
+        case BBJ_LEAVE:
+        case BBJ_NONE:
+            return 1;
+
+        case BBJ_COND:
+            if (bbJumpDest == bbNext)
+            {
+                return 1;
+            }
+            else
+            {
+                return 2;
+            }
+
+        case BBJ_SWITCH:
+        {
+            Compiler::SwitchUniqueSuccSet sd = comp->GetDescriptorForSwitch(this);
+            return sd.numDistinctSuccs;
+        }
+
+        default:
+            unreached();
+    }
+}
+
+//------------------------------------------------------------------------
+// GetSucc: Returns the requested block successor. See the declaration comment for details.
+//
+// Arguments:
+//    i - index of successor to return. 0 <= i <= NumSucc(comp).
+//    comp - Compiler instance
+//
+// Return Value:
+//    Requested successor block
+//
+BasicBlock* BasicBlock::GetSucc(unsigned i, Compiler* comp)
+{
+    assert(comp != nullptr);
+
+    assert(i < NumSucc(comp)); // Index bounds check.
+    switch (bbJumpKind)
+    {
+        case BBJ_EHFILTERRET:
+        {
+            // Handler is the (sole) normal successor of the filter.
+            assert(comp->fgFirstBlockOfHandler(this) == bbJumpDest);
+            return bbJumpDest;
+        }
+
+        case BBJ_EHFINALLYRET:
+            // Note: the following call is expensive.
+            return comp->fgSuccOfFinallyRet(this, i);
+
+        case BBJ_CALLFINALLY:
+        case BBJ_ALWAYS:
+        case BBJ_EHCATCHRET:
+        case BBJ_LEAVE:
+            return bbJumpDest;
+
+        case BBJ_NONE:
+            return bbNext;
+
+        case BBJ_COND:
+            if (i == 0)
+            {
+                return bbNext;
+            }
+            else
+            {
+                assert(i == 1);
+                return bbJumpDest;
+            }
+
+        case BBJ_SWITCH:
+        {
+            Compiler::SwitchUniqueSuccSet sd = comp->GetDescriptorForSwitch(this);
+            assert(i < sd.numDistinctSuccs); // Range check.
+            return sd.nonDuplicates[i];
+        }
+
+        default:
+            unreached();
+    }
+}
+
+void BasicBlock::InitVarSets(Compiler* comp)
+{
+    VarSetOps::AssignNoCopy(comp, bbVarUse, VarSetOps::MakeEmpty(comp));
+    VarSetOps::AssignNoCopy(comp, bbVarDef, VarSetOps::MakeEmpty(comp));
+    VarSetOps::AssignNoCopy(comp, bbLiveIn, VarSetOps::MakeEmpty(comp));
+    VarSetOps::AssignNoCopy(comp, bbLiveOut, VarSetOps::MakeEmpty(comp));
+    VarSetOps::AssignNoCopy(comp, bbScope, VarSetOps::MakeEmpty(comp));
+
+    bbMemoryUse     = emptyMemoryKindSet;
+    bbMemoryDef     = emptyMemoryKindSet;
+    bbMemoryLiveIn  = emptyMemoryKindSet;
+    bbMemoryLiveOut = emptyMemoryKindSet;
+}
+
+// Returns true if the basic block ends with GT_JMP
+bool BasicBlock::endsWithJmpMethod(Compiler* comp)
+{
+    if (comp->compJmpOpUsed && (bbJumpKind == BBJ_RETURN) && (bbFlags & BBF_HAS_JMP))
+    {
+        GenTree* lastNode = this->lastNode();
+        assert(lastNode != nullptr);
+        return lastNode->OperGet() == GT_JMP;
+    }
+
+    return false;
+}
+
+// Returns true if the basic block ends with either
+//  i) GT_JMP or
+// ii) tail call (implicit or explicit)
+//
+// Params:
+//    comp              - Compiler instance
+//    fastTailCallsOnly - Only consider fast tail calls excluding tail calls via helper.
+//
+bool BasicBlock::endsWithTailCallOrJmp(Compiler* comp, bool fastTailCallsOnly /*=false*/)
+{
+    GenTree* tailCall                       = nullptr;
+    bool     tailCallsConvertibleToLoopOnly = false;
+    return endsWithJmpMethod(comp) ||
+           endsWithTailCall(comp, fastTailCallsOnly, tailCallsConvertibleToLoopOnly, &tailCall);
+}
+
+//------------------------------------------------------------------------------
+// endsWithTailCall : Check if the block ends with a tail call.
+//
+// Arguments:
+//    comp                            - compiler instance
+//    fastTailCallsOnly               - check for fast tail calls only
+//    tailCallsConvertibleToLoopOnly  - check for tail calls convertible to loop only
+//    tailCall                        - a pointer to a tree that will be set to the call tree if the block
+//                                      ends with a tail call and will be set to nullptr otherwise.
+//
+// Return Value:
+//    true if the block ends with a tail call; false otherwise.
+//
+// Notes:
+//    At most one of fastTailCallsOnly and tailCallsConvertibleToLoopOnly flags can be true.
+//
+bool BasicBlock::endsWithTailCall(Compiler* comp,
+                                  bool      fastTailCallsOnly,
+                                  bool      tailCallsConvertibleToLoopOnly,
+                                  GenTree** tailCall)
+{
+    assert(!fastTailCallsOnly || !tailCallsConvertibleToLoopOnly);
+    *tailCall   = nullptr;
+    bool result = false;
+
+    // Is this a tail call?
+    // The reason for keeping this under RyuJIT is so as not to impact existing Jit32 x86 and arm
+    // targets.
+    if (comp->compTailCallUsed)
+    {
+        if (fastTailCallsOnly || tailCallsConvertibleToLoopOnly)
+        {
+            // Only fast tail calls or only tail calls convertible to loops
+            result = (bbFlags & BBF_HAS_JMP) && (bbJumpKind == BBJ_RETURN);
+        }
+        else
+        {
+            // Fast tail calls, tail calls convertible to loops, and tails calls dispatched via helper
+            result = (bbJumpKind == BBJ_THROW) || ((bbFlags & BBF_HAS_JMP) && (bbJumpKind == BBJ_RETURN));
+        }
+
+        if (result)
+        {
+            GenTree* lastNode = this->lastNode();
+            if (lastNode->OperGet() == GT_CALL)
+            {
+                GenTreeCall* call = lastNode->AsCall();
+                if (tailCallsConvertibleToLoopOnly)
+                {
+                    result = call->IsTailCallConvertibleToLoop();
+                }
+                else if (fastTailCallsOnly)
+                {
+                    result = call->IsFastTailCall();
+                }
+                else
+                {
+                    result = call->IsTailCall();
+                }
+
+                if (result)
+                {
+                    *tailCall = call;
+                }
+            }
+            else
+            {
+                result = false;
+            }
+        }
+    }
+
+    return result;
+}
+
+//------------------------------------------------------------------------------
+// endsWithTailCallConvertibleToLoop : Check if the block ends with a tail call convertible to loop.
+//
+// Arguments:
+//    comp  -  compiler instance
+//    tailCall  -  a pointer to a tree that will be set to the call tree if the block
+//                 ends with a tail call convertible to loop and will be set to nullptr otherwise.
+//
+// Return Value:
+//    true if the block ends with a tail call convertible to loop.
+//
+bool BasicBlock::endsWithTailCallConvertibleToLoop(Compiler* comp, GenTree** tailCall)
+{
+    bool fastTailCallsOnly              = false;
+    bool tailCallsConvertibleToLoopOnly = true;
+    return endsWithTailCall(comp, fastTailCallsOnly, tailCallsConvertibleToLoopOnly, tailCall);
+}
+
+/*****************************************************************************
+ *
+ *  Allocate a basic block but don't append it to the current BB list.
+ */
+
+BasicBlock* Compiler::bbNewBasicBlock(BBjumpKinds jumpKind)
+{
+    BasicBlock* block;
+
+    /* Allocate the block descriptor and zero it out */
+    assert(fgSafeBasicBlockCreation);
+
+    block = new (this, CMK_BasicBlock) BasicBlock;
+
+#if MEASURE_BLOCK_SIZE
+    BasicBlock::s_Count += 1;
+    BasicBlock::s_Size += sizeof(*block);
+#endif
+
+#ifdef DEBUG
+    // fgLookupBB() is invalid until fgInitBBLookup() is called again.
+    fgBBs = (BasicBlock**)0xCDCD;
+#endif
+
+    // TODO-Throughput: The following memset is pretty expensive - do something else?
+    // Note that some fields have to be initialized to 0 (like bbFPStateX87)
+    memset(block, 0, sizeof(*block));
+
+    // scopeInfo needs to be able to differentiate between blocks which
+    // correspond to some instrs (and so may have some LocalVarInfo
+    // boundaries), or have been inserted by the JIT
+    block->bbCodeOffs    = BAD_IL_OFFSET;
+    block->bbCodeOffsEnd = BAD_IL_OFFSET;
+
+#ifdef DEBUG
+    block->bbID = compBasicBlockID++;
+#endif
+
+    /* Give the block a number, set the ancestor count and weight */
+
+    ++fgBBcount;
+
+    if (compIsForInlining())
+    {
+        block->bbNum = ++impInlineInfo->InlinerCompiler->fgBBNumMax;
+    }
+    else
+    {
+        block->bbNum = ++fgBBNumMax;
+    }
+
+    if (compRationalIRForm)
+    {
+        block->bbFlags |= BBF_IS_LIR;
+    }
+
+    block->bbRefs   = 1;
+    block->bbWeight = BB_UNITY_WEIGHT;
+
+    block->bbStkTempsIn  = NO_BASE_TMP;
+    block->bbStkTempsOut = NO_BASE_TMP;
+
+    block->bbEntryState = nullptr;
+
+    /* Record the jump kind in the block */
+
+    block->bbJumpKind = jumpKind;
+
+    if (jumpKind == BBJ_THROW)
+    {
+        block->bbSetRunRarely();
+    }
+
+#ifdef DEBUG
+    if (verbose)
+    {
+        printf("New Basic Block %s created.\n", block->dspToString());
+    }
+#endif
+
+    // We will give all the blocks var sets after the number of tracked variables
+    // is determined and frozen.  After that, if we dynamically create a basic block,
+    // we will initialize its var sets.
+    if (fgBBVarSetsInited)
+    {
+        VarSetOps::AssignNoCopy(this, block->bbVarUse, VarSetOps::MakeEmpty(this));
+        VarSetOps::AssignNoCopy(this, block->bbVarDef, VarSetOps::MakeEmpty(this));
+        VarSetOps::AssignNoCopy(this, block->bbLiveIn, VarSetOps::MakeEmpty(this));
+        VarSetOps::AssignNoCopy(this, block->bbLiveOut, VarSetOps::MakeEmpty(this));
+        VarSetOps::AssignNoCopy(this, block->bbScope, VarSetOps::MakeEmpty(this));
+    }
+    else
+    {
+        VarSetOps::AssignNoCopy(this, block->bbVarUse, VarSetOps::UninitVal());
+        VarSetOps::AssignNoCopy(this, block->bbVarDef, VarSetOps::UninitVal());
+        VarSetOps::AssignNoCopy(this, block->bbLiveIn, VarSetOps::UninitVal());
+        VarSetOps::AssignNoCopy(this, block->bbLiveOut, VarSetOps::UninitVal());
+        VarSetOps::AssignNoCopy(this, block->bbScope, VarSetOps::UninitVal());
+    }
+
+    block->bbMemoryUse     = emptyMemoryKindSet;
+    block->bbMemoryDef     = emptyMemoryKindSet;
+    block->bbMemoryLiveIn  = emptyMemoryKindSet;
+    block->bbMemoryLiveOut = emptyMemoryKindSet;
+
+    for (MemoryKind memoryKind : allMemoryKinds())
+    {
+        block->bbMemorySsaPhiFunc[memoryKind] = nullptr;
+        block->bbMemorySsaNumIn[memoryKind]   = 0;
+        block->bbMemorySsaNumOut[memoryKind]  = 0;
+    }
+
+    // Make sure we reserve a NOT_IN_LOOP value that isn't a legal table index.
+    static_assert_no_msg(MAX_LOOP_NUM < BasicBlock::NOT_IN_LOOP);
+
+    block->bbNatLoopNum = BasicBlock::NOT_IN_LOOP;
+
+    return block;
+}
+
+//------------------------------------------------------------------------------
+// DisplayStaticSizes: display various static sizes of the BasicBlock data structure.
+//
+// Arguments:
+//    fout  - where to write the output
+//
+// Return Value:
+//    None
+//
+// Note: This function only does something if MEASURE_BLOCK_SIZE is defined, which it might
+// be in private Release builds.
+//
+/* static */
+void BasicBlock::DisplayStaticSizes(FILE* fout)
+{
+#if MEASURE_BLOCK_SIZE
+
+    BasicBlock* bbDummy = nullptr;
+
+    fprintf(fout, "\n");
+    fprintf(fout, "Offset / size of bbNext                = %3u / %3u\n", offsetof(BasicBlock, bbNext),
+            sizeof(bbDummy->bbNext));
+    fprintf(fout, "Offset / size of bbPrev                = %3u / %3u\n", offsetof(BasicBlock, bbPrev),
+            sizeof(bbDummy->bbPrev));
+    fprintf(fout, "Offset / size of bbFlags               = %3u / %3u\n", offsetof(BasicBlock, bbFlags),
+            sizeof(bbDummy->bbFlags));
+    fprintf(fout, "Offset / size of bbNum                 = %3u / %3u\n", offsetof(BasicBlock, bbNum),
+            sizeof(bbDummy->bbNum));
+    fprintf(fout, "Offset / size of bbPostOrderNum        = %3u / %3u\n", offsetof(BasicBlock, bbPostOrderNum),
+            sizeof(bbDummy->bbPostOrderNum));
+    fprintf(fout, "Offset / size of bbRefs                = %3u / %3u\n", offsetof(BasicBlock, bbRefs),
+            sizeof(bbDummy->bbRefs));
+    fprintf(fout, "Offset / size of bbWeight              = %3u / %3u\n", offsetof(BasicBlock, bbWeight),
+            sizeof(bbDummy->bbWeight));
+    fprintf(fout, "Offset / size of bbJumpKind            = %3u / %3u\n", offsetof(BasicBlock, bbJumpKind),
+            sizeof(bbDummy->bbJumpKind));
+    fprintf(fout, "Offset / size of bbJumpOffs            = %3u / %3u\n", offsetof(BasicBlock, bbJumpOffs),
+            sizeof(bbDummy->bbJumpOffs));
+    fprintf(fout, "Offset / size of bbJumpDest            = %3u / %3u\n", offsetof(BasicBlock, bbJumpDest),
+            sizeof(bbDummy->bbJumpDest));
+    fprintf(fout, "Offset / size of bbJumpSwt             = %3u / %3u\n", offsetof(BasicBlock, bbJumpSwt),
+            sizeof(bbDummy->bbJumpSwt));
+    fprintf(fout, "Offset / size of bbEntryState          = %3u / %3u\n", offsetof(BasicBlock, bbEntryState),
+            sizeof(bbDummy->bbEntryState));
+    fprintf(fout, "Offset / size of bbStkTempsIn          = %3u / %3u\n", offsetof(BasicBlock, bbStkTempsIn),
+            sizeof(bbDummy->bbStkTempsIn));
+    fprintf(fout, "Offset / size of bbStkTempsOut         = %3u / %3u\n", offsetof(BasicBlock, bbStkTempsOut),
+            sizeof(bbDummy->bbStkTempsOut));
+    fprintf(fout, "Offset / size of bbTryIndex            = %3u / %3u\n", offsetof(BasicBlock, bbTryIndex),
+            sizeof(bbDummy->bbTryIndex));
+    fprintf(fout, "Offset / size of bbHndIndex            = %3u / %3u\n", offsetof(BasicBlock, bbHndIndex),
+            sizeof(bbDummy->bbHndIndex));
+    fprintf(fout, "Offset / size of bbCatchTyp            = %3u / %3u\n", offsetof(BasicBlock, bbCatchTyp),
+            sizeof(bbDummy->bbCatchTyp));
+    fprintf(fout, "Offset / size of bbStkDepth            = %3u / %3u\n", offsetof(BasicBlock, bbStkDepth),
+            sizeof(bbDummy->bbStkDepth));
+    fprintf(fout, "Offset / size of bbFPinVars            = %3u / %3u\n", offsetof(BasicBlock, bbFPinVars),
+            sizeof(bbDummy->bbFPinVars));
+    fprintf(fout, "Offset / size of bbCheapPreds          = %3u / %3u\n", offsetof(BasicBlock, bbCheapPreds),
+            sizeof(bbDummy->bbCheapPreds));
+    fprintf(fout, "Offset / size of bbPreds               = %3u / %3u\n", offsetof(BasicBlock, bbPreds),
+            sizeof(bbDummy->bbPreds));
+    fprintf(fout, "Offset / size of bbReach               = %3u / %3u\n", offsetof(BasicBlock, bbReach),
+            sizeof(bbDummy->bbReach));
+    fprintf(fout, "Offset / size of bbIDom                = %3u / %3u\n", offsetof(BasicBlock, bbIDom),
+            sizeof(bbDummy->bbIDom));
+    fprintf(fout, "Offset / size of bbDfsNum              = %3u / %3u\n", offsetof(BasicBlock, bbDfsNum),
+            sizeof(bbDummy->bbDfsNum));
+    fprintf(fout, "Offset / size of bbCodeOffs            = %3u / %3u\n", offsetof(BasicBlock, bbCodeOffs),
+            sizeof(bbDummy->bbCodeOffs));
+    fprintf(fout, "Offset / size of bbCodeOffsEnd         = %3u / %3u\n", offsetof(BasicBlock, bbCodeOffsEnd),
+            sizeof(bbDummy->bbCodeOffsEnd));
+    fprintf(fout, "Offset / size of bbVarUse              = %3u / %3u\n", offsetof(BasicBlock, bbVarUse),
+            sizeof(bbDummy->bbVarUse));
+    fprintf(fout, "Offset / size of bbVarDef              = %3u / %3u\n", offsetof(BasicBlock, bbVarDef),
+            sizeof(bbDummy->bbVarDef));
+    fprintf(fout, "Offset / size of bbLiveIn              = %3u / %3u\n", offsetof(BasicBlock, bbLiveIn),
+            sizeof(bbDummy->bbLiveIn));
+    fprintf(fout, "Offset / size of bbLiveOut             = %3u / %3u\n", offsetof(BasicBlock, bbLiveOut),
+            sizeof(bbDummy->bbLiveOut));
+    // Can't do bitfield bbMemoryUse, bbMemoryDef, bbMemoryLiveIn, bbMemoryLiveOut, bbMemoryHavoc
+    fprintf(fout, "Offset / size of bbMemorySsaPhiFunc    = %3u / %3u\n", offsetof(BasicBlock, bbMemorySsaPhiFunc),
+            sizeof(bbDummy->bbMemorySsaPhiFunc));
+    fprintf(fout, "Offset / size of bbMemorySsaNumIn      = %3u / %3u\n", offsetof(BasicBlock, bbMemorySsaNumIn),
+            sizeof(bbDummy->bbMemorySsaNumIn));
+    fprintf(fout, "Offset / size of bbMemorySsaNumOut     = %3u / %3u\n", offsetof(BasicBlock, bbMemorySsaNumOut),
+            sizeof(bbDummy->bbMemorySsaNumOut));
+    fprintf(fout, "Offset / size of bbScope               = %3u / %3u\n", offsetof(BasicBlock, bbScope),
+            sizeof(bbDummy->bbScope));
+    fprintf(fout, "Offset / size of bbCseGen              = %3u / %3u\n", offsetof(BasicBlock, bbCseGen),
+            sizeof(bbDummy->bbCseGen));
+#if ASSERTION_PROP
+    fprintf(fout, "Offset / size of bbAssertionGen        = %3u / %3u\n", offsetof(BasicBlock, bbAssertionGen),
+            sizeof(bbDummy->bbAssertionGen));
+#endif // ASSERTION_PROP
+    fprintf(fout, "Offset / size of bbCseIn               = %3u / %3u\n", offsetof(BasicBlock, bbCseIn),
+            sizeof(bbDummy->bbCseIn));
+#if ASSERTION_PROP
+    fprintf(fout, "Offset / size of bbAssertionIn         = %3u / %3u\n", offsetof(BasicBlock, bbAssertionIn),
+            sizeof(bbDummy->bbAssertionIn));
+#endif // ASSERTION_PROP
+    fprintf(fout, "Offset / size of bbCseOut              = %3u / %3u\n", offsetof(BasicBlock, bbCseOut),
+            sizeof(bbDummy->bbCseOut));
+#if ASSERTION_PROP
+    fprintf(fout, "Offset / size of bbAssertionOut        = %3u / %3u\n", offsetof(BasicBlock, bbAssertionOut),
+            sizeof(bbDummy->bbAssertionOut));
+#endif // ASSERTION_PROP
+    fprintf(fout, "Offset / size of bbEmitCookie          = %3u / %3u\n", offsetof(BasicBlock, bbEmitCookie),
+            sizeof(bbDummy->bbEmitCookie));
+
+#if defined(FEATURE_EH_FUNCLETS) && defined(_TARGET_ARM_)
+    fprintf(fout, "Offset / size of bbUnwindNopEmitCookie = %3u / %3u\n", offsetof(BasicBlock, bbUnwindNopEmitCookie),
+            sizeof(bbDummy->bbUnwindNopEmitCookie));
+#endif // defined(FEATURE_EH_FUNCLETS) && defined(_TARGET_ARM_)
+
+#ifdef VERIFIER
+    fprintf(fout, "Offset / size of bbStackIn             = %3u / %3u\n", offsetof(BasicBlock, bbStackIn),
+            sizeof(bbDummy->bbStackIn));
+    fprintf(fout, "Offset / size of bbStackOut            = %3u / %3u\n", offsetof(BasicBlock, bbStackOut),
+            sizeof(bbDummy->bbStackOut));
+    fprintf(fout, "Offset / size of bbTypesIn             = %3u / %3u\n", offsetof(BasicBlock, bbTypesIn),
+            sizeof(bbDummy->bbTypesIn));
+    fprintf(fout, "Offset / size of bbTypesOut            = %3u / %3u\n", offsetof(BasicBlock, bbTypesOut),
+            sizeof(bbDummy->bbTypesOut));
+#endif // VERIFIER
+
+#ifdef DEBUG
+    fprintf(fout, "Offset / size of bbLoopNum             = %3u / %3u\n", offsetof(BasicBlock, bbLoopNum),
+            sizeof(bbDummy->bbLoopNum));
+#endif // DEBUG
+
+    fprintf(fout, "Offset / size of bbNatLoopNum          = %3u / %3u\n", offsetof(BasicBlock, bbNatLoopNum),
+            sizeof(bbDummy->bbNatLoopNum));
+
+    fprintf(fout, "\n");
+    fprintf(fout, "Size of BasicBlock                     = %3u\n", sizeof(BasicBlock));
+
+#endif // MEASURE_BLOCK_SIZE
 }

@@ -15,25 +15,21 @@
 class ICorJitHost
 {
 public:
-    // Allocate memory of the given size in bytes. All bytes of the returned block
-    // must be initialized to zero. If `usePageAllocator` is true, the implementation
-    // should use an allocator that deals in OS pages if one exists.
-    virtual void* allocateMemory(size_t size, bool usePageAllocator = false) = 0;
+    // Allocate memory of the given size in bytes.
+    virtual void* allocateMemory(size_t size) = 0;
 
-    // Frees memory previous obtained by a call to `ICorJitHost::allocateMemory`. The
-    // value of the `usePageAllocator` parameter must match the value that was
-    // provided to the call to used to allocate the memory.
-    virtual void freeMemory(void* block, bool usePageAllocator = false) = 0;
+    // Frees memory previous obtained by a call to `ICorJitHost::allocateMemory`.
+    virtual void freeMemory(void* block) = 0;
 
     // Return an integer config value for the given key, if any exists.
     virtual int getIntConfigValue(
-        const wchar_t* name, 
+        const WCHAR* name, 
         int defaultValue
         ) = 0;
 
     // Return a string config value for the given key, if any exists.
-    virtual const wchar_t* getStringConfigValue(
-        const wchar_t* name
+    virtual const WCHAR* getStringConfigValue(
+        const WCHAR* name
         ) = 0;
 
     // Free a string ConfigValue returned by the runtime.
@@ -41,8 +37,22 @@ public:
     // to return the string values to the runtime for deletion.
     // This avoids leaking the memory in the JIT.
     virtual void freeStringConfigValue(
-        const wchar_t* value
+        const WCHAR* value
         ) = 0;
+
+    // Allocate memory slab of the given size in bytes. The host is expected to pool
+    // these for a good performance.
+    virtual void* allocateSlab(size_t size, size_t* pActualSize)
+    {
+        *pActualSize = size;
+        return allocateMemory(size);
+    }
+
+    // Free memory slab of the given size in bytes.
+    virtual void freeSlab(void* slab, size_t actualSize)
+    {
+        freeMemory(slab);
+    }
 };
 
 #endif

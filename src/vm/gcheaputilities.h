@@ -16,10 +16,18 @@ extern "C" {
 GPTR_DECL(uint8_t,g_lowest_address);
 GPTR_DECL(uint8_t,g_highest_address);
 GPTR_DECL(uint32_t,g_card_table);
+GVAL_DECL(GCHeapType, g_heap_type);
 #ifndef DACCESS_COMPILE
 }
 #endif // !DACCESS_COMPILE
 
+// For single-proc machines, the EE will use a single, shared alloc context
+// for all allocations. In order to avoid extra indirections in assembly
+// allocation helpers, the EE owns the global allocation context and the
+// GC will update it when it needs to.
+extern "C" gc_alloc_context g_global_alloc_context;
+
+extern "C" uint32_t* g_card_bundle_table;
 extern "C" uint8_t* g_ephemeral_low;
 extern "C" uint8_t* g_ephemeral_high;
 
@@ -74,7 +82,7 @@ public:
 
     // Returns true if a the heap is initialized and a garbage collection
     // is in progress, false otherwise.
-    inline static BOOL IsGCInProgress(BOOL bConsiderGCStart = FALSE)
+    inline static bool IsGCInProgress(bool bConsiderGCStart = false)
     {
         WRAPPER_NO_CONTRACT;
 
@@ -83,7 +91,7 @@ public:
 
     // Returns true if we should be competing marking for statics. This
     // influences the behavior of `GCToEEInterface::GcScanRoots`.
-    inline static BOOL MarkShouldCompeteForStatics()
+    inline static bool MarkShouldCompeteForStatics()
     {
         WRAPPER_NO_CONTRACT;
 
@@ -91,7 +99,7 @@ public:
     }
 
     // Waits until a GC is complete, if the heap has been initialized.
-    inline static void WaitForGCCompletion(BOOL bConsiderGCStart = FALSE)
+    inline static void WaitForGCCompletion(bool bConsiderGCStart = false)
     {
         WRAPPER_NO_CONTRACT;
 
@@ -99,32 +107,29 @@ public:
             GetGCHeap()->WaitUntilGCComplete(bConsiderGCStart);
     }
 
-    // Returns true if we should be using allocation contexts, false otherwise.
-    inline static bool UseAllocationContexts()
-    {
-        WRAPPER_NO_CONTRACT;
-#ifdef FEATURE_REDHAWK
-        // SIMPLIFY:  only use allocation contexts
-        return true;
-#else
-#if defined(_TARGET_ARM_) || defined(FEATURE_PAL)
-        return true;
-#else
-        return ((IsServerHeap() ? true : (g_SystemInfo.dwNumberOfProcessors >= 2)));
-#endif 
-#endif 
-    }
-
     // Returns true if the held GC heap is a Server GC heap, false otherwise.
     inline static bool IsServerHeap()
     {
         LIMITED_METHOD_CONTRACT;
+
 #ifdef FEATURE_SVR_GC
-        _ASSERTE(IGCHeap::gcHeapType != IGCHeap::GC_HEAP_INVALID);
-        return (IGCHeap::gcHeapType == IGCHeap::GC_HEAP_SVR);
-#else // FEATURE_SVR_GC
+        _ASSERTE(g_heap_type != GC_HEAP_INVALID);
+        return g_heap_type == GC_HEAP_SVR;
+#else
         return false;
 #endif // FEATURE_SVR_GC
+    }
+
+    static bool UseThreadAllocationContexts()
+    {
+        // When running on a single-proc Intel system, it's more efficient to use a single global
+        // allocation context for SOH allocations than to use one for every thread.
+#if (defined(_TARGET_X86_) || defined(_TARGET_AMD64_)) && !defined(FEATURE_PAL)
+        return IsServerHeap() || ::g_SystemInfo.dwNumberOfProcessors != 1 || CPUGroupInfo::CanEnableGCCPUGroups();
+#else
+        return true;
+#endif
+
     }
 
 #ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
@@ -158,8 +163,10 @@ public:
         // The table byte index that we calculate for the address should be the same as the one
         // calculated for a pointer to the end of the written region. If this were not the case,
         // this write crossed a boundary and would dirty two pages.
+#ifdef _DEBUG
         uint8_t* end_of_write_ptr = reinterpret_cast<uint8_t*>(address) + (write_size - 1);
         assert(table_byte_index == reinterpret_cast<size_t>(end_of_write_ptr) >> SOFTWARE_WRITE_WATCH_AddressToTableByteIndexShift);
+#endif
         uint8_t* table_address = &g_sw_ww_table[table_byte_index];
         if (*table_address == 0)
         {
@@ -191,6 +198,17 @@ public:
     }
 #endif // FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
 
+#ifndef DACCESS_COMPILE
+    // Gets the module that contains the GC.
+    static HMODULE GetGCModule();
+
+    // Loads (if using a standalone GC) and initializes the GC.
+    static HRESULT LoadAndInitialize();
+
+    // Records a change in eventing state. This ultimately will inform the GC that it needs to be aware
+    // of new events being enabled.
+    static void RecordEventStateChange(bool isPublicProvider, GCEventKeyword keywords, GCEventLevel level);
+#endif // DACCESS_COMPILE
 
 private:
     // This class should never be instantiated.

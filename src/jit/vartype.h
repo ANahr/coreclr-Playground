@@ -20,7 +20,7 @@ enum var_types_classification
     VTF_S   = 0x0040, // is a struct type
 };
 
-DECLARE_TYPED_ENUM(var_types, BYTE)
+enum var_types : BYTE
 {
 #define DEF_TP(tn, nm, jitType, verType, sz, sze, asze, st, al, tf, howUsed) TYP_##tn,
 #include "typelist.h"
@@ -28,9 +28,8 @@ DECLARE_TYPED_ENUM(var_types, BYTE)
 
     TYP_COUNT,
 
-        TYP_lastIntrins = TYP_DOUBLE
-}
-END_DECLARE_TYPED_ENUM(var_types, BYTE)
+    TYP_lastIntrins = TYP_DOUBLE
+};
 
 /*****************************************************************************
  * C-style pointers are implemented as TYP_INT or TYP_LONG depending on the
@@ -83,9 +82,7 @@ inline bool varTypeIsSIMD(T vt)
         case TYP_SIMD8:
         case TYP_SIMD12:
         case TYP_SIMD16:
-#ifdef FEATURE_AVX_SUPPORT
         case TYP_SIMD32:
-#endif // FEATURE_AVX_SUPPORT
             return true;
         default:
             return false;
@@ -131,7 +128,6 @@ inline var_types varTypeUnsignedToSigned(var_types vt)
             case TYP_UBYTE:
                 return TYP_BYTE;
             case TYP_USHORT:
-            case TYP_CHAR:
                 return TYP_SHORT;
             case TYP_UINT:
                 return TYP_INT;
@@ -178,9 +174,9 @@ inline bool varTypeIsI(T vt)
 }
 
 template <class T>
-inline bool varTypeCanReg(T vt)
+inline bool varTypeIsEnregisterable(T vt)
 {
-    return ((varTypeClassification[TypeGet(vt)] & (VTF_INT | VTF_I | VTF_FLT)) != 0);
+    return (TypeGet(vt) != TYP_STRUCT);
 }
 
 template <class T>
@@ -192,7 +188,7 @@ inline bool varTypeIsByte(T vt)
 template <class T>
 inline bool varTypeIsShort(T vt)
 {
-    return (TypeGet(vt) >= TYP_CHAR) && (TypeGet(vt) <= TYP_USHORT);
+    return (TypeGet(vt) == TYP_SHORT) || (TypeGet(vt) == TYP_USHORT);
 }
 
 template <class T>
@@ -275,9 +271,56 @@ inline bool varTypeIsStruct(T vt)
 }
 
 template <class T>
-inline bool varTypeIsEnregisterableStruct(T vt)
+inline bool varTypeUsesFloatReg(T vt)
 {
-    return (TypeGet(vt) != TYP_STRUCT);
+    // Note that not all targets support SIMD, but if they don't, varTypeIsSIMD will
+    // always return false.
+    return varTypeIsFloating(vt) || varTypeIsSIMD(vt);
+}
+
+template <class T>
+inline bool varTypeUsesFloatArgReg(T vt)
+{
+#ifdef _TARGET_ARM64_
+    // Arm64 passes SIMD types in floating point registers.
+    return varTypeUsesFloatReg(vt);
+#else
+    // Other targets pass them as regular structs - by reference or by value.
+    return varTypeIsFloating(vt);
+#endif
+}
+
+//------------------------------------------------------------------------
+// varTypeIsValidHfaType: Determine if the type is a valid HFA type
+//
+// Arguments:
+//    vt - the type of interest
+//
+// Return Value:
+//    Returns true iff the type is a valid HFA type.
+//
+// Notes:
+//    This should only be called with the return value from GetHfaType().
+//    The only valid values are TYP_UNDEF, for which this returns false,
+//    TYP_FLOAT, TYP_DOUBLE, or (ARM64-only) TYP_SIMD*.
+//
+template <class T>
+inline bool varTypeIsValidHfaType(T vt)
+{
+#ifdef FEATURE_HFA
+    bool isValid = (TypeGet(vt) != TYP_UNDEF);
+    if (isValid)
+    {
+#ifdef _TARGET_ARM64_
+        assert(varTypeUsesFloatReg(vt));
+#else  // !_TARGET_ARM64_
+        assert(varTypeIsFloating(vt));
+#endif // !_TARGET_ARM64_
+    }
+    return isValid;
+#else  // !FEATURE_HFA
+    return false;
+#endif // !FEATURE_HFA
 }
 
 /*****************************************************************************/

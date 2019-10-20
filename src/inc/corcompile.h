@@ -18,16 +18,6 @@
 #ifndef _COR_COMPILE_H_
 #define _COR_COMPILE_H_
 
-#ifndef FEATURE_PREJIT
-#error FEATURE_PREJIT is required for this file
-#endif // FEATURE_PREJIT
-
-#if !defined(_TARGET_X86_) || defined(FEATURE_PAL)
-#ifndef WIN64EXCEPTIONS
-#define WIN64EXCEPTIONS
-#endif
-#endif  // !_TARGET_X86_ || FEATURE_PAL
-
 #include <cor.h>
 #include <corhdr.h>
 #include <corinfo.h>
@@ -45,8 +35,6 @@ typedef DPTR(struct CORCOMPILE_EE_INFO_TABLE)
     PTR_CORCOMPILE_EE_INFO_TABLE;
 typedef DPTR(struct CORCOMPILE_HEADER)
     PTR_CORCOMPILE_HEADER;
-typedef DPTR(struct CORCOMPILE_IMPORT_TABLE_ENTRY)
-    PTR_CORCOMPILE_IMPORT_TABLE_ENTRY;
 typedef DPTR(struct CORCOMPILE_COLD_METHOD_ENTRY)
     PTR_CORCOMPILE_COLD_METHOD_ENTRY;
 typedef DPTR(struct CORCOMPILE_EXCEPTION_LOOKUP_TABLE)
@@ -238,7 +226,7 @@ struct CORCOMPILE_HEADER
 
     IMAGE_DATA_DIRECTORY    HelperTable;    // Table of function pointers to JIT helpers indexed by helper number
     IMAGE_DATA_DIRECTORY    ImportSections; // points to array of code:CORCOMPILE_IMPORT_SECTION
-    IMAGE_DATA_DIRECTORY    ImportTable;    // points to table CORCOMPILE_IMPORT_TABLE_ENTRY
+    IMAGE_DATA_DIRECTORY    Dummy0;
     IMAGE_DATA_DIRECTORY    StubsData;      // contains the value to register with the stub manager for the delegate stubs & AMD64 tail call stubs
     IMAGE_DATA_DIRECTORY    VersionInfo;    // points to a code:CORCOMPILE_VERSION_INFO
     IMAGE_DATA_DIRECTORY    Dependencies;   // points to an array of code:CORCOMPILE_DEPENDENCY
@@ -451,12 +439,6 @@ public :
     }
 };
 
-struct CORCOMPILE_IMPORT_TABLE_ENTRY
-{
-    USHORT                  wAssemblyRid;
-    USHORT                  wModuleRid;
-};
-
 struct CORCOMPILE_EE_INFO_TABLE
 {
     TADDR                      inlinedCallFrameVptr;
@@ -468,15 +450,6 @@ struct CORCOMPILE_EE_INFO_TABLE
     DWORD                      threadTlsIndex;
 
     DWORD                      rvaStaticTlsIndex;
-
-// These are used by the 64-bit JITs to detect calls to thunks in the .nep section
-// and conditionally eliminate double-thunking (managed-to-native-to-managed).
-// During prejit these are set to the RVAs of the .nep section. When the prejitted
-// image is actually loaded, these are fixed up to point to the actual .nep section
-// of the ijw image (not the native image).
-
-    BYTE *                     nativeEntryPointStart;
-    BYTE *                     nativeEntryPointEnd;
 };
 
 /*********************************************************************************/
@@ -715,13 +688,15 @@ enum CORCOMPILE_FIXUP_BLOB_KIND
 
     ENCODE_DECLARINGTYPE_HANDLE,
 
+    ENCODE_INDIRECT_PINVOKE_TARGET,                 /* For calling a pinvoke method ptr indirectly */
+    ENCODE_PINVOKE_TARGET,                          /* For calling a pinvoke method ptr */
+
     ENCODE_MODULE_HANDLE                = 0x50,     /* Module token */
     ENCODE_STATIC_FIELD_ADDRESS,                    /* For accessing a static field */
     ENCODE_MODULE_ID_FOR_STATICS,                   /* For accessing static fields */
     ENCODE_MODULE_ID_FOR_GENERIC_STATICS,           /* For accessing static fields */
     ENCODE_CLASS_ID_FOR_STATICS,                    /* For accessing static fields */
     ENCODE_SYNC_LOCK,                               /* For synchronizing access to a type */
-    ENCODE_INDIRECT_PINVOKE_TARGET,                 /* For calling a pinvoke method ptr  */
     ENCODE_PROFILING_HANDLE,                        /* For the method's profiling counter */
     ENCODE_VARARGS_METHODDEF,                       /* For calling a varargs method */
     ENCODE_VARARGS_METHODREF,
@@ -792,7 +767,7 @@ struct CORCOMPILE_EXCEPTION_CLAUSE
 
 struct CORCOMPILE_COLD_METHOD_ENTRY
 {
-#ifdef WIN64EXCEPTIONS
+#ifdef FEATURE_EH_FUNCLETS
     DWORD       mainFunctionEntryRVA;
 #endif
     // TODO: hotCodeSize should be encoded in GC info
@@ -1165,11 +1140,11 @@ class ICorCompilePreloader
     // If the class or method is generic, instantiate all parameters with <object>
     virtual CORINFO_METHOD_HANDLE LookupMethodDef(mdMethodDef token) = 0;
 
+    // For the given ftnHnd fill in the methInfo structure and return true if successful.
+    virtual bool GetMethodInfo(mdMethodDef token, CORINFO_METHOD_HANDLE ftnHnd, CORINFO_METHOD_INFO * methInfo) = 0;
+
     // Returns region that the IL should be emitted in
     virtual CorCompileILRegion GetILRegion(mdMethodDef token) = 0;
-
-    // Find the (parameterized) type for the given blob from the profile data
-    virtual CORINFO_CLASS_HANDLE FindTypeForProfileEntry(CORBBTPROF_BLOB_PARAM_SIG_ENTRY * profileBlobEntry) = 0;
 
     // Find the (parameterized) method for the given blob from the profile data
     virtual CORINFO_METHOD_HANDLE FindMethodForProfileEntry(CORBBTPROF_BLOB_PARAM_SIG_ENTRY * profileBlobEntry) = 0;
@@ -1205,6 +1180,8 @@ class ICorCompilePreloader
     virtual void MethodReferencedByCompiledCode(CORINFO_METHOD_HANDLE handle) = 0;
 
     virtual BOOL IsUncompiledMethod(CORINFO_METHOD_HANDLE handle) = 0;
+
+    virtual BOOL ShouldSuppressGCTransition(CORINFO_METHOD_HANDLE handle) = 0;
 
     // Return a method handle that was previously registered and
     // hasn't been compiled already, and remove it from the set
@@ -1304,11 +1281,13 @@ class ICorCompilePreloader
             CORINFO_METHOD_HANDLE method, 
             CORINFO_METHOD_HANDLE duplicateMethod) = 0;
 
+#ifdef FEATURE_READYTORUN_COMPILER
     // Returns a compressed encoding of the inline tracking map 
     // for this compilation
     virtual void GetSerializedInlineTrackingMap(
             IN OUT SBuffer    * pSerializedInlineTrackingMap
             ) = 0;
+#endif
 
     //
     // Release frees the preloader
@@ -1338,6 +1317,8 @@ class ICorCompilePreloader
     CORCOMPILE_SECTION(READONLY_HOT) \
     CORCOMPILE_SECTION(READONLY_WARM) \
     CORCOMPILE_SECTION(READONLY_COLD) \
+    CORCOMPILE_SECTION(READONLY_VCHUNKS) \
+    CORCOMPILE_SECTION(READONLY_DICTIONARY) \
     CORCOMPILE_SECTION(CLASS_COLD) \
     CORCOMPILE_SECTION(CROSS_DOMAIN_INFO) \
     CORCOMPILE_SECTION(METHOD_PRECODE_COLD) \
@@ -1385,9 +1366,12 @@ class ICorCompileDataStore
     // Returns ZapImage
     virtual ZapImage * GetZapImage() = 0;
 
-    // Reports an error during preloading.  Return the error code to propagate,
-    // or S_OK to ignore the error
-    virtual void Error(mdToken token, HRESULT hr, LPCWSTR description) = 0;
+    // Report an error during preloading:
+    // 'token' is the metadata token that triggered the error
+    // hr is the HRESULT from the thrown Exception, or S_OK if we don't have an thrown exception
+    // resID is the resourceID with additional information from the thrown Exception, or 0
+    //
+    virtual void Error(mdToken token, HRESULT hr, UINT _resID, LPCWSTR description) = 0;
 };
 
 
@@ -1426,8 +1410,6 @@ typedef DWORD (*ENCODEMODULE_CALLBACK)(LPVOID pModuleContext, CORINFO_MODULE_HAN
 // Define function pointer DEFINETOKEN_CALLBACK
 typedef void (*DEFINETOKEN_CALLBACK)(LPVOID pModuleContext, CORINFO_MODULE_HANDLE moduleHandle, DWORD index, mdTypeRef* token);
 
-typedef HRESULT (*CROSS_DOMAIN_CALLBACK)(LPVOID pArgs);
-
 class ICorCompileInfo
 {
   public:
@@ -1463,15 +1445,7 @@ class ICorCompileInfo
             IMetaDataAssemblyEmit   *pEmitter,
             BOOL fForceDebug,
             BOOL fForceProfiling,
-            BOOL fForceInstrument,
-            BOOL fForceFulltrustDomain
-            ) = 0;
-
-    // calls pfnCallback in the specified domain
-    virtual HRESULT MakeCrossDomainCallback(
-            ICorCompilationDomain*  pDomain,
-            CROSS_DOMAIN_CALLBACK   pfnCallback,
-            LPVOID                  pArgs
+            BOOL fForceInstrument
             ) = 0;
 
     // Destroys a compilation domain
@@ -1639,11 +1613,10 @@ class ICorCompileInfo
         ) = 0;
 
     // Encode a module for the imports table
-    virtual void EncodeModuleAsIndexes(
+    virtual void EncodeModuleAsIndex(
             CORINFO_MODULE_HANDLE fromHandle,
             CORINFO_MODULE_HANDLE handle,
-            DWORD *pAssemblyIndex,
-            DWORD *pModuleIndex,
+            DWORD *pIndex,
             IMetaDataAssemblyEmit *pAssemblyEmit) = 0;
 
 
@@ -1723,7 +1696,8 @@ class ICorCompileInfo
     //
     virtual void GetCallRefMap(
             CORINFO_METHOD_HANDLE hMethod,
-            GCRefMapBuilder * pBuilder) = 0;
+            GCRefMapBuilder * pBuilder,
+            bool isDispatchCell) = 0;
 
     // Returns a compressed block of debug information
     //
@@ -1748,6 +1722,8 @@ class ICorCompileInfo
     virtual HRESULT GetBaseJitFlags(
             IN  CORINFO_METHOD_HANDLE   hMethod,
             OUT CORJIT_FLAGS           *pFlags) = 0;
+
+    virtual ICorJitHost* GetJitHost() = 0;
 
     // needed for stubs to obtain the number of bytes to copy into the native image
     // return the beginning of the stub and the size to copy (in bytes)
@@ -1777,6 +1753,11 @@ class ICorCompileInfo
     virtual int GetVersionResilientTypeHashCode(CORINFO_MODULE_HANDLE moduleHandle, mdToken token) = 0;
 
     virtual int GetVersionResilientMethodHashCode(CORINFO_METHOD_HANDLE methodHandle) = 0;
+
+    virtual BOOL EnumMethodsForStub(CORINFO_METHOD_HANDLE hMethod, void** enumerator) = 0;
+    virtual BOOL EnumNextMethodForStub(void * enumerator, CORINFO_METHOD_HANDLE *hMethod) = 0;
+    virtual void EnumCloseForStubEnumerator(void *enumerator) = 0;
+
 #endif
 
     virtual BOOL HasCustomAttribute(CORINFO_METHOD_HANDLE method, LPCSTR customAttributeName) = 0;
@@ -1821,6 +1802,7 @@ extern bool g_fNGenWinMDResilient;
 
 #ifdef FEATURE_READYTORUN_COMPILER
 extern bool g_fReadyToRunCompilation;
+extern bool g_fLargeVersionBubble;
 #endif
 
 inline bool IsReadyToRunCompilation()
@@ -1831,5 +1813,12 @@ inline bool IsReadyToRunCompilation()
     return false;
 #endif
 }
+
+#ifdef FEATURE_READYTORUN_COMPILER
+inline bool IsLargeVersionBubbleEnabled()
+{
+    return g_fLargeVersionBubble;
+}
+#endif
 
 #endif /* COR_COMPILE_H_ */

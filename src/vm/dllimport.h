@@ -5,9 +5,6 @@
 // File: DllImport.h
 //
 
-//
-
-
 #ifndef __dllimport_h__
 #define __dllimport_h__
 
@@ -63,11 +60,6 @@ class NDirect
 
 public:
     //---------------------------------------------------------
-    // One-time init
-    //---------------------------------------------------------
-    static void Init();
-
-    //---------------------------------------------------------
     // Does a class or method have a NAT_L CustomAttribute?
     //
     // S_OK    = yes
@@ -76,10 +68,14 @@ public:
     //---------------------------------------------------------
     static HRESULT HasNAT_LAttribute(IMDInternalImport *pInternalImport, mdToken token, DWORD dwMemberAttrs);
 
-    static LPVOID NDirectGetEntryPoint(NDirectMethodDesc *pMD, HINSTANCE hMod);
-    static HMODULE LoadLibraryFromPath(LPCWSTR libraryPath);
-    static HINSTANCE LoadLibraryModule(NDirectMethodDesc * pMD, LoadLibErrorTracker *pErrorTracker);
-
+    static LPVOID NDirectGetEntryPoint(NDirectMethodDesc *pMD, NATIVE_LIBRARY_HANDLE hMod);
+    static NATIVE_LIBRARY_HANDLE LoadLibraryFromPath(LPCWSTR libraryPath, BOOL throwOnError);
+    static NATIVE_LIBRARY_HANDLE LoadLibraryByName(LPCWSTR name, Assembly *callingAssembly, 
+                                                   BOOL hasDllImportSearchPathFlags, DWORD dllImportSearchPathFlags, 
+                                                   BOOL throwOnError);
+    static NATIVE_LIBRARY_HANDLE LoadLibraryModule(NDirectMethodDesc * pMD, LoadLibErrorTracker *pErrorTracker);
+    static void FreeNativeLibrary(NATIVE_LIBRARY_HANDLE handle);
+    static INT_PTR GetNativeLibraryExport(NATIVE_LIBRARY_HANDLE handle, LPCWSTR symbolName, BOOL throwOnError);
 
     static VOID NDirectLink(NDirectMethodDesc *pMD);
 
@@ -118,33 +114,16 @@ public:
 
     inline static ILStubCache*     GetILStubCache(NDirectStubParameters* pParams);
 
-
-    static BOOL IsHostHookEnabled();
-
-    static Stub *GenerateStubForHost(Module *pModule, CorUnmanagedCallingConvention callConv, WORD wArgSize);
-
 private:
     NDirect() {LIMITED_METHOD_CONTRACT;};     // prevent "new"'s on this class
 
-    static HMODULE LoadFromNativeDllSearchDirectories(AppDomain* pDomain, LPCWSTR libName, DWORD flags, LoadLibErrorTracker *pErrorTracker);
-    static HMODULE LoadFromPInvokeAssemblyDirectory(Assembly *pAssembly, LPCWSTR libName, DWORD flags, LoadLibErrorTracker *pErrorTracker);
-
-    static HMODULE LoadLibraryModuleViaHost(NDirectMethodDesc * pMD, AppDomain* pDomain, const wchar_t* wszLibName);
-
-#if !defined(FEATURE_CORESYSTEM)
-    static HINSTANCE    CheckForWellKnownModules(LPCWSTR wszLibName, LoadLibErrorTracker *pErrorTracker);
-    static PtrHashMap   *s_pWellKnownNativeModules;
-
-    // Indicates if the OS supports the new secure LoadLibraryEx flags introduced in KB2533623
-    static bool         s_fSecureLoadLibrarySupported;
-
-public:
-    static bool SecureLoadLibrarySupported()
-    {
-        LIMITED_METHOD_CONTRACT;
-        return s_fSecureLoadLibrarySupported;
-    }
-#endif // !FEATURE_CORESYSTEM
+    static NATIVE_LIBRARY_HANDLE LoadFromNativeDllSearchDirectories(LPCWSTR libName, DWORD flags, LoadLibErrorTracker *pErrorTracker);
+    static NATIVE_LIBRARY_HANDLE LoadFromPInvokeAssemblyDirectory(Assembly *pAssembly, LPCWSTR libName, DWORD flags, LoadLibErrorTracker *pErrorTracker);
+    static NATIVE_LIBRARY_HANDLE LoadLibraryModuleViaHost(NDirectMethodDesc * pMD, LPCWSTR wszLibName);
+    static NATIVE_LIBRARY_HANDLE LoadLibraryModuleViaEvent(NDirectMethodDesc * pMD, LPCWSTR wszLibName);
+    static NATIVE_LIBRARY_HANDLE LoadLibraryModuleViaCallback(NDirectMethodDesc * pMD, LPCWSTR wszLibName);
+    static NATIVE_LIBRARY_HANDLE LoadLibraryModuleBySearch(NDirectMethodDesc * pMD, LoadLibErrorTracker * pErrorTracker, LPCWSTR wszLibName);
+    static NATIVE_LIBRARY_HANDLE LoadLibraryModuleBySearch(Assembly *callingAssembly, BOOL searchAssemblyDirectory, DWORD dllImportSearchPathFlags, LoadLibErrorTracker * pErrorTracker, LPCWSTR wszLibName);
 };
 
 //----------------------------------------------------------------
@@ -164,7 +143,7 @@ enum NDirectStubFlags
 #endif // FEATURE_COMINTEROP
     NDIRECTSTUB_FL_NGENEDSTUBFORPROFILING   = 0x00000100,
     NDIRECTSTUB_FL_GENERATEDEBUGGABLEIL     = 0x00000200,
-    NDIRECTSTUB_FL_HASDECLARATIVESECURITY   = 0x00000400,
+    // unused                               = 0x00000400,
     NDIRECTSTUB_FL_UNMANAGED_CALLI          = 0x00000800,
     NDIRECTSTUB_FL_TRIGGERCCTOR             = 0x00001000,
 #ifdef FEATURE_COMINTEROP
@@ -176,7 +155,7 @@ enum NDirectStubFlags
     NDIRECTSTUB_FL_WINRTCTOR                = 0x00080000,
     NDIRECTSTUB_FL_WINRTCOMPOSITION         = 0x00100000, // set along with WINRTCTOR
     NDIRECTSTUB_FL_WINRTSTATIC              = 0x00200000,
-
+    // unused                               = 0x00400000,
     NDIRECTSTUB_FL_WINRTHASREDIRECTION      = 0x00800000, // the stub may tail-call to a static stub in mscorlib, not shareable
 #endif // FEATURE_COMINTEROP
 
@@ -201,8 +180,10 @@ enum ILStubTypes
     ILSTUB_ARRAYOP_SET                   = 0x80000002,
     ILSTUB_ARRAYOP_ADDRESS               = 0x80000004,
 #endif
-#ifdef FEATURE_STUBS_AS_IL
+#ifdef FEATURE_MULTICASTSTUB_AS_IL
     ILSTUB_MULTICASTDELEGATE_INVOKE      = 0x80000010,
+#endif
+#ifdef FEATURE_STUBS_AS_IL
     ILSTUB_UNBOXINGILSTUB                = 0x80000020,
     ILSTUB_INSTANTIATINGSTUB             = 0x80000040,
     ILSTUB_SECUREDELEGATE_INVOKE         = 0x80000080,
@@ -224,7 +205,6 @@ inline bool SF_IsHRESULTSwapping       (DWORD dwStubFlags) { LIMITED_METHOD_CONT
 inline bool SF_IsReverseStub           (DWORD dwStubFlags) { LIMITED_METHOD_CONTRACT; return (dwStubFlags < NDIRECTSTUB_FL_INVALID && 0 != (dwStubFlags & NDIRECTSTUB_FL_REVERSE_INTEROP)); }
 inline bool SF_IsNGENedStubForProfiling(DWORD dwStubFlags) { LIMITED_METHOD_CONTRACT; return (dwStubFlags < NDIRECTSTUB_FL_INVALID && 0 != (dwStubFlags & NDIRECTSTUB_FL_NGENEDSTUBFORPROFILING)); }
 inline bool SF_IsDebuggableStub        (DWORD dwStubFlags) { LIMITED_METHOD_CONTRACT; return (dwStubFlags < NDIRECTSTUB_FL_INVALID && 0 != (dwStubFlags & NDIRECTSTUB_FL_GENERATEDEBUGGABLEIL)); }
-inline bool SF_IsStubWithDemand        (DWORD dwStubFlags) { LIMITED_METHOD_CONTRACT; return (dwStubFlags < NDIRECTSTUB_FL_INVALID && 0 != (dwStubFlags & NDIRECTSTUB_FL_HASDECLARATIVESECURITY)); }
 inline bool SF_IsCALLIStub             (DWORD dwStubFlags) { LIMITED_METHOD_CONTRACT; return (dwStubFlags < NDIRECTSTUB_FL_INVALID && 0 != (dwStubFlags & NDIRECTSTUB_FL_UNMANAGED_CALLI)); }
 inline bool SF_IsStubWithCctorTrigger  (DWORD dwStubFlags) { LIMITED_METHOD_CONTRACT; return (dwStubFlags < NDIRECTSTUB_FL_INVALID && 0 != (dwStubFlags & NDIRECTSTUB_FL_TRIGGERCCTOR)); }
 inline bool SF_IsForNumParamBytes      (DWORD dwStubFlags) { LIMITED_METHOD_CONTRACT; return (dwStubFlags < NDIRECTSTUB_FL_INVALID && 0 != (dwStubFlags & NDIRECTSTUB_FL_FOR_NUMPARAMBYTES)); }
@@ -235,9 +215,12 @@ inline bool SF_IsArrayOpStub           (DWORD dwStubFlags) { LIMITED_METHOD_CONT
                                                                                               (dwStubFlags == ILSTUB_ARRAYOP_ADDRESS)); }
 #endif
 
+#ifdef FEATURE_MULTICASTSTUB_AS_IL
+inline bool SF_IsMulticastDelegateStub  (DWORD dwStubFlags) { LIMITED_METHOD_CONTRACT; return (dwStubFlags == ILSTUB_MULTICASTDELEGATE_INVOKE); }
+#endif
+
 #ifdef FEATURE_STUBS_AS_IL
 inline bool SF_IsSecureDelegateStub  (DWORD dwStubFlags)    { LIMITED_METHOD_CONTRACT; return (dwStubFlags == ILSTUB_SECUREDELEGATE_INVOKE); }
-inline bool SF_IsMulticastDelegateStub  (DWORD dwStubFlags) { LIMITED_METHOD_CONTRACT; return (dwStubFlags == ILSTUB_MULTICASTDELEGATE_INVOKE); }
 inline bool SF_IsUnboxingILStub         (DWORD dwStubFlags) { LIMITED_METHOD_CONTRACT; return (dwStubFlags == ILSTUB_UNBOXINGILSTUB); }
 inline bool SF_IsInstantiatingStub      (DWORD dwStubFlags) { LIMITED_METHOD_CONTRACT; return (dwStubFlags == ILSTUB_INSTANTIATINGSTUB); }
 #endif
@@ -297,10 +280,6 @@ inline void SF_ConsistencyCheck(DWORD dwStubFlags)
     CONSISTENCY_CHECK(!(SF_IsFieldGetterStub(dwStubFlags) && !SF_IsHRESULTSwapping(dwStubFlags)));
     CONSISTENCY_CHECK(!(SF_IsFieldSetterStub(dwStubFlags) && !SF_IsHRESULTSwapping(dwStubFlags)));
 
-    // Reverse and CALLI stubs don't have demands
-    CONSISTENCY_CHECK(!(SF_IsReverseStub(dwStubFlags) && SF_IsStubWithDemand(dwStubFlags)));
-    CONSISTENCY_CHECK(!(SF_IsCALLIStub(dwStubFlags) && SF_IsStubWithDemand(dwStubFlags)));
-
     // Delegate stubs are not COM
     CONSISTENCY_CHECK(!(SF_IsDelegateStub(dwStubFlags) && SF_IsCOMStub(dwStubFlags)));
 }
@@ -347,6 +326,7 @@ private:
     void PreInit(Module* pModule, MethodTable *pClass);
     void PreInit(MethodDesc* pMD);
     void SetError(WORD error) { if (!m_error) m_error = error; }
+    void BestGuessNDirectDefaults(MethodDesc* pMD);
 
 public:     
     DWORD GetStubFlags() 
@@ -474,9 +454,6 @@ public:
     void    EmitObjectValidation(ILCodeStream* pcsEmit, DWORD dwStubFlags);
 #endif // VERIFY_HEAP
     void    EmitLoadStubContext(ILCodeStream* pcsEmit, DWORD dwStubFlags);
-#ifdef MDA_SUPPORTED
-    void    EmitCallGcCollectForMDA(ILCodeStream *pcsEmit, DWORD dwStubFlags);
-#endif // MDA_SUPPORTED    
     void    GenerateInteropParamException(ILCodeStream* pcsEmit);
     void    NeedsCleanupList();
 
@@ -497,6 +474,10 @@ public:
 
     void    SetInteropParamExceptionInfo(UINT resID, UINT paramIdx);
     bool    HasInteropParamExceptionInfo();
+    bool    TargetHasThis()
+    {
+        return m_targetHasThis == TRUE;
+    }
 
     void ClearCode();
 
@@ -559,6 +540,7 @@ protected:
     BOOL                m_fHasCleanupCode;
     BOOL                m_fHasExceptionCleanupCode;
     BOOL                m_fCleanupWorkListIsSetup;
+    BOOL                m_targetHasThis;
     DWORD               m_dwThreadLocalNum;                 // managed-to-native only
     DWORD               m_dwArgMarshalIndexLocalNum;
     DWORD               m_dwCleanupWorkListLocalNum;
@@ -571,6 +553,11 @@ protected:
 
     DWORD               m_dwStubFlags;
 };
+
+// This attempts to guess whether a target is an API call that uses SetLastError to communicate errors.
+BOOL HeuristicDoesThisLooksLikeAnApiCall(LPBYTE pTarget);
+BOOL HeuristicDoesThisLookLikeAGetLastErrorCall(LPBYTE pTarget);
+DWORD STDMETHODCALLTYPE FalseGetLastError();
 
 class NDirectStubParameters
 {
@@ -627,23 +614,6 @@ PCODE GetStubForInteropMethod(MethodDesc* pMD, DWORD dwStubFlags = 0, MethodDesc
 // Resolve and return the predefined IL stub method
 HRESULT FindPredefinedILStubMethod(MethodDesc *pTargetMD, DWORD dwStubFlags, MethodDesc **ppRetStubMD);
 #endif // FEATURE_COMINTEROP
-
-EXTERN_C BOOL CallNeedsHostHook(size_t target);
-
-//
-// Inlinable implementation allows compiler to strip all code related to host hook
-//
-inline BOOL NDirect::IsHostHookEnabled()
-{
-    LIMITED_METHOD_CONTRACT;
-    return FALSE;
-}
-
-inline BOOL CallNeedsHostHook(size_t target)
-{
-    LIMITED_METHOD_CONTRACT;
-    return FALSE;
-}
 
 // 
 // Limit length of string field in IL stub ETW events so that the whole

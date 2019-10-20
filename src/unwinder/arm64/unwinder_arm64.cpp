@@ -235,7 +235,7 @@ Return Value:
         SourceAddress = StartingSp + FIELD_OFFSET(ARM64_KTRAP_FRAME, X);
         for (RegIndex = 0; RegIndex < 18; RegIndex++) {
             UPDATE_CONTEXT_POINTERS(UnwindParams, RegIndex, SourceAddress);
-#ifdef __clang__
+#ifdef __GNUC__
             *(&ContextRecord->X0 + RegIndex) = MEMORY_READ_QWORD(UnwindParams, SourceAddress);
 #else
             ContextRecord->X[RegIndex] = MEMORY_READ_QWORD(UnwindParams, SourceAddress);
@@ -315,7 +315,7 @@ Return Value:
         SourceAddress = StartingSp + FIELD_OFFSET(T_CONTEXT, X0);
         for (RegIndex = 0; RegIndex < 29; RegIndex++) {
             UPDATE_CONTEXT_POINTERS(UnwindParams, RegIndex, SourceAddress);
-#ifdef __clang__
+#ifdef __GNUC__
             *(&ContextRecord->X0 + RegIndex) = MEMORY_READ_QWORD(UnwindParams, SourceAddress);
 #else
             ContextRecord->X[RegIndex] = MEMORY_READ_QWORD(UnwindParams, SourceAddress);
@@ -460,7 +460,7 @@ Arguments:
 
     SpOffset - Specifies a stack offset. Positive values are simply used
         as a base offset. Negative values assume a predecrement behavior:
-        a 0 offset is used for restoration, but the absoute value of the
+        a 0 offset is used for restoration, but the absolute value of the
         offset is added to the final Sp.
 
     FirstRegister - Specifies the index of the first register to restore.
@@ -501,7 +501,7 @@ Return Value:
 
     for (RegIndex = 0; RegIndex < RegisterCount; RegIndex++) {
         UPDATE_CONTEXT_POINTERS(UnwindParams, FirstRegister + RegIndex, CurAddress);
-#ifdef __clang__
+#ifdef __GNUC__
         *(&ContextRecord->X0 + FirstRegister + RegIndex) = MEMORY_READ_QWORD(UnwindParams, CurAddress);
 #else
         ContextRecord->X[FirstRegister + RegIndex] = MEMORY_READ_QWORD(UnwindParams, CurAddress);
@@ -536,7 +536,7 @@ Arguments:
 
     SpOffset - Specifies a stack offset. Positive values are simply used
         as a base offset. Negative values assume a predecrement behavior:
-        a 0 offset is used for restoration, but the absoute value of the
+        a 0 offset is used for restoration, but the absolute value of the
         offset is added to the final Sp.
 
     FirstRegister - Specifies the index of the first register to restore.
@@ -658,7 +658,6 @@ Return Value:
     ULONG FunctionLength;
     ULONG HeaderWord;
     ULONG NextCode;
-    ULONG Offset;
     DWORD64 OffsetInFunction;
     ULONG ScopeNum;
     ULONG ScopeSize;
@@ -1293,7 +1292,6 @@ Return Value:
     ULONG HBit;
     ULONG HOpcodes;
     ULONG IRegOpcodes;
-    ULONG InstCount;
     ULONG IntSize;
     ULONG LocalSize;
     DWORD64 OffsetInFunction;

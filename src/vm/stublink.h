@@ -108,7 +108,7 @@ struct StubUnwindInfoHeapSegment
     StubUnwindInfoHeader *pUnwindHeaderList;
     StubUnwindInfoHeapSegment *pNext;
 
-#ifdef _WIN64
+#ifdef BIT64
     class UnwindInfoTable* pUnwindInfoTable;       // Used to publish unwind info to ETW stack crawler
 #endif
 };
@@ -281,7 +281,6 @@ public:
         //
         // Throws exception on failure.
         //---------------------------------------------------------------
-        Stub *Link(DWORD flags = 0) { WRAPPER_NO_CONTRACT; return Link(NULL, flags); }
         Stub *Link(LoaderHeap *heap, DWORD flags = 0);
 
         //---------------------------------------------------------------
@@ -411,11 +410,11 @@ private:
 
         // Writes out the code element into memory following the
         // stub object.
-        bool EmitStub(Stub* pStub, int globalsize);
+        bool EmitStub(Stub* pStub, int globalsize, LoaderHeap* pHeap);
 
         CodeRun *GetLastCodeRunIfAny();
 
-        bool EmitUnwindInfo(Stub* pStub, int globalsize);
+        bool EmitUnwindInfo(Stub* pStub, int globalsize, LoaderHeap* pHeap);
 
 #if defined(_TARGET_AMD64_) && defined(STUBLINKER_GENERATES_UNWIND_INFO)
         UNWIND_CODE *AllocUnwindInfo (UCHAR Op, UCHAR nExtraSlots = 0);
@@ -583,7 +582,6 @@ class Stub
                 NOTHROW;
                 GC_NOTRIGGER;
                 FORBID_FAULT;
-                SO_TOLERANT;
             }
             CONTRACTL_END
 
@@ -815,11 +813,11 @@ class Stub
 
         UINT32  m_signature;
 #else 
-#ifdef _WIN64
+#ifdef BIT64
         //README ALIGNEMENT: in retail mode UINT m_numCodeBytes does not align to 16byte for the code
         //                   after the Stub struct. This is to pad properly
         UINT    m_pad_code_bytes; 
-#endif // _WIN64
+#endif // BIT64
 #endif // _DEBUG
         
 #ifdef _DEBUG

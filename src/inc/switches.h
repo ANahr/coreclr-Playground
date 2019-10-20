@@ -34,10 +34,6 @@
     #define LOGGING
 #endif
 
-#if !defined(_TARGET_X86_) || defined(FEATURE_PAL)
-#define WIN64EXCEPTIONS
-#endif
-
 #if !defined(FEATURE_UTILCODE_NO_DEPENDENCIES)
 // Failpoint support
 #if defined(_DEBUG) && !defined(DACCESS_COMPILE) && !defined(FEATURE_PAL)
@@ -47,13 +43,6 @@
 
 #if 0
     #define APPDOMAIN_STATE
-    #define BREAK_ON_UNLOAD
-    #define AD_LOG_MEMORY
-    #define AD_NO_UNLOAD
-    #define AD_SNAPSHOT
-    #define BREAK_META_ACCESS
-    #define AD_BREAK_ON_CANNOT_UNLOAD
-    #define BREAK_ON_CLSLOAD
 
     // Enable to track details of EESuspension
     #define TIME_SUSPEND
@@ -64,19 +53,10 @@
 #define GC_STATS
 #endif
 
-
-#if defined(_DEBUG) && !defined(DACCESS_COMPILE) && (defined(_TARGET_X86_) || defined(_TARGET_AMD64_))
-// On x86/x64 Windows debug builds, respect the COMPlus_EnforceEEThreadNotRequiredContracts
-// runtime switch. See code:InitThreadManager and code:GetThreadGenericFullCheck
-#define ENABLE_GET_THREAD_GENERIC_FULL_CHECK
-#endif
-
 #if defined(_TARGET_X86_) || defined(_TARGET_ARM_)
-    #define PAGE_SIZE               0x1000
     #define USE_UPPER_ADDRESS       0
 
 #elif defined(_TARGET_AMD64_) || defined(_TARGET_ARM64_)
-    #define PAGE_SIZE               0x1000
     #define UPPER_ADDRESS_MAPPING_FACTOR 2
     #define CLR_UPPER_ADDRESS_MIN   0x64400000000
     #define CODEHEAP_START_ADDRESS  0x64480000000
@@ -92,11 +72,7 @@
     #error Please add a new #elif clause and define all portability macros for the new platform
 #endif
 
-#ifndef OS_PAGE_SIZE
-#define OS_PAGE_SIZE PAGE_SIZE
-#endif
-
-#if defined(_WIN64)
+#if defined(BIT64)
 #define JIT_IS_ALIGNED
 #endif
 
@@ -127,13 +103,14 @@
 #define HAVE_GCCOVER
 #endif
 
+// Some platforms may see spurious AVs when GcCoverage is enabled because of races.
+// Enable further processing to see if they recur.
+#if defined(HAVE_GCCOVER) && (defined(_TARGET_X86_) || defined(_TARGET_AMD64_)) && !defined(FEATURE_PAL)
+#define GCCOVER_TOLERATE_SPURIOUS_AV
+#endif
+
 //Turns on a startup delay to allow simulation of slower and faster startup times.
 #define ENABLE_STARTUP_DELAY
-
-
-#ifndef ALLOW_LOCAL_WORKER
-#define ALLOW_LOCAL_WORKER
-#endif
 
 
 #ifdef _DEBUG
@@ -156,16 +133,6 @@
 #endif // PROFILING_SUPPORTED
 
 #endif // _DEBUG
-
-
-
-#if defined(PROFILING_SUPPORTED)
-// On desktop CLR builds, the profiling API uses the event log for end-user-friendly
-// diagnostic messages.  CoreCLR on Windows ouputs debug strings for diagnostic messages.
-// Rotor builds have no access to event log message resources, though, so they simply 
-// display popup dialogs for now.
-#define FEATURE_PROFAPI_EVENT_LOGGING
-#endif // defined(PROFILING_SUPPORTED)
 
 // MUST NEVER CHECK IN WITH THIS ENABLED.
 // This is just for convenience in doing performance investigations in a checked-out enlistment.
@@ -207,24 +174,13 @@
 
 // Prefer double alignment for structs and arrays with doubles. Put arrays of doubles more agressively 
 // into large object heap for performance because large object heap is 8 byte aligned 
-#if !defined(FEATURE_64BIT_ALIGNMENT) && !defined(_WIN64)
+#if !defined(FEATURE_64BIT_ALIGNMENT) && !defined(BIT64)
 #define FEATURE_DOUBLE_ALIGNMENT_HINT
 #endif
 
 #if defined(FEATURE_CORESYSTEM)
 #define FEATURE_MINIMETADATA_IN_TRIAGEDUMPS
 #endif // defined(FEATURE_CORESYSTEM)
-
-#if defined(FEATURE_PREJIT) && defined(FEATURE_CORESYSTEM)
-// Desktop CLR allows profilers and debuggers to opt out of loading NGENd images, and to
-// JIT everything instead. "FEATURE_TREAT_NI_AS_MSIL_DURING_DIAGNOSTICS" is roughly the
-// equivalent for Apollo, where MSIL images may not be available at all.
-// FEATURE_TREAT_NI_AS_MSIL_DURING_DIAGNOSTICS allows profilers or debuggers to state
-// they don't want to use pregenerated code, and to instead load the NGENd image but
-// treat it as if it were MSIL by ignoring the prejitted code and prebaked structures,
-// and instead to JIT and load types at run-time.
-#define FEATURE_TREAT_NI_AS_MSIL_DURING_DIAGNOSTICS
-#endif
 
 // If defined, support interpretation.
 #if !defined(CROSSGEN_COMPILE)
@@ -235,3 +191,6 @@
 
 #endif // !defined(CROSSGEN_COMPILE)
 
+#if defined(FEATURE_INTERPRETER) && defined(CROSSGEN_COMPILE)
+#undef FEATURE_INTERPRETER
+#endif

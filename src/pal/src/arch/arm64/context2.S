@@ -99,9 +99,8 @@ LOCAL_LABEL(Done_CONTEXT_INTEGER):
     add x0, x0,   CONTEXT_FLOAT_CONTROL_OFFSET
     mrs x1, fpcr
     mrs x2, fpsr
-    sub x0, x0,   CONTEXT_FLOAT_CONTROL_OFFSET
     stp x1, x2,   [x0, CONTEXT_Fpcr]
-    sub x0, x0,   CONTEXT_NEON_OFFSET
+    sub x0, x0,   CONTEXT_FLOAT_CONTROL_OFFSET + CONTEXT_NEON_OFFSET
 
 LOCAL_LABEL(Done_CONTEXT_FLOATING_POINT):
     
@@ -133,6 +132,17 @@ LEAF_END RtlCaptureContext, _TEXT
 //  x1: Exception*
 //
 LEAF_ENTRY RtlRestoreContext, _TEXT
+
+#ifdef HAS_ASAN
+    ldr w17, [x0, #(CONTEXT_ContextFlags)]
+    tbz w17, #CONTEXT_CONTROL_BIT, LOCAL_LABEL(Restore_CONTEXT_FLOATING_POINT)
+
+    stp x0, x1, [sp, -16]!
+    bl EXTERNAL_C_FUNC(__asan_handle_no_return)
+    ldp x0, x1, [sp], 16
+
+LOCAL_LABEL(Restore_CONTEXT_FLOATING_POINT):
+#endif
     // aarch64 specifies:
     //   IP0 and IP1, the Intra-Procedure Call temporary registers,
     //   are available for use by e.g. veneers or branch islands during a procedure call.
@@ -162,10 +172,11 @@ LEAF_ENTRY RtlRestoreContext, _TEXT
     ldp q26, q27, [x16, CONTEXT_V26]
     ldp q28, q29, [x16, CONTEXT_V28]
     ldp q30, q31, [x16, CONTEXT_V30]
+    add x16, x16, CONTEXT_FLOAT_CONTROL_OFFSET
     ldp x1, x2,   [x16, CONTEXT_Fpcr]
     msr fpcr, x1
     msr fpsr, x2
-    sub x16, x16,   CONTEXT_NEON_OFFSET
+    sub x16, x16,   CONTEXT_FLOAT_CONTROL_OFFSET + CONTEXT_NEON_OFFSET
 
 LOCAL_LABEL(No_Restore_CONTEXT_FLOATING_POINT):
     tbz w17, #CONTEXT_INTEGER_BIT, LOCAL_LABEL(No_Restore_CONTEXT_INTEGER)

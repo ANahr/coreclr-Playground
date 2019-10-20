@@ -1,10 +1,6 @@
 
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
-if(WIN32)
-    add_compile_options(/wd4996)
-endif(WIN32)
-
 set(UTILCODE_COMMON_SOURCES
   clrhost_nodependencies.cpp
   ccomprc.cpp
@@ -28,7 +24,6 @@ set(UTILCODE_COMMON_SOURCES
   peinformation.cpp
   check.cpp
   log.cpp
-  apithreadstress.cpp
   arraylist.cpp
   bitvector.cpp
   comex.cpp
@@ -41,11 +36,11 @@ set(UTILCODE_COMMON_SOURCES
   outstring.cpp
   ilformatter.cpp
   opinfo.cpp
-  sortversioning.cpp
   corimage.cpp
   format1.cpp
   prettyprintsig.cpp
   regutil.cpp
+  sha1.cpp
   sigbuilder.cpp
   sigparser.cpp
   sstring.cpp
@@ -60,8 +55,8 @@ set(UTILCODE_COMMON_SOURCES
   debug.cpp
   pedecoder.cpp
   winfix.cpp
-  longfilepathwrappers.cpp 
-  jithost.cpp
+  longfilepathwrappers.cpp
+  yieldprocessornormalized.cpp
 )
 
 # These source file do not yet compile on Linux.
@@ -72,9 +67,7 @@ if(WIN32)
     appxutil.cpp
     dacutil.cpp
     dlwrap.cpp
-    downlevel.cpp
     loadrc.cpp
-    newapis.cpp
     securitywrapper.cpp
     securityutil.cpp
     stacktrace.cpp
@@ -86,25 +79,12 @@ if(WIN32)
     )
   endif()
   
-  if(NOT DEFINED FEATURE_IMPLICIT_TLS)
-    list(APPEND UTILCODE_SOURCES 
-      tls.cpp
-    )
-  endif(NOT DEFINED FEATURE_IMPLICIT_TLS)
 endif(WIN32)
   
 set(UTILCODE_SOURCES 
   ${UTILCODE_COMMON_SOURCES}
   perflog.cpp
 )
-
-if(WIN32)
-  if(NOT DEFINED FEATURE_IMPLICIT_TLS)
-    list(APPEND UTILCODE_SOURCES 
-      tls.cpp
-    )
-  endif(NOT DEFINED FEATURE_IMPLICIT_TLS)
-endif()
 
 set(UTILCODE_DAC_SOURCES 
   ${UTILCODE_COMMON_SOURCES}
@@ -122,16 +102,41 @@ set(UTILCODE_STATICNOHOST_SOURCES
   hostimpl.cpp
 )
 
+set (UTILCODE_DEPENDENCIES eventing_headers)
+
 convert_to_absolute_path(UTILCODE_SOURCES ${UTILCODE_SOURCES})
 convert_to_absolute_path(UTILCODE_DAC_SOURCES ${UTILCODE_DAC_SOURCES})
 convert_to_absolute_path(UTILCODE_CROSSGEN_SOURCES ${UTILCODE_CROSSGEN_SOURCES})
 convert_to_absolute_path(UTILCODE_STATICNOHOST_SOURCES ${UTILCODE_STATICNOHOST_SOURCES})
 
+add_library_clr(utilcode_dac STATIC ${UTILCODE_DAC_SOURCES})
+add_library_clr(utilcode STATIC ${UTILCODE_SOURCES})
+add_library_clr(utilcodestaticnohost STATIC ${UTILCODE_STATICNOHOST_SOURCES})
+add_library_clr(utilcode_crossgen STATIC ${UTILCODE_CROSSGEN_SOURCES})
+
 if(CLR_CMAKE_PLATFORM_UNIX)
-    add_compile_options(-fPIC)
+  target_link_libraries(utilcodestaticnohost  nativeresourcestring)
+  target_link_libraries(utilcode_crossgen  nativeresourcestring)
+  target_link_libraries(utilcode_dac nativeresourcestring)
+  target_link_libraries(utilcode nativeresourcestring)
+  add_dependencies(utilcode_dac coreclrpal)
+  add_dependencies(utilcode coreclrpal)
 endif(CLR_CMAKE_PLATFORM_UNIX)
 
-add_subdirectory(dac)
-add_subdirectory(dyncrt)
-add_subdirectory(staticnohost)
-add_subdirectory(crossgen)
+
+if(WIN32)
+    target_compile_definitions(utilcodestaticnohost PRIVATE _CRTIMP=) # use static version of crt
+endif(WIN32)
+
+set_target_properties(utilcode_dac PROPERTIES DAC_COMPONENT TRUE)
+set_target_properties(utilcode_crossgen PROPERTIES CROSSGEN_COMPONENT TRUE)
+target_compile_definitions(utilcode_dac PRIVATE SELF_NO_HOST)
+target_compile_definitions(utilcodestaticnohost PRIVATE SELF_NO_HOST)
+add_dependencies(utilcode_dac ${UTILCODE_DEPENDENCIES})
+add_dependencies(utilcode ${UTILCODE_DEPENDENCIES})
+add_dependencies(utilcode_crossgen ${UTILCODE_DEPENDENCIES})
+add_dependencies(utilcodestaticnohost ${UTILCODE_DEPENDENCIES})
+target_precompile_header(TARGET utilcode_dac HEADER stdafx.h)
+target_precompile_header(TARGET utilcode HEADER stdafx.h)
+target_precompile_header(TARGET utilcode_crossgen HEADER stdafx.h)
+target_precompile_header(TARGET utilcodestaticnohost HEADER stdafx.h)

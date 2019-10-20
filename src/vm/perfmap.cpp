@@ -12,7 +12,18 @@
 #include "perfinfo.h"
 #include "pal.h"
 
+// The code addresses are actually native image offsets during crossgen. Print
+// them as 32-bit numbers for consistent output when cross-targeting and to
+// make the output more compact.
+
+#ifdef CROSSGEN_COMPILE
+#define FMT_CODE_ADDR "%08x"
+#else
+#define FMT_CODE_ADDR "%p"
+#endif
+
 PerfMap * PerfMap::s_Current = nullptr;
+bool PerfMap::s_ShowOptimizationTiers = false;
 
 // Initialize the map for the process - called from EEStartupHelper.
 void PerfMap::Initialize()
@@ -27,6 +38,34 @@ void PerfMap::Initialize()
 
         // Create the map.
         s_Current = new PerfMap(currentPid);
+
+        int signalNum = (int) CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_PerfMapIgnoreSignal);
+
+        if (signalNum > 0)
+        {
+            PAL_IgnoreProfileSignal(signalNum);
+        }
+
+        if (CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_PerfMapShowOptimizationTiers) != 0)
+        {
+            s_ShowOptimizationTiers = true;
+        }
+
+#ifndef CROSSGEN_COMPILE
+        char jitdumpPath[4096];
+
+        // CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_PerfMapJitDumpPath) returns a LPWSTR
+        // Use GetEnvironmentVariableA because it is simpler.
+        // Keep comment here to make it searchable.
+        DWORD len = GetEnvironmentVariableA("COMPlus_PerfMapJitDumpPath", jitdumpPath, sizeof(jitdumpPath) - 1);
+
+        if (len == 0)
+        {
+            GetTempPathA(sizeof(jitdumpPath) - 1, jitdumpPath);
+        }
+
+        PAL_PerfJitDump_Start(jitdumpPath);
+#endif // CROSSGEN_COMPILE
     }
 }
 
@@ -37,6 +76,7 @@ void PerfMap::Destroy()
 
     if (s_Current != nullptr)
     {
+        PAL_PerfJitDump_Finish();
         delete s_Current;
         s_Current = nullptr;
     }
@@ -49,6 +89,8 @@ PerfMap::PerfMap(int pid)
 
     // Initialize with no failures.
     m_ErrorEncountered = false;
+
+    m_StubsMapped = 0;
 
     // Build the path to the map file on disk.
     WCHAR tempPath[MAX_LONGPATH+1];
@@ -76,6 +118,8 @@ PerfMap::PerfMap()
 
     // Initialize with no failures.
     m_ErrorEncountered = false;
+
+    m_StubsMapped = 0;
 }
 
 // Clean-up resources.
@@ -135,7 +179,7 @@ void PerfMap::WriteLine(SString& line)
 }
 
 // Log a method to the map.
-void PerfMap::LogMethod(MethodDesc * pMethod, PCODE pCode, size_t codeSize)
+void PerfMap::LogMethod(MethodDesc * pMethod, PCODE pCode, size_t codeSize, const char *optimizationTier)
 {
     CONTRACTL{
         THROWS;
@@ -156,16 +200,21 @@ void PerfMap::LogMethod(MethodDesc * pMethod, PCODE pCode, size_t codeSize)
     EX_TRY
     {
         // Get the full method signature.
-        SString fullMethodSignature;
-        pMethod->GetFullMethodInfo(fullMethodSignature);
+        SString name;
+        pMethod->GetFullMethodInfo(name);
 
         // Build the map file line.
         StackScratchBuffer scratch;
+        if (optimizationTier != nullptr && s_ShowOptimizationTiers)
+        {
+            name.AppendPrintf("[%s]", optimizationTier);
+        }
         SString line;
-        line.Printf("%p %x %s\n", pCode, codeSize, fullMethodSignature.GetANSI(scratch));
+        line.Printf(FMT_CODE_ADDR " %x %s\n", pCode, codeSize, name.GetANSI(scratch));
 
         // Write the line.
         WriteLine(line);
+        PAL_PerfJitDump_LogMethod((void*)pCode, codeSize, name.GetANSI(scratch), nullptr, nullptr);
     }
     EX_CATCH{} EX_END_CATCH(SwallowAllExceptions);
 }
@@ -208,14 +257,111 @@ void PerfMap::LogImage(PEFile * pFile)
 
 
 // Log a method to the map.
-void PerfMap::LogJITCompiledMethod(MethodDesc * pMethod, PCODE pCode, size_t codeSize)
+void PerfMap::LogJITCompiledMethod(MethodDesc * pMethod, PCODE pCode, size_t codeSize, PrepareCodeConfig *pConfig)
 {
     LIMITED_METHOD_CONTRACT;
 
-    if (s_Current != nullptr)
+    if (s_Current == nullptr)
     {
-        s_Current->LogMethod(pMethod, pCode, codeSize);
+        return;
     }
+
+    const char *optimizationTier = nullptr;
+#ifndef CROSSGEN_COMPILE
+    if (s_ShowOptimizationTiers)
+    {
+        optimizationTier = PrepareCodeConfig::GetJitOptimizationTierStr(pConfig, pMethod);
+    }
+#endif // CROSSGEN_COMPILE
+
+    s_Current->LogMethod(pMethod, pCode, codeSize, optimizationTier);
+}
+
+// Log a pre-compiled method to the perfmap.
+void PerfMap::LogPreCompiledMethod(MethodDesc * pMethod, PCODE pCode)
+{
+    LIMITED_METHOD_CONTRACT;
+
+    if (s_Current == nullptr)
+    {
+        return;
+    }
+
+    // Get information about the NGEN'd method code.
+    EECodeInfo codeInfo(pCode);
+    _ASSERTE(codeInfo.IsValid());
+
+    IJitManager::MethodRegionInfo methodRegionInfo;
+    codeInfo.GetMethodRegionInfo(&methodRegionInfo);
+
+    // Logging failures should not cause any exceptions to flow upstream.
+    EX_TRY
+    {
+        // Get the full method signature.
+        SString name;
+        pMethod->GetFullMethodInfo(name);
+
+        StackScratchBuffer scratch;
+
+        if (s_ShowOptimizationTiers)
+        {
+            name.AppendPrintf(W("[PreJIT]"));
+        }
+
+        // NGEN can split code between hot and cold sections which are separate in memory.
+        // Emit an entry for each section if it is used.
+        if (methodRegionInfo.hotSize > 0)
+        {
+            PAL_PerfJitDump_LogMethod((void*)methodRegionInfo.hotStartAddress, methodRegionInfo.hotSize, name.GetANSI(scratch), nullptr, nullptr);
+        }
+
+        if (methodRegionInfo.coldSize > 0)
+        {
+            if (s_ShowOptimizationTiers)
+            {
+                pMethod->GetFullMethodInfo(name);
+                name.AppendPrintf(W("[PreJit-cold]"));
+            }
+            PAL_PerfJitDump_LogMethod((void*)methodRegionInfo.coldStartAddress, methodRegionInfo.coldSize, name.GetANSI(scratch), nullptr, nullptr);
+        }
+    }
+    EX_CATCH{} EX_END_CATCH(SwallowAllExceptions);
+}
+
+// Log a set of stub to the map.
+void PerfMap::LogStubs(const char* stubType, const char* stubOwner, PCODE pCode, size_t codeSize)
+{
+    LIMITED_METHOD_CONTRACT;
+
+    if (s_Current == nullptr || s_Current->m_FileStream == nullptr)
+    {
+        return;
+    }
+
+    // Logging failures should not cause any exceptions to flow upstream.
+    EX_TRY
+    {
+        if(!stubOwner)
+        {
+            stubOwner = "?";
+        }
+        if(!stubType)
+        {
+            stubType = "?";
+        }
+
+        // Build the map file line.
+        StackScratchBuffer scratch;
+        SString name;
+        name.Printf("stub<%d> %s<%s>", ++(s_Current->m_StubsMapped), stubType, stubOwner);
+        SString line;
+        line.Printf(FMT_CODE_ADDR " %x %s\n", pCode, codeSize, name.GetANSI(scratch));
+
+        // Write the line.
+        s_Current->WriteLine(line);
+        PAL_PerfJitDump_LogMethod((void*)pCode, codeSize, name.GetANSI(scratch), nullptr, nullptr);
+    }
+    EX_CATCH{} EX_END_CATCH(SwallowAllExceptions);
 }
 
 void PerfMap::GetNativeImageSignature(PEFile * pFile, WCHAR * pwszSig, unsigned int nSigSize)
@@ -259,6 +405,14 @@ NativeImagePerfMap::NativeImagePerfMap(Assembly * pAssembly, BSTR pDestPath)
 
     // Open the perf map file.
     OpenFile(sDestPerfMapPath);
+
+    // Determine whether to emit RVAs or file offsets based on the specified configuration.
+    m_EmitRVAs = true;
+    CLRConfigStringHolder wszFormat(CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_NativeImagePerfMapFormat));
+    if(wszFormat != NULL && (wcsncmp(wszFormat, strOFFSET, wcslen(strOFFSET)) == 0))
+    {
+        m_EmitRVAs = false;
+    }
 }
 
 // Log data to the perfmap for the specified module.
@@ -269,21 +423,8 @@ void NativeImagePerfMap::LogDataForModule(Module * pModule)
     PEImageLayout * pLoadedLayout = pModule->GetFile()->GetLoaded();
     _ASSERTE(pLoadedLayout != nullptr);
 
-    SIZE_T baseAddr = (SIZE_T)pLoadedLayout->GetBase();
-
-#ifdef FEATURE_READYTORUN_COMPILER
-    if (pLoadedLayout->HasReadyToRunHeader())
-    {
-        ReadyToRunInfo::MethodIterator mi(pModule->GetReadyToRunInfo());
-        while (mi.Next())
-        {
-            MethodDesc *hotDesc = mi.GetMethodDesc();
-
-            LogPreCompiledMethod(hotDesc, mi.GetMethodStartAddress(), baseAddr);
-        }
-    }
-    else
-#endif // FEATURE_READYTORUN_COMPILER
+#ifdef FEATURE_PREJIT
+    if (!pLoadedLayout->HasReadyToRunHeader())
     {
         MethodIterator mi((PTR_Module)pModule);
         while (mi.Next())
@@ -291,15 +432,28 @@ void NativeImagePerfMap::LogDataForModule(Module * pModule)
             MethodDesc *hotDesc = mi.GetMethodDesc();
             hotDesc->CheckRestore();
 
-            LogPreCompiledMethod(hotDesc, mi.GetMethodStartAddress(), baseAddr);
+            LogPreCompiledMethod(hotDesc, mi.GetMethodStartAddress(), pLoadedLayout, nullptr);
         }
+        return;
+    }
+#endif
+
+    ReadyToRunInfo::MethodIterator mi(pModule->GetReadyToRunInfo());
+    while (mi.Next())
+    {
+        MethodDesc* hotDesc = mi.GetMethodDesc();
+
+        LogPreCompiledMethod(hotDesc, mi.GetMethodStartAddress(), pLoadedLayout, "ReadyToRun");
     }
 }
 
 // Log a pre-compiled method to the perfmap.
-void NativeImagePerfMap::LogPreCompiledMethod(MethodDesc * pMethod, PCODE pCode, SIZE_T baseAddr)
+void NativeImagePerfMap::LogPreCompiledMethod(MethodDesc * pMethod, PCODE pCode, PEImageLayout *pLoadedLayout, const char *optimizationTier)
 {
     STANDARD_VM_CONTRACT;
+
+    _ASSERTE(pLoadedLayout != nullptr);
+    SIZE_T baseAddr = (SIZE_T)pLoadedLayout->GetBase();
 
     // Get information about the NGEN'd method code.
     EECodeInfo codeInfo(pCode);
@@ -310,14 +464,25 @@ void NativeImagePerfMap::LogPreCompiledMethod(MethodDesc * pMethod, PCODE pCode,
 
     // NGEN can split code between hot and cold sections which are separate in memory.
     // Emit an entry for each section if it is used.
+    PCODE addr;
     if (methodRegionInfo.hotSize > 0)
     {
-        LogMethod(pMethod, (PCODE)methodRegionInfo.hotStartAddress - baseAddr, methodRegionInfo.hotSize);
+        addr = (PCODE)methodRegionInfo.hotStartAddress - baseAddr;
+        if (!m_EmitRVAs)
+        {
+            addr = pLoadedLayout->RvaToOffset(addr);
+        }
+        LogMethod(pMethod, addr, methodRegionInfo.hotSize, optimizationTier);
     }
 
     if (methodRegionInfo.coldSize > 0)
     {
-        LogMethod(pMethod, (PCODE)methodRegionInfo.coldStartAddress - baseAddr, methodRegionInfo.coldSize);
+        addr = (PCODE)methodRegionInfo.coldStartAddress - baseAddr;
+        if (!m_EmitRVAs)
+        {
+            addr = pLoadedLayout->RvaToOffset(addr);
+        }
+        LogMethod(pMethod, addr, methodRegionInfo.coldSize, optimizationTier);
     }
 }
 

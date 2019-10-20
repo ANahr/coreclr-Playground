@@ -9,15 +9,6 @@
 #include "mdinfo.h"
 #include <ndpversion.h>
 
-// Provide custom LoadLibrary implementation.
-#define LEGACY_ACTIVATION_SHIM_LOAD_LIBRARY WszLoadLibrary
-#define LEGACY_ACTIVATION_SHIM_DEFINE_CoInitializeEE
-#include "LegacyActivationShim.h"
-
-#ifdef FEATURE_PAL
-#include <palstartupw.h>
-#endif
-
 // Global variables
 bool g_bSchema = false; 
 bool g_bRaw = false;
@@ -30,12 +21,12 @@ DWORD g_ValModuleType = ValidatorModuleTypeInvalid;
 IMetaDataImport2 *g_pImport = NULL;
 IMetaDataDispenserEx *g_pDisp = NULL;
 
-void DisplayFile(__in_z __in wchar_t* szFile, BOOL isFile, ULONG DumpFilter, __in_z __in_opt wchar_t* szObjFile, strPassBackFn pDisplayString);
-void DisplayArchive(__in_z __in wchar_t* szFile, ULONG DumpFilter, __in_z __in_opt wchar_t* szObjName, strPassBackFn pDisplayString);
+void DisplayFile(__in_z __in WCHAR* szFile, BOOL isFile, ULONG DumpFilter, __in_z __in_opt WCHAR* szObjFile, strPassBackFn pDisplayString);
+void DisplayArchive(__in_z __in WCHAR* szFile, ULONG DumpFilter, __in_z __in_opt WCHAR* szObjName, strPassBackFn pDisplayString);
 
 void PrintLogo()
 {
-    printf("Microsoft (R) .Net Frameworks Runtime Meta Data Dump Utility   Version %s\n", VER_FILEVERSION_STR);
+    printf("Microsoft (R) .NET Frameworks Runtime Meta Data Dump Utility   Version %s\n", VER_FILEVERSION_STR);
     printf("%S", VER_LEGALCOPYRIGHT_LOGO_STR_L);
     printf("\n");
 }// PrintLogo
@@ -70,8 +61,8 @@ void DisplayString(__in_z __in const char *str)
 
 extern "C" int _cdecl wmain(int argc, __in_ecount(argc) WCHAR **argv)
 {
-    wchar_t *pArg = NULL;
-    wchar_t *szObjName = NULL;
+    WCHAR *pArg = NULL;
+    WCHAR *szObjName = NULL;
     ULONG DumpFilter = MDInfo::dumpDefault;
     HRESULT hr = 0;
     BOOL    fWantHelp=FALSE;
@@ -79,7 +70,7 @@ extern "C" int _cdecl wmain(int argc, __in_ecount(argc) WCHAR **argv)
     // Validate incoming arguments
     for (int i=1;  i<argc;  i++)
     {
-        const wchar_t *szArg = argv[i];
+        const WCHAR *szArg = argv[i];
         if (*szArg == L'-' || *szArg == L'/')
         {
             if (_wcsicmp(szArg + 1, L"?") == 0)
@@ -141,14 +132,6 @@ extern "C" int _cdecl wmain(int argc, __in_ecount(argc) WCHAR **argv)
     if (!pArg || fWantHelp)
         Usage();
 
-    
-#ifndef FEATURE_PAL
-    // Init and run.
-    CoInitialize(0);
-#endif
-
-    LegacyActivationShim::CoInitializeCor(0);
-
     hr = LegacyActivationShim::ClrCoCreateInstance(
         CLSID_CorMetaDataDispenser, NULL, CLSCTX_INPROC_SERVER, 
         IID_IMetaDataDispenserEx, (void **) &g_pDisp);
@@ -157,9 +140,9 @@ extern "C" int _cdecl wmain(int argc, __in_ecount(argc) WCHAR **argv)
     // Loop through all files in the file pattern passed
     WIN32_FIND_DATA fdFiles;
     HANDLE hFind;
-    wchar_t szSpec[_MAX_PATH];
-    wchar_t szDrive[_MAX_DRIVE];
-    wchar_t szDir[_MAX_DIR];
+    WCHAR szSpec[_MAX_PATH];
+    WCHAR szDrive[_MAX_DRIVE];
+    WCHAR szDir[_MAX_DIR];
 
     hFind = WszFindFirstFile(pArg, &fdFiles);
 
@@ -182,9 +165,5 @@ extern "C" int _cdecl wmain(int argc, __in_ecount(argc) WCHAR **argv)
         FindClose(hFind);
     }
     g_pDisp->Release();
-    LegacyActivationShim::CoUninitializeCor();
-#ifndef FEATURE_PAL
-    CoUninitialize();
-#endif
     return 0;
 }

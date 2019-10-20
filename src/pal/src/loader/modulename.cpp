@@ -24,11 +24,7 @@ Abstract:
 #include "pal/dbgmsg.h"
 #include "pal/modulename.h"
 
-#if NEED_DLCOMPAT
-#include "dlcompat.h"
-#else   // NEED_DLCOMPAT
 #include <dlfcn.h>
-#endif  // NEED_DLCOMPAT
 
 using namespace CorUnix;
 
@@ -40,11 +36,11 @@ SET_DEFAULT_DEBUG_CHANNEL(LOADER);
     Internal wrapper for dladder used only to get module name
 
 Parameters:
-    None
+    LPVOID ProcAddress: a pointer to a function in a shared library
 
 Return value:
-    Pointer to string with the fullpath to the librotor_pal.so being
-    used.
+    Pointer to string with the fullpath to the shared library containing
+    ProcAddress.
 
     NULL if error occurred.
 
@@ -60,7 +56,7 @@ const char *PAL_dladdr(LPVOID ProcAddress)
     Dl_info dl_info;
     if (!dladdr(ProcAddress, &dl_info))
     {
-        WARN("dladdr() call failed! dlerror says '%s'\n", dlerror());
+        WARN("dladdr() call failed!\n");
         /* If we get an error, return NULL */
         return (NULL);
     }

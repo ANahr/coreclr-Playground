@@ -9,8 +9,6 @@
 
 #include "floatdouble.h"
 
-#define IS_DBL_INFINITY(x)         (((*((INT64*)((void*)&x))) & I64(0x7FFFFFFFFFFFFFFF)) == I64(0x7FF0000000000000))
-
 // The default compilation mode is /fp:precise, which disables floating-point intrinsics. This
 // default compilation mode has previously caused performance regressions in floating-point code.
 // We enable /fp:fast semantics for the majority of the math functions, as it will speed up performance
@@ -41,6 +39,7 @@
 ////////////////////////////////////////////////////////////////////////////////////
 
 #ifdef _MSC_VER
+#pragma float_control(push)
 #pragma float_control(precise, off)
 #endif
 
@@ -62,6 +61,15 @@ FCIMPL1_V(double, COMDouble::Acos, double x)
     return (double)acos(x);
 FCIMPLEND
 
+/*=====================================Acosh====================================
+**
+==============================================================================*/
+FCIMPL1_V(double, COMDouble::Acosh, double x)
+    FCALL_CONTRACT;
+
+    return (double)acosh(x);
+FCIMPLEND
+
 /*=====================================Asin=====================================
 **
 ==============================================================================*/
@@ -69,6 +77,15 @@ FCIMPL1_V(double, COMDouble::Asin, double x)
     FCALL_CONTRACT;
 
     return (double)asin(x);
+FCIMPLEND
+
+/*=====================================Asinh====================================
+**
+==============================================================================*/
+FCIMPL1_V(double, COMDouble::Asinh, double x)
+    FCALL_CONTRACT;
+
+    return (double)asinh(x);
 FCIMPLEND
 
 /*=====================================Atan=====================================
@@ -80,21 +97,39 @@ FCIMPL1_V(double, COMDouble::Atan, double x)
     return (double)atan(x);
 FCIMPLEND
 
+/*=====================================Atanh====================================
+**
+==============================================================================*/
+FCIMPL1_V(double, COMDouble::Atanh, double x)
+    FCALL_CONTRACT;
+
+    return (double)atanh(x);
+FCIMPLEND
+
 /*=====================================Atan2====================================
 **
 ==============================================================================*/
 FCIMPL2_VV(double, COMDouble::Atan2, double y, double x)
     FCALL_CONTRACT;
 
-    // atan2(+/-INFINITY, +/-INFINITY) produces +/-0.78539816339744828 (x is +INFINITY) and
-    // +/-2.3561944901923448 (x is -INFINITY) instead of the expected value of NaN. We handle
-    // that case here ourselves.
-    if (IS_DBL_INFINITY(y) && IS_DBL_INFINITY(x)) {
-        return (double)(y / x);
-    }
-
     return (double)atan2(y, x);
 FCIMPLEND
+
+/*====================================Cbrt======================================
+**
+==============================================================================*/
+FCIMPL1_V(double, COMDouble::Cbrt, double x)
+    FCALL_CONTRACT;
+
+    return (double)cbrt(x);
+FCIMPLEND
+
+#if defined(_MSC_VER) && defined(_TARGET_AMD64_)
+// The /fp:fast form of `ceil` for AMD64 does not correctly handle: `-1.0 < value <= -0.0`
+// https://github.com/dotnet/coreclr/issues/19739
+#pragma float_control(push)
+#pragma float_control(precise, on)
+#endif
 
 /*====================================Ceil======================================
 **
@@ -104,6 +139,10 @@ FCIMPL1_V(double, COMDouble::Ceil, double x)
 
     return (double)ceil(x);
 FCIMPLEND
+
+#if defined(_MSC_VER) && defined(_TARGET_AMD64_)
+#pragma float_control(pop)
+#endif
 
 /*=====================================Cos======================================
 **
@@ -132,6 +171,13 @@ FCIMPL1_V(double, COMDouble::Exp, double x)
     return (double)exp(x);
 FCIMPLEND
 
+#if defined(_MSC_VER) && defined(_TARGET_X86_)
+// The /fp:fast form of `floor` for x86 does not correctly handle: `-0.0`
+// https://github.com/dotnet/coreclr/issues/19739
+#pragma float_control(push)
+#pragma float_control(precise, on)
+#endif
+
 /*====================================Floor=====================================
 **
 ==============================================================================*/
@@ -141,6 +187,37 @@ FCIMPL1_V(double, COMDouble::Floor, double x)
     return (double)floor(x);
 FCIMPLEND
 
+#if defined(_MSC_VER) && defined(_TARGET_X86_)
+#pragma float_control(pop)
+#endif
+
+/*=====================================FMod=====================================
+**
+==============================================================================*/
+FCIMPL2_VV(double, COMDouble::FMod, double x, double y)
+    FCALL_CONTRACT;
+
+    return (double)fmod(x, y);
+FCIMPLEND
+
+/*=====================================FusedMultiplyAdd==========================
+**
+==============================================================================*/
+FCIMPL3_VVV(double, COMDouble::FusedMultiplyAdd, double x, double y, double z)
+    FCALL_CONTRACT;
+
+    return (double)fma(x, y, z);
+FCIMPLEND
+
+/*=====================================Ilog2====================================
+**
+==============================================================================*/
+FCIMPL1_V(int, COMDouble::ILogB, double x)
+    FCALL_CONTRACT;
+
+    return (int)ilogb(x);
+FCIMPLEND
+
 /*=====================================Log======================================
 **
 ==============================================================================*/
@@ -148,6 +225,15 @@ FCIMPL1_V(double, COMDouble::Log, double x)
     FCALL_CONTRACT;
 
     return (double)log(x);
+FCIMPLEND
+
+/*=====================================Log2=====================================
+**
+==============================================================================*/
+FCIMPL1_V(double, COMDouble::Log2, double x)
+    FCALL_CONTRACT;
+
+    return (double)log2(x);
 FCIMPLEND
 
 /*====================================Log10=====================================
@@ -162,10 +248,10 @@ FCIMPLEND
 /*=====================================ModF=====================================
 **
 ==============================================================================*/
-FCIMPL1(double, COMDouble::ModF, double* iptr)
+FCIMPL2_VI(double, COMDouble::ModF, double x, double* intptr)
     FCALL_CONTRACT;
 
-    return (double)modf(*iptr, iptr);
+    return (double)modf(x, intptr);
 FCIMPLEND
 
 /*=====================================Pow======================================
@@ -174,50 +260,16 @@ FCIMPLEND
 FCIMPL2_VV(double, COMDouble::Pow, double x, double y)
     FCALL_CONTRACT;
 
-    // The CRT version of pow preserves the NaN payload of x over the NaN payload of y.
-
-    if(_isnan(y)) {
-        return y; // IEEE 754-2008: NaN payload must be preserved
-    }
-
-    if(_isnan(x)) {
-        return x; // IEEE 754-2008: NaN payload must be preserved
-    }
-
-    // The CRT version of pow does not return NaN for pow(-1.0, +/-INFINITY) and
-    // instead returns +1.0.
-
-    if(IS_DBL_INFINITY(y) && (x == -1.0)) {
-        INT64 result = CLR_NAN_64;
-        return (*((double*)((INT64*)&result)));
-    }
-
     return (double)pow(x, y);
 FCIMPLEND
 
-/*====================================Round=====================================
+/*=====================================ScaleB===================================
 **
 ==============================================================================*/
-FCIMPL1_V(double, COMDouble::Round, double x)
+FCIMPL2_VI(double, COMDouble::ScaleB, double x, int n)
     FCALL_CONTRACT;
 
-    // If the number has no fractional part do nothing
-    // This shortcut is necessary to workaround precision loss in borderline cases on some platforms
-    if (x == (double)((INT64)x)) {
-        return x;
-    }
-
-    // We had a number that was equally close to 2 integers.
-    // We need to return the even one.
-
-    double tempVal = (x + 0.5);
-    double flrTempVal = floor(tempVal);
-
-    if ((flrTempVal == tempVal) && (fmod(tempVal, 2.0) != 0)) {
-        flrTempVal -= 1.0;
-    }
-
-    return _copysign(flrTempVal, x);
+    return (double)scalbn(x, n);
 FCIMPLEND
 
 /*=====================================Sin======================================
@@ -266,7 +318,7 @@ FCIMPL1_V(double, COMDouble::Tanh, double x)
 FCIMPLEND
 
 #ifdef _MSC_VER
-#pragma float_control(precise, on )
+#pragma float_control(pop)
 #endif
 
 ////////////////////////////////////////////////////////////////////////////////////

@@ -3,6 +3,11 @@
 // See the LICENSE file in the project root for more information.
 #include "stdafx.h"
 
+// Enable building with older SDKs that don't have IMAGE_FILE_MACHINE_ARM64 defined.
+#ifndef IMAGE_FILE_MACHINE_ARM64
+#define IMAGE_FILE_MACHINE_ARM64             0xAA64  // ARM64 Little-Endian
+#endif
+
 #include "blobfetcher.h"
 #include "pedecoder.h"
 
@@ -798,6 +803,14 @@ HRESULT PEWriter::Init(PESectionMan *pFrom, DWORD createFlags, LPCWSTR seedFileN
         // support to worry about on ARM so don't ever create the stub for ARM binaries.
         m_createCorMainStub = false;
     }
+    else if ((createFlags & ICEE_CREATE_MACHINE_MASK) == ICEE_CREATE_MACHINE_ARM64)
+    {
+        m_ntHeaders->FileHeader.Machine = VAL16(IMAGE_FILE_MACHINE_ARM64);
+
+        // The OS loader already knows how to initialize pure managed assemblies and we have no legacy OS
+        // support to worry about on ARM64 so don't ever create the stub for ARM64 binaries.
+        m_createCorMainStub = false;
+    }
     else
     {
         _ASSERTE(!"Invalid target machine");
@@ -941,7 +954,7 @@ HRESULT PEWriter::Init(PESectionMan *pFrom, DWORD createFlags, LPCWSTR seedFileN
         m_hSeedFileMap = hMapFile;
         m_pSeedFileDecoder = pPEDecoder;
 
-#ifdef  _WIN64       
+#ifdef BIT64
         m_pSeedFileNTHeaders = pPEDecoder->GetNTHeaders64();
 #else
         m_pSeedFileNTHeaders = pPEDecoder->GetNTHeaders32();
@@ -1901,9 +1914,9 @@ HRESULT PEWriter::fixup(CeeGenTokenMapper *pMapper)
             switch((int)rcur->type)
             {
                 case 0x7FFA: // Ptr to symbol name
-#ifdef _WIN64
+#ifdef BIT64
                     _ASSERTE(!"this is probably broken!!");
-#endif // _WIN64
+#endif // BIT64
                     szSymbolName = (char*)(UINT_PTR)(rcur->offset);
                     break;
 
@@ -1921,16 +1934,16 @@ HRESULT PEWriter::fixup(CeeGenTokenMapper *pMapper)
                     else return E_OUTOFMEMORY;
                     TokInSymbolTable[NumberOfSymbols++] = 0;
                     memset(&is,0,sizeof(IMAGE_SYMBOL));
-#ifdef _WIN64
+#ifdef BIT64
                     _ASSERTE(!"this is probably broken!!");
-#endif // _WIN64
+#endif // BIT64
                     strcpy_s((char*)&is,sizeof(is),(char*)(UINT_PTR)(rcur->offset));
                     if((pch = reloc->getBlock(sizeof(IMAGE_SYMBOL))))
                         memcpy(pch,&is,sizeof(IMAGE_SYMBOL));
                     else return E_OUTOFMEMORY;
-#ifdef _WIN64
+#ifdef BIT64
                     _ASSERTE(!"this is probably broken!!");
-#endif // _WIN64
+#endif // BIT64
                     delete (char*)(UINT_PTR)(rcur->offset);
                     ToRelocTable = FALSE;
                     tk = 0;

@@ -39,7 +39,7 @@ void BitSetSupport::RunTests(Env env)
     typename LclBitSetOps::Iter bsi(env, bs1);
     unsigned                    bitNum = 0;
     unsigned                    k      = 0;
-    while (bsi.NextElem(env, &bitNum))
+    while (bsi.NextElem(&bitNum))
     {
         assert(bitNum == bs1bits[k]);
         k++;
@@ -64,7 +64,7 @@ void BitSetSupport::RunTests(Env env)
     k      = 0;
     bsi    = typename LclBitSetOps::Iter(env, bsU12);
     bitNum = 0;
-    while (bsi.NextElem(env, &bitNum))
+    while (bsi.NextElem(&bitNum))
     {
         assert(bitNum == unionBits[k]);
         k++;
@@ -74,7 +74,7 @@ void BitSetSupport::RunTests(Env env)
     k                                = 0;
     typename LclBitSetOps::Iter bsiL = typename LclBitSetOps::Iter(env, bsU12);
     bitNum                           = 0;
-    while (bsiL.NextElem(env, &bitNum))
+    while (bsiL.NextElem(&bitNum))
     {
         assert(bitNum == unionBits[k]);
         k++;
@@ -87,7 +87,7 @@ void BitSetSupport::RunTests(Env env)
     k      = 0;
     bsi    = typename LclBitSetOps::Iter(env, bsI12);
     bitNum = 0;
-    while (bsi.NextElem(env, &bitNum))
+    while (bsi.NextElem(&bitNum))
     {
         assert(bitNum == intersectionBits[k]);
         k++;
@@ -98,31 +98,31 @@ void BitSetSupport::RunTests(Env env)
 class TestBitSetTraits
 {
 public:
-    static IAllocator* GetAllocator(IAllocator* alloc)
+    static void* Alloc(CompAllocator alloc, size_t byteSize)
     {
-        return alloc;
+        return alloc.allocate<char>(byteSize);
     }
-    static unsigned GetSize(IAllocator* alloc)
+    static unsigned GetSize(CompAllocator alloc)
     {
         return 64;
     }
-    static unsigned GetArrSize(IAllocator* alloc, unsigned elemSize)
+    static unsigned GetArrSize(CompAllocator alloc, unsigned elemSize)
     {
         assert(elemSize == sizeof(size_t));
         return (64 / 8) / sizeof(size_t);
     }
-    static unsigned GetEpoch(IAllocator* alloc)
+    static unsigned GetEpoch(CompAllocator alloc)
     {
         return 0;
     }
 };
 
-void BitSetSupport::TestSuite(IAllocator* env)
+void BitSetSupport::TestSuite(CompAllocator env)
 {
-    BitSetSupport::RunTests<UINT64, BSUInt64, IAllocator*, TestBitSetTraits>(env);
-    BitSetSupport::RunTests<BitSetShortLongRep, BSShortLong, IAllocator*, TestBitSetTraits>(env);
-    BitSetSupport::RunTests<BitSetUint64<IAllocator*, TestBitSetTraits>, BSUInt64Class, IAllocator*, TestBitSetTraits>(
-        env);
+    BitSetSupport::RunTests<UINT64, BSUInt64, CompAllocator, TestBitSetTraits>(env);
+    BitSetSupport::RunTests<BitSetShortLongRep, BSShortLong, CompAllocator, TestBitSetTraits>(env);
+    BitSetSupport::RunTests<BitSetUint64<CompAllocator, TestBitSetTraits>, BSUInt64Class, CompAllocator,
+                            TestBitSetTraits>(env);
 }
 #endif
 

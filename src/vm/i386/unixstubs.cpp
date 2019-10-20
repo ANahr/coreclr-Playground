@@ -4,38 +4,6 @@
 
 #include "common.h"
 
-extern "C"
-{
-    void ThrowControlForThread(FaultingExceptionFrame *pfef)
-    {
-        PORTABILITY_ASSERT("Implement for PAL");
-    }
-
-    void ProfileEnterNaked(FunctionIDOrClientID functionIDOrClientID)    
-    {
-        PORTABILITY_ASSERT("Implement for PAL");
-    }
-
-    void ProfileLeaveNaked(FunctionIDOrClientID functionIDOrClientID)
-    {
-        PORTABILITY_ASSERT("Implement for PAL");
-    }
-
-    void ProfileTailcallNaked(FunctionIDOrClientID functionIDOrClientID)
-    {
-        PORTABILITY_ASSERT("Implement for PAL");
-    }
-
-    void STDCALL JIT_ProfilerEnterLeaveTailcallStub(UINT_PTR ProfilerHandle)
-    {
-    }
-};
-
-EXTERN_C VOID BackPatchWorkerAsmStub()
-{
-    PORTABILITY_ASSERT("BackPatchWorkerAsmStub");
-}
-
 EXTERN_C VOID JIT_TailCall()
 {
   PORTABILITY_ASSERT("JIT_TailCall");
@@ -59,11 +27,5 @@ EXTERN_C VOID JIT_TailCallLeave()
 PTR_CONTEXT GetCONTEXTFromRedirectedStubStackFrame(T_DISPATCHER_CONTEXT * pDispatcherContext)
 {
     PORTABILITY_ASSERT("GetCONTEXTFromRedirectedStubStackFrame");
-    return NULL;
-}
-
-FaultingExceptionFrame *GetFrameFromRedirectedStubStackFrame(DISPATCHER_CONTEXT *pDispatcherContext)
-{
-    PORTABILITY_ASSERT("GetFrameFromRedirectedStubStackFrame");
     return NULL;
 }

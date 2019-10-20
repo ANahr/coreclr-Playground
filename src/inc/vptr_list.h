@@ -27,7 +27,6 @@ VPTR_CLASS(Module)
 VPTR_CLASS(ReflectionModule)
 
 VPTR_CLASS(AppDomain)
-VPTR_CLASS(SharedDomain)
 VPTR_CLASS(SystemDomain)
 
 VPTR_CLASS(DomainAssembly)
@@ -58,7 +57,7 @@ VPTR_CLASS(ComMethodFrame)
 VPTR_CLASS(ComPlusMethodFrame)
 VPTR_CLASS(ComPrestubMethodFrame)
 #endif // FEATURE_COMINTEROP
-VPTR_CLASS(ContextTransitionFrame)
+
 #ifdef FEATURE_INTERPRETER
 VPTR_CLASS(InterpreterFrame)
 #endif // FEATURE_INTERPRETER
@@ -72,13 +71,13 @@ VPTR_CLASS(GCFrame)
 VPTR_CLASS(HelperMethodFrame)
 VPTR_CLASS(HelperMethodFrame_1OBJ)
 VPTR_CLASS(HelperMethodFrame_2OBJ)
+VPTR_CLASS(HelperMethodFrame_3OBJ)
 VPTR_CLASS(HelperMethodFrame_PROTECTOBJ)
 #ifdef FEATURE_HIJACK
 VPTR_CLASS(HijackFrame)
 #endif
 VPTR_CLASS(InlinedCallFrame)
 VPTR_CLASS(SecureDelegateFrame)
-VPTR_CLASS(SecurityContextFrame)
 VPTR_CLASS(MulticastFrame)
 VPTR_CLASS(PInvokeCalliFrame)
 VPTR_CLASS(PrestubMethodFrame)
@@ -119,8 +118,4 @@ VPTR_CLASS(LoaderCodeHeap)
 VPTR_CLASS(HostCodeHeap)
 
 VPTR_CLASS(GlobalLoaderAllocator)
-VPTR_CLASS(AppDomainLoaderAllocator)
 VPTR_CLASS(AssemblyLoaderAllocator)
-
-VPTR_CLASS(AssemblySecurityDescriptor)
-VPTR_CLASS(ApplicationSecurityDescriptor)

@@ -28,6 +28,8 @@
 #include "utils.hpp"
 #include "variables.hpp"
 #include "ex.h"
+#include "clr/fs/path.h"
+using namespace clr::fs;
 
 namespace BINDER_SPACE
 {
@@ -79,7 +81,6 @@ namespace BINDER_SPACE
         m_cRef = 1;
         m_dwAppDomainId = 0;
         m_pExecutionContext = NULL;
-        m_pInspectionContext = NULL;
         m_pFailureCache = NULL;
         m_contextCS = NULL;
         m_pTrustedPlatformAssemblyMap = nullptr;
@@ -89,7 +90,6 @@ namespace BINDER_SPACE
     ApplicationContext::~ApplicationContext()
     {
         SAFE_RELEASE(m_pExecutionContext);
-        SAFE_RELEASE(m_pInspectionContext);
         SAFE_DELETE(m_pFailureCache);
 
         if (m_contextCS != NULL)
@@ -115,14 +115,12 @@ namespace BINDER_SPACE
         BINDER_LOG_POINTER(W("this"), this);
 
         ReleaseHolder<ExecutionContext> pExecutionContext;
-        ReleaseHolder<InspectionContext> pInspectionContext;
 
         PropertyMap *pPropertyMap = NULL;
         FailureCache *pFailureCache = NULL;
 
         // Allocate context objects
         SAFE_NEW(pExecutionContext, ExecutionContext);
-        SAFE_NEW(pInspectionContext, InspectionContext);
 
         SAFE_NEW(pFailureCache, FailureCache);
 
@@ -138,12 +136,9 @@ namespace BINDER_SPACE
         else
         {
             m_pExecutionContext = pExecutionContext.Extract();
-            m_pInspectionContext = pInspectionContext.Extract();
 
             m_pFailureCache = pFailureCache;
         }
-
-        m_fCanExplicitlyBindToNativeImages = false;
         
     Exit:
         BINDER_LOG_LEAVE_HR(W("ApplicationContext::Init"), hr);
@@ -258,17 +253,20 @@ namespace BINDER_SPACE
                 break;
             }
 
+#ifndef CROSSGEN_COMPILE
+            if (Path::IsRelative(fileName))
+            {
+                BINDER_LOG_STRING(W("ApplicationContext::SetupBindingPaths: Relative path not allowed"), fileName);
+                GO_WITH_HRESULT(E_INVALIDARG);
+            }
+#endif
+
             // Find the beginning of the simple name
             SString::Iterator iSimpleNameStart = fileName.End();
             
             if (!fileName.FindBack(iSimpleNameStart, DIRECTORY_SEPARATOR_CHAR_W))
             {
-#ifdef CROSSGEN_COMPILE
                 iSimpleNameStart = fileName.Begin();
-#else
-                // Couldn't find a directory separator.  File must have been specified as a relative path.  Not allowed.
-                GO_WITH_HRESULT(E_INVALIDARG);
-#endif
             }
             else
             {
@@ -395,6 +393,14 @@ namespace BINDER_SPACE
                 break;
             }
 
+#ifndef CROSSGEN_COMPILE
+            if (Path::IsRelative(pathName))
+            {
+                BINDER_LOG_STRING(W("ApplicationContext::SetupBindingPaths: Relative path not allowed"), pathName);
+                GO_WITH_HRESULT(E_INVALIDARG);
+            }
+#endif
+
             m_platformResourceRoots.Append(pathName);
             BINDER_LOG_STRING(W("ApplicationContext::SetupBindingPaths: Added resource root"), pathName);
         }
@@ -414,6 +420,14 @@ namespace BINDER_SPACE
                 break;
             }
             
+#ifndef CROSSGEN_COMPILE
+            if (Path::IsRelative(pathName))
+            {
+                BINDER_LOG_STRING(W("ApplicationContext::SetupBindingPaths: Relative path not allowed"), pathName);
+                GO_WITH_HRESULT(E_INVALIDARG);
+            }
+#endif
+
             m_appPaths.Append(pathName);
             BINDER_LOG_STRING(W("ApplicationContext::SetupBindingPaths: Added App Path"), pathName);
         }
@@ -432,6 +446,14 @@ namespace BINDER_SPACE
             {
                 break;
             }
+
+#ifndef CROSSGEN_COMPILE
+            if (Path::IsRelative(pathName))
+            {
+                BINDER_LOG_STRING(W("ApplicationContext::SetupBindingPaths: Relative path not allowed"), pathName);
+                GO_WITH_HRESULT(E_INVALIDARG);
+            }
+#endif
 
             m_appNiPaths.Append(pathName);
             BINDER_LOG_STRING(W("ApplicationContext::SetupBindingPaths: Added App NI Path"), pathName);

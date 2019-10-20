@@ -35,16 +35,9 @@ class BaseDomain;
 // CPU-dependent functions
 Stub * GenerateInitPInvokeFrameHelper();
 
-#ifdef MDA_SUPPORTED
-EXTERN_C void STDCALL PInvokeStackImbalanceHelper(void);
-#endif // MDA_SUPPORTED
-
-
 #ifdef FEATURE_STUBS_AS_IL
 EXTERN_C void SinglecastDelegateInvokeStub();
 #endif // FEATURE_STUBS_AS_IL
-
-BOOL Runtime_Test_For_SSE2();
 
 #ifdef CROSSGEN_COMPILE
 #define GetEEFuncEntryPoint(pfn) 0x1001
@@ -61,7 +54,7 @@ BOOL Runtime_Test_For_SSE2();
 // #define CPU_X86_STEPPING(cpuType)   (((cpuType) & 0x000F)     )
 
 #define CPU_X86_USE_CMOV(cpuFeat)   ((cpuFeat & 0x00008001) == 0x00008001)
-#define CPU_X86_USE_SSE2(cpuFeat)  (((cpuFeat & 0x04000000) == 0x04000000) && Runtime_Test_For_SSE2())
+#define CPU_X86_USE_SSE2(cpuFeat)   ((cpuFeat & 0x04000000) == 0x04000000)
 
 // Values for CPU_X86_FAMILY(cpuType)
 #define CPU_X86_486                 4
@@ -83,19 +76,17 @@ BOOL Runtime_Test_For_SSE2();
 #define JUMP_ALLOCATE_SIZE                      8   // # bytes to allocate for a jump instruction
 #define BACK_TO_BACK_JUMP_ALLOCATE_SIZE         8   // # bytes to allocate for a back to back jump instruction
 
-#ifdef WIN64EXCEPTIONS
+#ifdef FEATURE_EH_FUNCLETS
 #define USE_INDIRECT_CODEHEADER
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 
 #define HAS_COMPACT_ENTRYPOINTS                 1
 
 // Needed for PInvoke inlining in ngened images
 #define HAS_NDIRECT_IMPORT_PRECODE              1
 
-#ifdef FEATURE_PREJIT
 #define HAS_FIXUP_PRECODE                       1
 #define HAS_FIXUP_PRECODE_CHUNKS                1
-#endif
 
 // ThisPtrRetBufPrecode one is necessary for closed delegates over static methods with return buffer
 #define HAS_THISPTR_RETBUF_PRECODE              1
@@ -107,14 +98,6 @@ BOOL Runtime_Test_For_SSE2();
 #define ENREGISTERED_RETURNTYPE_MAXSIZE         8
 #define ENREGISTERED_RETURNTYPE_INTEGER_MAXSIZE 4
 #define CALLDESCR_ARGREGS                       1   // CallDescrWorker has ArgumentRegister parameter
-
-// Max size of patched TLS helpers
-#ifdef _DEBUG
-// Debug build needs extra space for last error trashing
-#define TLS_GETTER_MAX_SIZE 0x20
-#else
-#define TLS_GETTER_MAX_SIZE 0x10
-#endif
 
 //=======================================================================
 // IMPORTANT: This value is used to figure out how much to allocate
@@ -202,7 +185,7 @@ struct ArgumentRegisters {
 struct REGDISPLAY;
 typedef REGDISPLAY *PREGDISPLAY;
 
-#ifndef WIN64EXCEPTIONS
+#ifndef FEATURE_EH_FUNCLETS
 // Sufficient context for Try/Catch restoration.
 struct EHContext {
     INT32       Eax;
@@ -251,7 +234,7 @@ struct EHContext {
         Eip = 0;
     }
 };
-#endif // !WIN64EXCEPTIONS
+#endif // !FEATURE_EH_FUNCLETS
 
 #define ARGUMENTREGISTERS_SIZE sizeof(ArgumentRegisters)
 
@@ -483,10 +466,15 @@ inline BOOL IsUnmanagedValueTypeReturnedByRef(UINT sizeofvaluetype)
 {
     LIMITED_METHOD_CONTRACT;
 
+#ifndef UNIX_X86_ABI
     // odd-sized small structures are not 
     //  enregistered e.g. struct { char a,b,c; }
     return (sizeofvaluetype > 8) ||
         (sizeofvaluetype & (sizeofvaluetype - 1)); // check that the size is power of two
+#else
+    // For UNIX_X86_ABI, we always return the value type by reference regardless of its size
+    return true;
+#endif
 }
 
 #include <pshpack1.h>
@@ -499,6 +487,7 @@ struct DECLSPEC_ALIGN(4) UMEntryThunkCode
     const BYTE *    m_execstub; // pointer to destination code  // make sure the backpatched portion is dword aligned.
 
     void Encode(BYTE* pTargetCode, void* pvSecretParam);
+    void Poison();
 
     LPCBYTE GetEntryPoint() const
     {
@@ -552,23 +541,11 @@ inline BOOL ClrFlushInstructionCache(LPCVOID pCodeAddr, size_t sizeOfCode)
     return TRUE;
 }
 
-#ifndef FEATURE_IMPLICIT_TLS
 //
 // JIT HELPER ALIASING FOR PORTABILITY.
 //
 // Create alias for optimized implementations of helpers provided on this platform
 //
-
-#define JIT_MonEnter         JIT_MonEnterWorker
-#define JIT_MonEnterWorker   JIT_MonEnterWorker
-#define JIT_MonReliableEnter JIT_MonReliableEnter
-#define JIT_MonTryEnter      JIT_MonTryEnter
-#define JIT_MonExit          JIT_MonExitWorker
-#define JIT_MonExitWorker    JIT_MonExitWorker
-#define JIT_MonEnterStatic   JIT_MonEnterStatic
-#define JIT_MonExitStatic    JIT_MonExitStatic
-
-#endif
 
 // optimized static helpers generated dynamically at runtime
 // #define JIT_GetSharedGCStaticBase
@@ -585,4 +562,5 @@ inline BOOL ClrFlushInstructionCache(LPCVOID pCodeAddr, size_t sizeOfCode)
 #define JIT_NewCrossContext         JIT_NewCrossContext
 #define JIT_Stelem_Ref              JIT_Stelem_Ref
 #endif // FEATURE_PAL
+
 #endif // __cgenx86_h__

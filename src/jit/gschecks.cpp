@@ -97,15 +97,14 @@ struct MarkPtrsInfo
  * or indirection node.  It starts a new tree walk for it's subtrees when the state
  * changes.
  */
-Compiler::fgWalkResult Compiler::gsMarkPtrsAndAssignGroups(GenTreePtr* pTree, fgWalkData* data)
+Compiler::fgWalkResult Compiler::gsMarkPtrsAndAssignGroups(GenTree** pTree, fgWalkData* data)
 {
     struct MarkPtrsInfo* pState        = (MarkPtrsInfo*)data->pCallbackData;
     struct MarkPtrsInfo  newState      = *pState;
     Compiler*            comp          = data->compiler;
-    GenTreePtr           tree          = *pTree;
+    GenTree*             tree          = *pTree;
     ShadowParamVarInfo*  shadowVarInfo = pState->comp->gsShadowVarInfo;
     assert(shadowVarInfo);
-    bool     fIsBlk = false;
     unsigned lclNum;
 
     assert(!pState->isAssignSrc || pState->lvAssignDef != (unsigned)-1);
@@ -137,7 +136,7 @@ Compiler::fgWalkResult Compiler::gsMarkPtrsAndAssignGroups(GenTreePtr* pTree, fg
         // local vars and param uses
         case GT_LCL_VAR:
         case GT_LCL_FLD:
-            lclNum = tree->gtLclVarCommon.gtLclNum;
+            lclNum = tree->gtLclVarCommon.GetLclNum();
 
             if (pState->isUnderIndir)
             {
@@ -191,29 +190,30 @@ Compiler::fgWalkResult Compiler::gsMarkPtrsAndAssignGroups(GenTreePtr* pTree, fg
             newState.isUnderIndir = false;
             newState.isAssignSrc  = false;
             {
-                if (tree->gtCall.gtCallObjp)
+                if (tree->AsCall()->gtCallThisArg != nullptr)
                 {
                     newState.isUnderIndir = true;
-                    comp->fgWalkTreePre(&tree->gtCall.gtCallObjp, gsMarkPtrsAndAssignGroups, (void*)&newState);
+                    comp->fgWalkTreePre(&tree->AsCall()->gtCallThisArg->NodeRef(), gsMarkPtrsAndAssignGroups,
+                                        (void*)&newState);
                 }
 
-                for (GenTreeArgList* args = tree->gtCall.gtCallArgs; args; args = args->Rest())
+                for (GenTreeCall::Use& use : tree->AsCall()->Args())
                 {
-                    comp->fgWalkTreePre(&args->Current(), gsMarkPtrsAndAssignGroups, (void*)&newState);
+                    comp->fgWalkTreePre(&use.NodeRef(), gsMarkPtrsAndAssignGroups, (void*)&newState);
                 }
-                for (GenTreeArgList* args = tree->gtCall.gtCallLateArgs; args; args = args->Rest())
+                for (GenTreeCall::Use& use : tree->AsCall()->LateArgs())
                 {
-                    comp->fgWalkTreePre(&args->Current(), gsMarkPtrsAndAssignGroups, (void*)&newState);
+                    comp->fgWalkTreePre(&use.NodeRef(), gsMarkPtrsAndAssignGroups, (void*)&newState);
                 }
 
-                if (tree->gtCall.gtCallType == CT_INDIRECT)
+                if (tree->AsCall()->gtCallType == CT_INDIRECT)
                 {
                     newState.isUnderIndir = true;
 
                     // A function pointer is treated like a write-through pointer since
                     // it controls what code gets executed, and so indirectly can cause
                     // a write to memory.
-                    comp->fgWalkTreePre(&tree->gtCall.gtCallAddr, gsMarkPtrsAndAssignGroups, (void*)&newState);
+                    comp->fgWalkTreePre(&tree->AsCall()->gtCallAddr, gsMarkPtrsAndAssignGroups, (void*)&newState);
                 }
             }
             return WALK_SKIP_SUBTREES;
@@ -223,13 +223,13 @@ Compiler::fgWalkResult Compiler::gsMarkPtrsAndAssignGroups(GenTreePtr* pTree, fg
             // We'll assume p in "**p = " can be vulnerable because by changing 'p', someone
             // could control where **p stores to.
             {
-                comp->fgWalkTreePre(&tree->gtOp.gtOp1, comp->gsMarkPtrsAndAssignGroups, (void*)&newState);
+                comp->fgWalkTreePre(&tree->AsOp()->gtOp1, comp->gsMarkPtrsAndAssignGroups, (void*)&newState);
             }
             return WALK_SKIP_SUBTREES;
 
         default:
             // Assignments - track assign groups and *p defs.
-            if (tree->OperIsAssignment())
+            if (tree->OperIs(GT_ASG))
             {
                 bool isLocVar;
                 bool isLocFld;
@@ -239,31 +239,31 @@ Compiler::fgWalkResult Compiler::gsMarkPtrsAndAssignGroups(GenTreePtr* pTree, fg
                     // Blk assignments are always handled as if they have implicit indirections.
                     // TODO-1stClassStructs: improve this.
                     newState.isUnderIndir = true;
-                    comp->fgWalkTreePre(&tree->gtOp.gtOp1, comp->gsMarkPtrsAndAssignGroups, (void*)&newState);
+                    comp->fgWalkTreePre(&tree->AsOp()->gtOp1, comp->gsMarkPtrsAndAssignGroups, (void*)&newState);
 
                     if (tree->OperIsInitBlkOp())
                     {
                         newState.isUnderIndir = false;
                     }
-                    comp->fgWalkTreePre(&tree->gtOp.gtOp2, comp->gsMarkPtrsAndAssignGroups, (void*)&newState);
+                    comp->fgWalkTreePre(&tree->AsOp()->gtOp2, comp->gsMarkPtrsAndAssignGroups, (void*)&newState);
                 }
                 else
                 {
                     // Walk dst side
-                    comp->fgWalkTreePre(&tree->gtOp.gtOp1, comp->gsMarkPtrsAndAssignGroups, (void*)&newState);
+                    comp->fgWalkTreePre(&tree->AsOp()->gtOp1, comp->gsMarkPtrsAndAssignGroups, (void*)&newState);
 
                     // Now handle src side
-                    isLocVar = tree->gtOp.gtOp1->OperGet() == GT_LCL_VAR;
-                    isLocFld = tree->gtOp.gtOp1->OperGet() == GT_LCL_FLD;
+                    isLocVar = tree->AsOp()->gtOp1->OperGet() == GT_LCL_VAR;
+                    isLocFld = tree->AsOp()->gtOp1->OperGet() == GT_LCL_FLD;
 
-                    if ((isLocVar || isLocFld) && tree->gtOp.gtOp2)
+                    if ((isLocVar || isLocFld) && tree->AsOp()->gtOp2)
                     {
-                        lclNum               = tree->gtOp.gtOp1->gtLclVarCommon.gtLclNum;
+                        lclNum               = tree->AsOp()->gtOp1->gtLclVarCommon.GetLclNum();
                         newState.lvAssignDef = lclNum;
                         newState.isAssignSrc = true;
                     }
 
-                    comp->fgWalkTreePre(&tree->gtOp.gtOp2, comp->gsMarkPtrsAndAssignGroups, (void*)&newState);
+                    comp->fgWalkTreePre(&tree->AsOp()->gtOp2, comp->gsMarkPtrsAndAssignGroups, (void*)&newState);
                 }
 
                 return WALK_SKIP_SUBTREES;
@@ -370,11 +370,9 @@ bool Compiler::gsFindVulnerableParams()
     return hasOneVulnerable;
 }
 
-/*****************************************************************************
- * gsParamsToShadows
- * Copy each vulnerable param ptr or buffer to a local shadow copy and replace
- * uses of the param by the shadow copy
- */
+//-------------------------------------------------------------------------------
+// gsParamsToShadows: Copy each vulnerable param ptr or buffer to a local shadow
+//                    copy and replace uses of the param by the shadow copy.
 void Compiler::gsParamsToShadows()
 {
     // Cache old count since we'll add new variables, and
@@ -399,6 +397,9 @@ void Compiler::gsParamsToShadows()
         }
 
         int shadowVar = lvaGrabTemp(false DEBUGARG("shadowVar"));
+        // reload varDsc as lvaGrabTemp may realloc the lvaTable[]
+        varDsc = &lvaTable[lclNum];
+
         // Copy some info
 
         var_types type             = varTypeIsSmall(varDsc->TypeGet()) ? TYP_INT : varDsc->TypeGet();
@@ -423,8 +424,11 @@ void Compiler::gsParamsToShadows()
         lvaTable[shadowVar].lvLclFieldExpr     = varDsc->lvLclFieldExpr;
         lvaTable[shadowVar].lvLiveAcrossUCall  = varDsc->lvLiveAcrossUCall;
 #endif
-        lvaTable[shadowVar].lvVerTypeInfo    = varDsc->lvVerTypeInfo;
-        lvaTable[shadowVar].lvGcLayout       = varDsc->lvGcLayout;
+        lvaTable[shadowVar].lvVerTypeInfo = varDsc->lvVerTypeInfo;
+        if (varTypeIsStruct(type))
+        {
+            lvaTable[shadowVar].SetLayout(varDsc->GetLayout());
+        }
         lvaTable[shadowVar].lvIsUnsafeBuffer = varDsc->lvIsUnsafeBuffer;
         lvaTable[shadowVar].lvIsPtr          = varDsc->lvIsPtr;
 
@@ -438,8 +442,62 @@ void Compiler::gsParamsToShadows()
         gsShadowVarInfo[lclNum].shadowCopy = shadowVar;
     }
 
-    // Replace param uses with shadow copy
-    fgWalkAllTreesPre(gsReplaceShadowParams, (void*)this);
+    class ReplaceShadowParamsVisitor final : public GenTreeVisitor<ReplaceShadowParamsVisitor>
+    {
+        // Walk the locals of the method (i.e. GT_LCL_FLD and GT_LCL_VAR nodes) and replace the ones that correspond to
+        // "vulnerable" parameters with their shadow copies. If an original local variable has small type then replace
+        // the GT_LCL_VAR node type with TYP_INT.
+    public:
+        enum
+        {
+            DoPreOrder    = true,
+            DoLclVarsOnly = true
+        };
+
+        ReplaceShadowParamsVisitor(Compiler* compiler) : GenTreeVisitor<ReplaceShadowParamsVisitor>(compiler)
+        {
+        }
+
+        Compiler::fgWalkResult PreOrderVisit(GenTree** use, GenTree* user)
+        {
+            GenTree* tree = *use;
+
+            unsigned int lclNum       = tree->AsLclVarCommon()->GetLclNum();
+            unsigned int shadowLclNum = m_compiler->gsShadowVarInfo[lclNum].shadowCopy;
+
+            if (shadowLclNum != NO_SHADOW_COPY)
+            {
+                LclVarDsc* varDsc = m_compiler->lvaGetDesc(lclNum);
+                assert(ShadowParamVarInfo::mayNeedShadowCopy(varDsc));
+
+                tree->AsLclVarCommon()->SetLclNum(shadowLclNum);
+
+                if (varTypeIsSmall(varDsc->TypeGet()))
+                {
+                    if (tree->OperIs(GT_LCL_VAR))
+                    {
+                        tree->gtType = TYP_INT;
+
+                        if (user->OperIs(GT_ASG) && user->gtGetOp1() == tree)
+                        {
+                            user->gtType = TYP_INT;
+                        }
+                    }
+                }
+            }
+
+            return WALK_CONTINUE;
+        }
+    };
+
+    for (BasicBlock* block = fgFirstBB; block != nullptr; block = block->bbNext)
+    {
+        for (Statement* stmt : block->Statements())
+        {
+            ReplaceShadowParamsVisitor replaceShadowParamsVisitor(this);
+            replaceShadowParamsVisitor.WalkTree(stmt->GetRootNodePointer(), nullptr);
+        }
+    }
 
     // Now insert code to copy the params to their shadow copy.
     for (UINT lclNum = 0; lclNum < lvaOldCount; lclNum++)
@@ -454,13 +512,13 @@ void Compiler::gsParamsToShadows()
 
         var_types type = lvaTable[shadowVar].TypeGet();
 
-        GenTreePtr src = gtNewLclvNode(lclNum, varDsc->TypeGet());
-        GenTreePtr dst = gtNewLclvNode(shadowVar, type);
+        GenTree* src = gtNewLclvNode(lclNum, varDsc->TypeGet());
+        GenTree* dst = gtNewLclvNode(shadowVar, type);
 
         src->gtFlags |= GTF_DONT_CSE;
         dst->gtFlags |= GTF_DONT_CSE;
 
-        GenTreePtr opAssign = nullptr;
+        GenTree* opAssign = nullptr;
         if (type == TYP_STRUCT)
         {
             CORINFO_CLASS_HANDLE clsHnd = varDsc->lvVerTypeInfo.GetClassHandle();
@@ -481,7 +539,7 @@ void Compiler::gsParamsToShadows()
             opAssign = gtNewAssignNode(dst, src);
         }
         fgEnsureFirstBBisScratch();
-        (void)fgInsertStmtAtBeg(fgFirstBB, fgMorphTree(opAssign));
+        (void)fgNewStmtAtBeg(fgFirstBB, fgMorphTree(opAssign));
     }
 
     // If the method has "Jmp CalleeMethod", then we need to copy shadow params back to original
@@ -512,13 +570,13 @@ void Compiler::gsParamsToShadows()
                     continue;
                 }
 
-                GenTreePtr src = gtNewLclvNode(shadowVar, lvaTable[shadowVar].TypeGet());
-                GenTreePtr dst = gtNewLclvNode(lclNum, varDsc->TypeGet());
+                GenTree* src = gtNewLclvNode(shadowVar, lvaTable[shadowVar].TypeGet());
+                GenTree* dst = gtNewLclvNode(lclNum, varDsc->TypeGet());
 
                 src->gtFlags |= GTF_DONT_CSE;
                 dst->gtFlags |= GTF_DONT_CSE;
 
-                GenTreePtr opAssign = nullptr;
+                GenTree* opAssign = nullptr;
                 if (varDsc->TypeGet() == TYP_STRUCT)
                 {
                     CORINFO_CLASS_HANDLE clsHnd = varDsc->lvVerTypeInfo.GetClassHandle();
@@ -532,53 +590,8 @@ void Compiler::gsParamsToShadows()
                     opAssign = gtNewAssignNode(dst, src);
                 }
 
-                (void)fgInsertStmtNearEnd(block, fgMorphTree(opAssign));
+                (void)fgNewStmtNearEnd(block, fgMorphTree(opAssign));
             }
         }
     }
-}
-
-/*****************************************************************************
- * gsReplaceShadowParams (tree-walk call-back)
- * Replace all vulnerable param uses by it's shadow copy.
- */
-
-Compiler::fgWalkResult Compiler::gsReplaceShadowParams(GenTreePtr* pTree, fgWalkData* data)
-{
-    Compiler*  comp = data->compiler;
-    GenTreePtr tree = *pTree;
-    GenTreePtr asg  = nullptr;
-
-    if (tree->gtOper == GT_ASG)
-    {
-        asg  = tree;             // "asg" is the assignment tree.
-        tree = tree->gtOp.gtOp1; // "tree" is the local var tree at the left-hand size of the assignment.
-    }
-
-    if (tree->gtOper == GT_LCL_VAR || tree->gtOper == GT_LCL_FLD)
-    {
-        UINT paramNum = tree->gtLclVarCommon.gtLclNum;
-
-        if (!ShadowParamVarInfo::mayNeedShadowCopy(&comp->lvaTable[paramNum]) ||
-            comp->gsShadowVarInfo[paramNum].shadowCopy == NO_SHADOW_COPY)
-        {
-            return WALK_CONTINUE;
-        }
-
-        tree->gtLclVarCommon.SetLclNum(comp->gsShadowVarInfo[paramNum].shadowCopy);
-
-        // In gsParamsToShadows(), we create a shadow var of TYP_INT for every small type param.
-        // Make sure we update the type of the local var tree as well.
-        if (varTypeIsSmall(comp->lvaTable[paramNum].TypeGet()))
-        {
-            tree->gtType = TYP_INT;
-            if (asg)
-            {
-                // If this is an assignment tree, propagate the type to it as well.
-                asg->gtType = TYP_INT;
-            }
-        }
-    }
-
-    return WALK_CONTINUE;
 }

@@ -103,8 +103,6 @@ const char* Compiler::eeGetMethodFullName(CORINFO_METHOD_HANDLE hnd)
 
     /* figure out the signature */
 
-    EXCEPTION_POINTERS exceptionPointers;
-
     PAL_TRY(FilterSuperPMIExceptionsParam_eeinterface*, pParam, &param)
     {
         unsigned i;
@@ -151,7 +149,7 @@ const char* Compiler::eeGetMethodFullName(CORINFO_METHOD_HANDLE hnd)
 
     length += param.siglength + 2;
 
-    char* retName = (char*)compGetMemA(length, CMK_DebugOnly);
+    char* retName = getAllocator(CMK_DebugOnly).allocate<char>(length);
 
     /* Now generate the full signature string in the allocated buffer */
 

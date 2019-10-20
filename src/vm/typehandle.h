@@ -125,7 +125,6 @@ public:
         LIMITED_METHOD_DAC_CONTRACT;
 
         m_asTAddr = dac_cast<TADDR>(aPtr);
-        // NormalizeUnsharedArrayMT();
         INDEBUGIMPL(Verify());
     }
 
@@ -133,7 +132,6 @@ public:
         LIMITED_METHOD_DAC_CONTRACT;
 
         m_asTAddr = dac_cast<TADDR>(aMT); 
-        // NormalizeUnsharedArrayMT();
         INDEBUGIMPL(Verify());
     }
 
@@ -156,7 +154,6 @@ private:
     { 
         LIMITED_METHOD_DAC_CONTRACT;
         m_asTAddr = aTAddr;
-        // NormalizeUnsharedArrayMT();
         INDEBUGIMPL(Verify());
     }
 
@@ -364,8 +361,6 @@ public:
         return *this == TypeHandle(g_pObjectClass);
     }
 
-    DWORD IsTransparentProxy() const;
-
     // Retrieve the key corresponding to this handle
     TypeKey GetTypeKey() const;
 
@@ -394,10 +389,8 @@ public:
     CHECK CheckFullyLoaded();
 #endif
 
-#ifdef FEATURE_HFA
     bool IsHFA() const;   
     CorElementType GetHFAType() const;
-#endif // FEATURE_HFA
 
 #ifdef FEATURE_64BIT_ALIGNMENT
     bool RequiresAlign8() const;
@@ -474,8 +467,6 @@ public:
 
     PTR_LoaderAllocator GetLoaderAllocator() const;
 
-    BOOL IsDomainNeutral() const;
-
     // Get the class token, assuming the type handle represents a named type,
     // i.e. a class, a value type, a generic instantiation etc.
     inline mdTypeDef GetCl() const;
@@ -486,11 +477,6 @@ public:
     // If this is TRUE, it is OK to call AsArray()
     // Also see IsArrayType()
     BOOL IsArray() const;
-
-    // See comment of IsArrayType() for the explanation of this method
-#if 0
-    void NormalizeUnsharedArrayMT();
-#endif
 
     // ARRAY or SZARRAY
     // Note that this does not imply that it is OK to call AsArray(). See IsArray()
@@ -503,8 +489,7 @@ public:
     // still is an array type.
     //
     // @TODO: Change all the constructors of TypeHandle which take a MethodTable 
-    // to call NormalizeUnsharedArrayMT(). TypeHandle::Verify() can then enforce
-    // that IsArray() is fully correct.
+    // to call TypeHandle::Verify() that can then enforce that IsArray() is fully correct.
     BOOL IsArrayType() const;
 
     // VAR or MVAR
@@ -512,6 +497,9 @@ public:
 
     // BYREF
     BOOL IsByRef() const;
+
+    // BYREFLIKE (does not return TRUE for IsByRef types)
+    BOOL IsByRefLike() const;
 
     // PTR
     BOOL IsPointer() const;
@@ -541,12 +529,6 @@ public:
     void CheckRestore() const;
     BOOL IsExternallyVisible() const;
 
-    // Is this type part of an assembly loaded for introspection?
-    BOOL IsIntrospectionOnly() const;
-
-    // Checks this type and its components for "IsIntrospectionOnly"
-    BOOL ContainsIntrospectionOnlyTypes() const;
-
     // Does this type participate in type equivalence?
     inline BOOL HasTypeEquivalence() const;
 
@@ -572,14 +554,6 @@ public:
     }
 
     INDEBUGIMPL(BOOL Verify();)             // DEBUGGING Make certain this is a valid type handle 
-
-#if defined(CHECK_APP_DOMAIN_LEAKS) || defined(_DEBUG)
-    BOOL IsAppDomainAgile() const;
-    BOOL IsCheckAppDomainAgile() const;
-
-    BOOL IsArrayOfElementsAppDomainAgile() const;
-    BOOL IsArrayOfElementsCheckAppDomainAgile() const;
-#endif
 
 #ifdef DACCESS_COMPILE
     void EnumMemoryRegions(CLRDataEnumMemoryFlags flags);
@@ -691,7 +665,6 @@ inline CHECK CheckPointer(TypeHandle th, IsNullOK ok = NULL_NOT_OK)
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_NOTRIGGER;
     STATIC_CONTRACT_FORBID_FAULT;
-    STATIC_CONTRACT_SO_TOLERANT;
     SUPPORTS_DAC;
     STATIC_CONTRACT_CANNOT_TAKE_LOCK;
 

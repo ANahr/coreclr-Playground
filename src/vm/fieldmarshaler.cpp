@@ -34,12 +34,17 @@
 // forward declaration
 BOOL CheckForPrimitiveType(CorElementType elemType, CQuickArray<WCHAR> *pStrPrimitiveType);
 TypeHandle ArraySubTypeLoadWorker(const SString &strUserDefTypeName, Assembly* pAssembly);
-TypeHandle GetFieldTypeHandleWorker(MetaSig *pFieldSig);  
+BOOL CheckIfDisqualifiedFromManagedSequential(CorElementType corElemType, LayoutRawFieldInfo * pfwalk, MetaSig &fsig);
+TypeHandle GetFieldTypeHandleWorker(MetaSig *pFieldSig);
+#ifdef _DEBUG
+BOOL IsFixedBuffer(mdFieldDef field, IMDInternalImport *pInternalImport);
+#endif
 
 
 //=======================================================================
 // A database of NFT types.
 //=======================================================================
+
 struct NFTDataBaseEntry
 {
     UINT32            m_cbNativeSize;     // native size of field (0 if not constant)
@@ -49,153 +54,19 @@ struct NFTDataBaseEntry
 static const NFTDataBaseEntry NFTDataBase[] =
 {
     #undef DEFINE_NFT
-    #define DEFINE_NFT(name, nativesize, fWinRTSupported) { nativesize, fWinRTSupported },
+    #define DEFINE_NFT(name,  nativesize, fWinRTSupported) { nativesize, fWinRTSupported },
     #include "nsenums.h"
 };
 
-
-//=======================================================================
-// This is invoked from the class loader while building the internal structures for a type
-// This function should check if explicit layout metadata exists.
-//
-// Returns:
-//  TRUE    - yes, there's layout metadata
-//  FALSE   - no, there's no layout.
-//  fail    - throws a typeload exception
-//
-// If TRUE,
-//   *pNLType            gets set to nltAnsi or nltUnicode
-//   *pPackingSize       declared packing size
-//   *pfExplicitoffsets  offsets explicit in metadata or computed?
-//=======================================================================
-BOOL HasLayoutMetadata(Assembly* pAssembly, IMDInternalImport *pInternalImport, mdTypeDef cl, MethodTable*pParentMT, BYTE *pPackingSize, BYTE *pNLTType, BOOL *pfExplicitOffsets)
+template<typename TFieldMarshaler, typename TSpace, typename... TArgs>
+NStructFieldType InitFieldMarshaler(TSpace& space, NativeFieldFlags flags, TArgs&&... args)
 {
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_ANY;
-        PRECONDITION(CheckPointer(pInternalImport));
-        PRECONDITION(CheckPointer(pPackingSize));
-        PRECONDITION(CheckPointer(pNLTType));
-        PRECONDITION(CheckPointer(pfExplicitOffsets));
-    }
-    CONTRACTL_END;
-    
-    HRESULT hr;
-    ULONG clFlags;
-#ifdef _DEBUG
-    clFlags = 0xcccccccc;
-#endif
-    
-    if (FAILED(pInternalImport->GetTypeDefProps(cl, &clFlags, NULL)))
-    {
-        pAssembly->ThrowTypeLoadException(pInternalImport, cl, IDS_CLASSLOAD_BADFORMAT);
-    }
-    
-    if (IsTdAutoLayout(clFlags))
-    {
-        // <BUGNUM>workaround for B#104780 - VC fails to set SequentialLayout on some classes
-        // with ClassSize. Too late to fix compiler for V1.
-        //
-        // To compensate, we treat AutoLayout classes as Sequential if they
-        // meet all of the following criteria:
-        //
-        //    - ClassSize present and nonzero.
-        //    - No instance fields declared
-        //    - Base class is System.ValueType.
-        //</BUGNUM>
-        ULONG cbTotalSize = 0;
-        if (SUCCEEDED(pInternalImport->GetClassTotalSize(cl, &cbTotalSize)) && cbTotalSize != 0)
-        {
-            if (pParentMT && pParentMT->IsValueTypeClass())
-            {
-                MDEnumHolder hEnumField(pInternalImport);
-                if (SUCCEEDED(pInternalImport->EnumInit(mdtFieldDef, cl, &hEnumField)))
-                {
-                    ULONG numFields = pInternalImport->EnumGetCount(&hEnumField);
-                    if (numFields == 0)
-                    {
-                        *pfExplicitOffsets = FALSE;
-                        *pNLTType = nltAnsi;
-                        *pPackingSize = 1;
-                        return TRUE;
-                    }
-                }
-            }
-        }
-        
-        return FALSE;
-    }
-    else if (IsTdSequentialLayout(clFlags))
-    {
-        *pfExplicitOffsets = FALSE;
-    }
-    else if (IsTdExplicitLayout(clFlags))
-    {
-        *pfExplicitOffsets = TRUE;
-    }
-    else
-    {
-        pAssembly->ThrowTypeLoadException(pInternalImport, cl, IDS_CLASSLOAD_BADFORMAT);
-    }
-    
-    // We now know this class has seq. or explicit layout. Ensure the parent does too.
-    if (pParentMT && !(pParentMT->IsObjectClass() || pParentMT->IsValueTypeClass()) && !(pParentMT->HasLayout()))
-        pAssembly->ThrowTypeLoadException(pInternalImport, cl, IDS_CLASSLOAD_BADFORMAT);
-
-    if (IsTdAnsiClass(clFlags))
-    {
-        *pNLTType = nltAnsi;
-    }
-    else if (IsTdUnicodeClass(clFlags))
-    {
-        *pNLTType = nltUnicode;
-    }
-    else if (IsTdAutoClass(clFlags))
-    {
-        // We no longer support Win9x so TdAuto always maps to Unicode.
-        *pNLTType = nltUnicode;
-    }
-    else
-    {
-        pAssembly->ThrowTypeLoadException(pInternalImport, cl, IDS_CLASSLOAD_BADFORMAT);
-    }
-
-    DWORD dwPackSize;
-    hr = pInternalImport->GetClassPackSize(cl, &dwPackSize);
-    if (FAILED(hr) || dwPackSize == 0) 
-        dwPackSize = DEFAULT_PACKING_SIZE;
-
-    // This has to be reduced to a BYTE value, so we had better make sure it fits. If
-    // not, we'll throw an exception instead of trying to munge the value to what we
-    // think the user might want.
-    if (!FitsInU1((UINT64)(dwPackSize)))
-    {
-        pAssembly->ThrowTypeLoadException(pInternalImport, cl, IDS_CLASSLOAD_BADFORMAT);
-    }
-
-    *pPackingSize = (BYTE)dwPackSize;
-    
-    return TRUE;
-}
-
-typedef enum
-{
-    ParseNativeTypeFlag_None    = 0x00,
-    ParseNativeTypeFlag_IsAnsi  = 0x01,
-
-#ifdef FEATURE_COMINTEROP
-    ParseNativeTypeFlag_IsWinRT = 0x02,
-#endif // FEATURE_COMINTEROP
-}
-ParseNativeTypeFlags;
-
-inline ParseNativeTypeFlags operator|=(ParseNativeTypeFlags& lhs, ParseNativeTypeFlags rhs)
-{
-    LIMITED_METHOD_CONTRACT;
-    lhs = static_cast<ParseNativeTypeFlags>(lhs | rhs);
-    return lhs;
+    static_assert_no_msg(sizeof(TFieldMarshaler) <= MAXFIELDMARSHALERSIZE);
+    static_assert_no_msg(sizeof(TSpace) == MAXFIELDMARSHALERSIZE);
+    TFieldMarshaler* marshaler = new (&space) TFieldMarshaler(std::forward<TArgs>(args)...);
+    marshaler->SetNStructFieldType(TFieldMarshaler::s_nft);
+    marshaler->SetNativeFieldFlags(flags);
+    return TFieldMarshaler::s_nft;
 }
 
 #ifdef _PREFAST_
@@ -209,7 +80,6 @@ VOID ParseNativeType(Module*                     pModule,
                          LayoutRawFieldInfo*         pfwalk,
                          PCCOR_SIGNATURE             pNativeType,
                          ULONG                       cbNativeType,
-                         IMDInternalImport*          pInternalImport,
                          mdTypeDef                   cl,
                          const SigTypeContext *      pTypeContext,
                          BOOL                       *pfDisqualifyFromManagedSequential  // set to TRUE if needed (never set to FALSE, it may come in as TRUE!)
@@ -228,21 +98,14 @@ VOID ParseNativeType(Module*                     pModule,
     }
     CONTRACTL_END;
 
+
     // Make sure that there is no junk in the unused part of the field marshaler space (ngen image determinism)
     ZeroMemory(&pfwalk->m_FieldMarshaler, MAXFIELDMARSHALERSIZE);
 
-#define INITFIELDMARSHALER(nfttype, fmtype, args)       \
-do                                                      \
-{                                                       \
-    static_assert_no_msg(sizeof(fmtype) <= MAXFIELDMARSHALERSIZE);  \
-    pfwalk->m_nft = (nfttype);                          \
-    new ( &(pfwalk->m_FieldMarshaler) ) fmtype args;    \
-    ((FieldMarshaler*)&(pfwalk->m_FieldMarshaler))->SetNStructFieldType(nfttype); \
-} while(0)
 
-    BOOL                fAnsi               = (flags & ParseNativeTypeFlag_IsAnsi);
+    BOOL                fAnsi               = (flags == ParseNativeTypeFlags::IsAnsi);
 #ifdef FEATURE_COMINTEROP
-    BOOL                fIsWinRT            = (flags & ParseNativeTypeFlag_IsWinRT);
+    BOOL                fIsWinRT            = (flags == ParseNativeTypeFlags::IsWinRT);
 #endif // FEATURE_COMINTEROP
     CorElementType      corElemType         = ELEMENT_TYPE_END;
     PCCOR_SIGNATURE     pNativeTypeStart    = pNativeType;    
@@ -251,8 +114,6 @@ do                                                      \
     BOOL                fDefault;
     BOOL                BestFit;
     BOOL                ThrowOnUnmappableChar;
-    
-    pfwalk->m_nft = NFT_NONE;
 
     if (cbNativeType == 0)
     {
@@ -266,14 +127,6 @@ do                                                      \
         fDefault = (ntype == NATIVE_TYPE_DEFAULT);
     }
 
-#ifdef FEATURE_COMINTEROP
-    if (fIsWinRT && !fDefault)
-    {
-        // Do not allow any MarshalAs in WinRT scenarios - marshaling is fully described by the field type.
-        INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_WINRT_MARSHAL_AS));
-    }
-#endif // FEATURE_COMINTEROP
-
     // Setup the signature and normalize
     MetaSig fsig(pCOMSignature, cbCOMSignature, pModule, pTypeContext, MetaSig::sigField);
     corElemType = fsig.NextArgNormalized();
@@ -281,40 +134,18 @@ do                                                      \
 
     if (!(*pfDisqualifyFromManagedSequential))
     {
-        // This type may qualify for ManagedSequential. Collect managed size and alignment info.
-        if (CorTypeInfo::IsPrimitiveType(corElemType))
-        {
-            pfwalk->m_managedSize = ((UINT32)CorTypeInfo::Size(corElemType)); // Safe cast - no primitive type is larger than 4gb!
-            pfwalk->m_managedAlignmentReq = pfwalk->m_managedSize;
-        }
-        else if (corElemType == ELEMENT_TYPE_PTR)
-        {
-            pfwalk->m_managedSize = sizeof(LPVOID);
-            pfwalk->m_managedAlignmentReq = sizeof(LPVOID);
-        }
-        else if (corElemType == ELEMENT_TYPE_VALUETYPE)
-        {
-            TypeHandle pNestedType = fsig.GetLastTypeHandleThrowing(ClassLoader::LoadTypes,
-                                                                    CLASS_LOAD_APPROXPARENTS,
-                                                                    TRUE);
-            if (pNestedType.GetMethodTable()->IsManagedSequential())
-            {
-                pfwalk->m_managedSize = (pNestedType.GetMethodTable()->GetNumInstanceFieldBytes());
-
-                _ASSERTE(pNestedType.GetMethodTable()->HasLayout()); // If it is ManagedSequential(), it also has Layout but doesn't hurt to check before we do a cast!
-                pfwalk->m_managedAlignmentReq = pNestedType.GetMethodTable()->GetLayoutInfo()->m_ManagedLargestAlignmentRequirementOfAllMembers;
-            }
-            else
-            {
-                *pfDisqualifyFromManagedSequential = TRUE;
-            }
-        }
-        else
-        {
-            // No other type permitted for ManagedSequential.
-            *pfDisqualifyFromManagedSequential = TRUE;
-        }
+        *pfDisqualifyFromManagedSequential = CheckIfDisqualifiedFromManagedSequential(corElemType, pfwalk, fsig);
     }
+
+    NStructFieldType selectedNft = NFT_NONE;
+
+#ifdef FEATURE_COMINTEROP
+    if (fIsWinRT && !fDefault)
+    {
+        // Do not allow any MarshalAs in WinRT scenarios - marshaling is fully described by the field type.
+        selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_WINRT_MARSHAL_AS);
+    }
+#endif // FEATURE_COMINTEROP
 
 #ifdef _TARGET_X86_
     // Normalization might have put corElementType and ntype out of sync which can
@@ -330,7 +161,7 @@ do                                                      \
     IfFailThrow(fsig.GetArgProps().PeekElemType(&sigElemType));
     if ((sigElemType == ELEMENT_TYPE_GENERICINST || sigElemType == ELEMENT_TYPE_VAR) && corElemType == ELEMENT_TYPE_CLASS)
     {
-        INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_GENERICS_RESTRICTION));
+        selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_GENERICS_RESTRICTION);
     }
     else switch (corElemType)
     {
@@ -339,26 +170,27 @@ do                                                      \
             {
                 if (fAnsi)
                 {
-                    ReadBestFitCustomAttribute(pInternalImport, cl, &BestFit, &ThrowOnUnmappableChar);
-                    INITFIELDMARSHALER(NFT_ANSICHAR, FieldMarshaler_Ansi, (BestFit, ThrowOnUnmappableChar));
+                    ReadBestFitCustomAttribute(pModule, cl, &BestFit, &ThrowOnUnmappableChar);
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_Ansi>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_INTEGER_LIKE, BestFit, ThrowOnUnmappableChar);
                 }
                 else
                 {
-                    INITFIELDMARSHALER(NFT_COPY2, FieldMarshaler_Copy2, ());
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_Copy2>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_BLITTABLE_INTEGER);
                 }
             }
             else if (ntype == NATIVE_TYPE_I1 || ntype == NATIVE_TYPE_U1)
             {
-                ReadBestFitCustomAttribute(pInternalImport, cl, &BestFit, &ThrowOnUnmappableChar);
-                INITFIELDMARSHALER(NFT_ANSICHAR, FieldMarshaler_Ansi, (BestFit, ThrowOnUnmappableChar));
+                ReadBestFitCustomAttribute(pModule, cl, &BestFit, &ThrowOnUnmappableChar);
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Ansi>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_INTEGER_LIKE, BestFit, ThrowOnUnmappableChar);
+
             }
             else if (ntype == NATIVE_TYPE_I2 || ntype == NATIVE_TYPE_U2)
             {
-                INITFIELDMARSHALER(NFT_COPY2, FieldMarshaler_Copy2, ());
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Copy2>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_BLITTABLE_INTEGER);
             }
             else
             {
-                INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_CHAR));
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_CHAR);
             }
             break;
 
@@ -368,31 +200,31 @@ do                                                      \
 #ifdef FEATURE_COMINTEROP
                 if (fIsWinRT)
                 {
-                    INITFIELDMARSHALER(NFT_CBOOL, FieldMarshaler_CBool, ());
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_CBool>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_INTEGER_LIKE);
                 }
                 else
 #endif // FEATURE_COMINTEROP
                 {
-                    INITFIELDMARSHALER(NFT_WINBOOL, FieldMarshaler_WinBool, ());
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_WinBool>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_INTEGER_LIKE);
                 }
             }
             else if (ntype == NATIVE_TYPE_BOOLEAN)
             {
-                INITFIELDMARSHALER(NFT_WINBOOL, FieldMarshaler_WinBool, ());
+                selectedNft = InitFieldMarshaler<FieldMarshaler_WinBool>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_INTEGER_LIKE);
             }
 #ifdef FEATURE_COMINTEROP
             else if (ntype == NATIVE_TYPE_VARIANTBOOL)
             {
-                INITFIELDMARSHALER(NFT_VARIANTBOOL, FieldMarshaler_VariantBool, ());
+                selectedNft = InitFieldMarshaler<FieldMarshaler_VariantBool>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_COM_STRUCT);
             }
 #endif // FEATURE_COMINTEROP
             else if (ntype == NATIVE_TYPE_U1 || ntype == NATIVE_TYPE_I1)
             {
-                INITFIELDMARSHALER(NFT_CBOOL, FieldMarshaler_CBool, ());
+                selectedNft = InitFieldMarshaler<FieldMarshaler_CBool>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_INTEGER_LIKE);
             }
             else
             {
-                INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_BOOLEAN));
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_BOOLEAN);
             }
             break;
 
@@ -400,88 +232,88 @@ do                                                      \
         case ELEMENT_TYPE_I1:
             if (fDefault || ntype == NATIVE_TYPE_I1 || ntype == NATIVE_TYPE_U1)
             {
-                INITFIELDMARSHALER(NFT_COPY1, FieldMarshaler_Copy1, ());
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Copy1>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_BLITTABLE_INTEGER);
             }
             else
             {
-                INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_I1));
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_I1);
             }
             break;
 
         case ELEMENT_TYPE_U1:
             if (fDefault || ntype == NATIVE_TYPE_U1 || ntype == NATIVE_TYPE_I1)
             {
-                INITFIELDMARSHALER(NFT_COPY1, FieldMarshaler_Copy1, ());
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Copy1>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_BLITTABLE_INTEGER);
             }
             else
             {
-                INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_I1));
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_I1);
             }
             break;
 
         case ELEMENT_TYPE_I2:
             if (fDefault || ntype == NATIVE_TYPE_I2 || ntype == NATIVE_TYPE_U2)
             {
-                INITFIELDMARSHALER(NFT_COPY2, FieldMarshaler_Copy2, ());
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Copy2>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_BLITTABLE_INTEGER);
             }
             else
             {
-                INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_I2));
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_I2);
             }
             break;
 
         case ELEMENT_TYPE_U2:
             if (fDefault || ntype == NATIVE_TYPE_U2 || ntype == NATIVE_TYPE_I2)
             {
-                INITFIELDMARSHALER(NFT_COPY2, FieldMarshaler_Copy2, ());
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Copy2>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_BLITTABLE_INTEGER);
             }
             else
             {
-                INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_I2));
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_I2);
             }
             break;
 
         case ELEMENT_TYPE_I4:
             if (fDefault || ntype == NATIVE_TYPE_I4 || ntype == NATIVE_TYPE_U4 || ntype == NATIVE_TYPE_ERROR)
             {
-                INITFIELDMARSHALER(NFT_COPY4, FieldMarshaler_Copy4, ());
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Copy4>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_BLITTABLE_INTEGER);
             }
             else
             {
-                INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_I4));
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_I4);
             }
             break;
             
         case ELEMENT_TYPE_U4:
             if (fDefault || ntype == NATIVE_TYPE_U4 || ntype == NATIVE_TYPE_I4 || ntype == NATIVE_TYPE_ERROR)
             {
-                INITFIELDMARSHALER(NFT_COPY4, FieldMarshaler_Copy4, ());
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Copy4>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_BLITTABLE_INTEGER);
             }
             else
             {
-                INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_I4));
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_I4);
             }
             break;
 
         case ELEMENT_TYPE_I8:
             if (fDefault || ntype == NATIVE_TYPE_I8 || ntype == NATIVE_TYPE_U8)
             {
-                INITFIELDMARSHALER(NFT_COPY8, FieldMarshaler_Copy8, ());
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Copy8>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_BLITTABLE_INTEGER);
             }
             else
             {
-                INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_I8));
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_I8);
             }
             break;
 
         case ELEMENT_TYPE_U8:
             if (fDefault || ntype == NATIVE_TYPE_U8 || ntype == NATIVE_TYPE_I8)
             {
-                INITFIELDMARSHALER(NFT_COPY8, FieldMarshaler_Copy8, ());
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Copy8>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_BLITTABLE_INTEGER);
             }
             else
             {
-                INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_I8));
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_I8);
             }
             break;
 
@@ -490,46 +322,43 @@ do                                                      \
 #ifdef FEATURE_COMINTEROP
             if (fIsWinRT)
             {
-                INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_WINRT_ILLEGAL_TYPE));
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_WINRT_ILLEGAL_TYPE);
             }
             else
 #endif // FEATURE_COMINTEROP
             if (fDefault || ntype == NATIVE_TYPE_INT || ntype == NATIVE_TYPE_UINT)
             {
-                if (sizeof(LPVOID)==4)
-                {
-                    INITFIELDMARSHALER(NFT_COPY4, FieldMarshaler_Copy4, ());
-                }
-                else
-                {
-                    INITFIELDMARSHALER(NFT_COPY8, FieldMarshaler_Copy8, ());
-                }
+#ifdef _TARGET_64BIT_
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Copy8>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_BLITTABLE_INTEGER);
+#else // !_TARGET_64BIT_
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Copy4>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_BLITTABLE_INTEGER);
+#endif // !_TARGET_64BIT_
             }
             else
             {
-                INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_I));
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_I);
             }
             break;
 
         case ELEMENT_TYPE_R4:
             if (fDefault || ntype == NATIVE_TYPE_R4)
             {
-                INITFIELDMARSHALER(NFT_COPY4, FieldMarshaler_Copy4, ());
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Copy4>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_R4);
             }
             else
             {
-                INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_R4));
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_R4);
             }
             break;
             
         case ELEMENT_TYPE_R8:
             if (fDefault || ntype == NATIVE_TYPE_R8)
             {
-                INITFIELDMARSHALER(NFT_COPY8, FieldMarshaler_Copy8, ());
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Copy8>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_R8);
             }
             else
             {
-                INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_R8));
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_R8);
             }
             break;
 
@@ -537,30 +366,21 @@ do                                                      \
 #ifdef FEATURE_COMINTEROP
             if (fIsWinRT)
             {
-                INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_WINRT_ILLEGAL_TYPE));
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_WINRT_ILLEGAL_TYPE);
             }
             else
 #endif // FEATURE_COMINTEROP
             if (fDefault)
             {
-                switch (sizeof(LPVOID))
-                {
-                    case 4:
-                        INITFIELDMARSHALER(NFT_COPY4, FieldMarshaler_Copy4, ());
-                        break;
-                        
-                    case 8:
-                        INITFIELDMARSHALER(NFT_COPY8, FieldMarshaler_Copy8, ());
-                        break;
-
-                    default:
-                        INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_BADMANAGED));
-                        break;
-                }
+#ifdef _TARGET_64BIT_
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Copy8>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_BLITTABLE_INTEGER);
+#else // !_TARGET_64BIT_
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Copy4>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_BLITTABLE_INTEGER);
+#endif // !_TARGET_64BIT_
             }
             else
             {
-                INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_PTR));
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_PTR);
             }
             break;
 
@@ -577,7 +397,7 @@ do                                                      \
             {
                 // If this is a generic value type, lets see whether it is a Nullable<T>
                 TypeHandle genType = fsig.GetLastTypeHandleThrowing();
-                if(genType != NULL && genType.GetMethodTable()->HasSameTypeDefAs(g_pNullableClass))
+                if(genType != nullptr && genType.GetMethodTable()->HasSameTypeDefAs(g_pNullableClass))
                 {
                     // The generic type is System.Nullable<T>. 
                     // Lets extract the typeArg and check if the typeArg is valid.
@@ -590,11 +410,11 @@ do                                                      \
                     if (!typeArgMT->IsLegalNonArrayWinRTType())
                     {
                         // Type is not a valid WinRT value type.
-                        INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_NULLABLE_RESTRICTION));
+                        selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_NULLABLE_RESTRICTION);
                     }
                     else
                     {
-                        INITFIELDMARSHALER(NFT_WINDOWSFOUNDATIONIREFERENCE, FieldMarshaler_Nullable, (genType.GetMethodTable()));
+                        selectedNft = InitFieldMarshaler<FieldMarshaler_Nullable>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_WELL_KNOWN, genType.GetMethodTable());
                     }
                     break;
                 }
@@ -604,28 +424,30 @@ do                                                      \
             {
                 if (fDefault || ntype == NATIVE_TYPE_STRUCT)
                 {
-                    INITFIELDMARSHALER(NFT_DATE, FieldMarshaler_Date, ());
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_Date>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_DATE);
                 }
                 else
                 {
-                    INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_DATETIME));
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_DATETIME);
                 }
             }
             else if (fsig.IsClass(g_DecimalClassName))
             {
                 if (fDefault || ntype == NATIVE_TYPE_STRUCT)
                 {
-                    INITFIELDMARSHALER(NFT_DECIMAL, FieldMarshaler_Decimal, ());
+                    // The decimal type can't be blittable since the managed and native alignment requirements differ.
+                    // Native needs 8-byte alignment since one field is a 64-bit integer, but managed only needs 4-byte alignment since all fields are ints.
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_Decimal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_NESTED);
                 }
 #ifdef FEATURE_COMINTEROP
                 else if (ntype == NATIVE_TYPE_CURRENCY)
                 {
-                    INITFIELDMARSHALER(NFT_CURRENCY, FieldMarshaler_Currency, ());
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_Currency>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_COM_STRUCT);
                 }
 #endif // FEATURE_COMINTEROP
                 else
                 {
-                    INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHALFIELD_DECIMAL));                    
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHALFIELD_DECIMAL);                    
                 }
             }
 #ifdef FEATURE_COMINTEROP
@@ -633,16 +455,16 @@ do                                                      \
             {
                 if (fDefault || ntype == NATIVE_TYPE_STRUCT)
                 {
-                    INITFIELDMARSHALER(NFT_DATETIMEOFFSET, FieldMarshaler_DateTimeOffset, ());
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_DateTimeOffset>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_WELL_KNOWN);
                 }
                 else
                 {
-                    INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_DATETIMEOFFSET));
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_DATETIMEOFFSET);
                 }
             }
             else if (fIsWinRT && !thNestedType.GetMethodTable()->IsLegalNonArrayWinRTType())
             {
-                INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_WINRT_ILLEGAL_TYPE));
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_WINRT_ILLEGAL_TYPE);
             }
 #endif // FEATURE_COMINTEROP
             else if (thNestedType.GetMethodTable()->HasLayout())
@@ -651,21 +473,25 @@ do                                                      \
                 {
                     if (IsStructMarshalable(thNestedType))
                     {
-                        INITFIELDMARSHALER(NFT_NESTEDVALUECLASS, FieldMarshaler_NestedValueClass, (thNestedType.GetMethodTable()));
+#ifdef _DEBUG
+                        selectedNft = InitFieldMarshaler<FieldMarshaler_NestedValueClass>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_NESTED_VALUE_CLASS, thNestedType.GetMethodTable(), IsFixedBuffer(pfwalk->m_MD, pModule->GetMDImport()));
+#else
+                        selectedNft = InitFieldMarshaler<FieldMarshaler_NestedValueClass>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_NESTED_VALUE_CLASS, thNestedType.GetMethodTable());
+#endif
                     }
                     else
                     {
-                        INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_NOTMARSHALABLE));
+                        selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_NOTMARSHALABLE);
                     }
                 }
                 else
                 {
-                    INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_VALUETYPE));                                        
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_VALUETYPE);                                        
                 }
             }
             else
             {
-                INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_NOTMARSHALABLE));
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_NOTMARSHALABLE);
             }
             break;
         }
@@ -690,25 +516,25 @@ do                                                      \
                     {
                         dwFlags |= ItfMarshalInfo::ITF_MARSHAL_DISP_ITF;
                     }
-                    INITFIELDMARSHALER(NFT_INTERFACE, FieldMarshaler_Interface, (NULL, NULL, dwFlags));
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_Interface>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_INTERFACE_TYPE, nullptr, nullptr, dwFlags);
                 }
                 else if (ntype == NATIVE_TYPE_STRUCT)
                 {
-                    INITFIELDMARSHALER(NFT_VARIANT, FieldMarshaler_Variant, ());
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_Variant>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_COM_STRUCT);
                 }
 #else // FEATURE_COMINTEROP
                 if (fDefault || ntype == NATIVE_TYPE_IUNKNOWN || ntype == NATIVE_TYPE_IDISPATCH || ntype == NATIVE_TYPE_INTF)
                 {
-                    INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_OBJECT_TO_ITF_NOT_SUPPORTED));
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_OBJECT_TO_ITF_NOT_SUPPORTED);
                 }
                 else if (ntype == NATIVE_TYPE_STRUCT)
                 {
-                    INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_OBJECT_TO_VARIANT_NOT_SUPPORTED));
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_OBJECT_TO_VARIANT_NOT_SUPPORTED);
                 }
 #endif // FEATURE_COMINTEROP
                 else
                 {
-                    INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHALFIELD_OBJECT));
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHALFIELD_OBJECT);
                 }
             }
 #ifdef FEATURE_COMINTEROP                
@@ -716,7 +542,11 @@ do                                                      \
             {
                 if (fIsWinRT && !thNestedType.GetMethodTable()->IsLegalNonArrayWinRTType())
                 {
-                    INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_WINRT_ILLEGAL_TYPE));
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_WINRT_ILLEGAL_TYPE);
+                }
+                else if (COMDelegate::IsDelegate(thNestedType.GetMethodTable()))
+                {
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_DELEGATE_TLB_INTERFACE);
                 }
                 else
                 {
@@ -724,18 +554,18 @@ do                                                      \
                     if (FAILED(MarshalInfo::TryGetItfMarshalInfo(thNestedType, FALSE, FALSE, &itfInfo)))
                         break;
 
-                    INITFIELDMARSHALER(NFT_INTERFACE, FieldMarshaler_Interface, (itfInfo.thClass.GetMethodTable(), itfInfo.thItf.GetMethodTable(), itfInfo.dwFlags));
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_Interface>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_INTERFACE_TYPE, itfInfo.thClass.GetMethodTable(), itfInfo.thItf.GetMethodTable(), itfInfo.dwFlags);
                 }
             }
 #else  // FEATURE_COMINTEROP
             else if (ntype == NATIVE_TYPE_INTF || thNestedType.IsInterface())
             {
-                INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_OBJECT_TO_ITF_NOT_SUPPORTED));
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_OBJECT_TO_ITF_NOT_SUPPORTED);
             }
 #endif // FEATURE_COMINTEROP
             else if (ntype == NATIVE_TYPE_CUSTOMMARSHALER)
             {
-                INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHALFIELD_NOCUSTOMMARSH));
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHALFIELD_NOCUSTOMMARSH);
             }
             else if (thNestedType == TypeHandle(g_pStringClass))
             {
@@ -744,18 +574,18 @@ do                                                      \
 #ifdef FEATURE_COMINTEROP
                     if (fIsWinRT)
                     {
-                        INITFIELDMARSHALER(NFT_HSTRING, FieldMarshaler_HSTRING, ());
+                        selectedNft = InitFieldMarshaler<FieldMarshaler_HSTRING>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_COM_STRUCT);
                     }
                     else
 #endif // FEATURE_COMINTEROP
                     if (fAnsi)
                     {
-                        ReadBestFitCustomAttribute(pInternalImport, cl, &BestFit, &ThrowOnUnmappableChar);
-                        INITFIELDMARSHALER(NFT_STRINGANSI, FieldMarshaler_StringAnsi, (BestFit, ThrowOnUnmappableChar));
+                        ReadBestFitCustomAttribute(pModule, cl, &BestFit, &ThrowOnUnmappableChar);
+                        selectedNft = InitFieldMarshaler<FieldMarshaler_StringAnsi>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_INTEGER_LIKE, BestFit, ThrowOnUnmappableChar);
                     }
                     else
                     {
-                        INITFIELDMARSHALER(NFT_STRINGUNI, FieldMarshaler_StringUni, ());
+                        selectedNft = InitFieldMarshaler<FieldMarshaler_StringUni>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_INTEGER_LIKE);
                     }
                 }
                 else
@@ -763,29 +593,30 @@ do                                                      \
                     switch (ntype)
                     {
                         case NATIVE_TYPE_LPSTR:
-                            ReadBestFitCustomAttribute(pInternalImport, cl, &BestFit, &ThrowOnUnmappableChar);
-                            INITFIELDMARSHALER(NFT_STRINGANSI, FieldMarshaler_StringAnsi, (BestFit, ThrowOnUnmappableChar));
+                            ReadBestFitCustomAttribute(pModule, cl, &BestFit, &ThrowOnUnmappableChar);
+                            selectedNft = InitFieldMarshaler<FieldMarshaler_StringAnsi>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_INTEGER_LIKE, BestFit, ThrowOnUnmappableChar);
                             break;
 
                         case NATIVE_TYPE_LPWSTR:
-                            INITFIELDMARSHALER(NFT_STRINGUNI, FieldMarshaler_StringUni, ());
+                            selectedNft = InitFieldMarshaler<FieldMarshaler_StringUni>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_INTEGER_LIKE);
                             break;
                         
                         case NATIVE_TYPE_LPUTF8STR:
-							INITFIELDMARSHALER(NFT_STRINGUTF8, FieldMarshaler_StringUtf8, ());
+							selectedNft = InitFieldMarshaler<FieldMarshaler_StringUtf8>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_INTEGER_LIKE);
 							break;
 
                         case NATIVE_TYPE_LPTSTR:
                             // We no longer support Win9x so LPTSTR always maps to a Unicode string.
-                            INITFIELDMARSHALER(NFT_STRINGUNI, FieldMarshaler_StringUni, ());
-                            break;
-#ifdef FEATURE_COMINTEROP
-                        case NATIVE_TYPE_BSTR:
-                            INITFIELDMARSHALER(NFT_BSTR, FieldMarshaler_BSTR, ());
+                            selectedNft = InitFieldMarshaler<FieldMarshaler_StringUni>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_INTEGER_LIKE);
                             break;
 
+                        case NATIVE_TYPE_BSTR:
+                            selectedNft = InitFieldMarshaler<FieldMarshaler_BSTR>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_INTEGER_LIKE);
+                            break;
+
+#ifdef FEATURE_COMINTEROP
                         case NATIVE_TYPE_HSTRING:
-                            INITFIELDMARSHALER(NFT_HSTRING, FieldMarshaler_HSTRING, ());
+                            selectedNft = InitFieldMarshaler<FieldMarshaler_HSTRING>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_COM_STRUCT);
                             break;
 #endif // FEATURE_COMINTEROP
                         case NATIVE_TYPE_FIXEDSYSSTRING:
@@ -801,24 +632,24 @@ do                                                      \
 
                                 if (nchars == 0)
                                 {
-                                    INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHALFIELD_ZEROLENGTHFIXEDSTRING));
+                                    selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHALFIELD_ZEROLENGTHFIXEDSTRING);
                                     break;  
                                 }
 
                                 if (fAnsi)
                                 {
-                                    ReadBestFitCustomAttribute(pInternalImport, cl, &BestFit, &ThrowOnUnmappableChar);
-                                    INITFIELDMARSHALER(NFT_FIXEDSTRINGANSI, FieldMarshaler_FixedStringAnsi, (nchars, BestFit, ThrowOnUnmappableChar));
+                                    ReadBestFitCustomAttribute(pModule, cl, &BestFit, &ThrowOnUnmappableChar);
+                                    selectedNft = InitFieldMarshaler<FieldMarshaler_FixedStringAnsi>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_INTEGER_LIKE, nchars, BestFit, ThrowOnUnmappableChar);
                                 }
                                 else
                                 {
-                                    INITFIELDMARSHALER(NFT_FIXEDSTRINGUNI, FieldMarshaler_FixedStringUni, (nchars));
+                                    selectedNft = InitFieldMarshaler<FieldMarshaler_FixedStringUni>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_INTEGER_LIKE, nchars);
                                 }
                             }
                         break;
 
                         default:
-                            INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHALFIELD_STRING));
+                            selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHALFIELD_STRING);
                             break;
                     }
                 }
@@ -826,11 +657,11 @@ do                                                      \
 #ifdef FEATURE_COMINTEROP
             else if (fIsWinRT && fsig.IsClass(g_TypeClassName))
             {   // Note: If the System.Type field is in non-WinRT struct, do not change the previously shipped behavior
-                INITFIELDMARSHALER(NFT_SYSTEMTYPE, FieldMarshaler_SystemType, ());
+                selectedNft = InitFieldMarshaler<FieldMarshaler_SystemType>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_WELL_KNOWN);
             }
             else if (fIsWinRT && fsig.IsClass(g_ExceptionClassName))  // Marshal Windows.Foundation.HResult as System.Exception for WinRT.
             {
-                INITFIELDMARSHALER(NFT_WINDOWSFOUNDATIONHRESULT, FieldMarshaler_Exception, ());
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Exception>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_WELL_KNOWN);
             }
 #endif //FEATURE_COMINTEROP
 #ifdef FEATURE_CLASSIC_COMINTEROP
@@ -840,7 +671,7 @@ do                                                      \
                 {
                     NativeTypeParamInfo ParamInfo;
                     CorElementType etyp = ELEMENT_TYPE_OBJECT;
-                    MethodTable* pMT = NULL;
+                    MethodTable* pMT = nullptr;
                     VARTYPE vtElement = VT_EMPTY;
 
                     // Compat: If no safe array used def subtype was specified, we assume TypeOf(Object).                            
@@ -849,7 +680,7 @@ do                                                      \
                     // If we have no native type data, assume default behavior
                     if (S_OK != CheckForCompressedData(pNativeTypeStart, pNativeType, cbNativeTypeStart))
                     {
-                        INITFIELDMARSHALER(NFT_SAFEARRAY, FieldMarshaler_SafeArray, (VT_EMPTY, NULL));
+                        selectedNft = InitFieldMarshaler<FieldMarshaler_SafeArray>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_COM_STRUCT, VT_EMPTY, nullptr);
                         break;
                     }
       
@@ -861,12 +692,12 @@ do                                                      \
                         ULONG strLen;
                         if (FAILED(CPackedLen::SafeGetData(pNativeType, pNativeTypeStart + cbNativeTypeStart, &strLen, &pNativeType)))
                         {
-                            INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_BADMETADATA)); 
+                            selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_BADMETADATA); 
                             break;
                         }
                         if (strLen > 0)
                         {
-                            // Load the type. Use a SString for the string since we need to NULL terminate the string
+                            // Load the type. Use a SString for the string since we need to null terminate the string
                             // that comes from the metadata.
                             StackSString safeArrayUserDefTypeName(SString::Utf8, (LPCUTF8)pNativeType, strLen);
                             _ASSERTE((ULONG)(pNativeType + strLen - pNativeTypeStart) == cbNativeTypeStart);
@@ -885,18 +716,18 @@ do                                                      \
 
                     if (!arrayMarshalInfo.IsValid())
                     {
-                        INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (arrayMarshalInfo.GetErrorResourceId())); 
+                        selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, arrayMarshalInfo.GetErrorResourceId()); 
                         break;
                     }
 
-                    INITFIELDMARSHALER(NFT_SAFEARRAY, FieldMarshaler_SafeArray, (arrayMarshalInfo.GetElementVT(), arrayMarshalInfo.GetElementTypeHandle().GetMethodTable()));
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_SafeArray>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_COM_STRUCT, arrayMarshalInfo.GetElementVT(), arrayMarshalInfo.GetElementTypeHandle().GetMethodTable());
                 }
                 else if (ntype == NATIVE_TYPE_FIXEDARRAY)
                 {
                     // Check for the number of elements. This is required, if not present fail.
                     if (S_OK != CheckForCompressedData(pNativeTypeStart, pNativeType, cbNativeTypeStart))
                     {
-                        INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHALFIELD_FIXEDARRAY_NOSIZE));                            
+                        selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHALFIELD_FIXEDARRAY_NOSIZE);                            
                         break;
                     }
                             
@@ -904,14 +735,14 @@ do                                                      \
 
                     if (numElements == 0)
                     {
-                        INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHALFIELD_FIXEDARRAY_ZEROSIZE));                            
+                        selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHALFIELD_FIXEDARRAY_ZEROSIZE);                            
                         break;
                     }
                            
                     // Since these always export to arrays of BSTRs, we don't need to fetch the native type.
 
                     // Compat: FixedArrays of System.Arrays map to fixed arrays of BSTRs.
-                    INITFIELDMARSHALER(NFT_FIXEDARRAY, FieldMarshaler_FixedArray, (pInternalImport, cl, numElements, VT_BSTR, g_pStringClass));
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_FixedArray>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_NESTED, pModule, cl, numElements, VT_BSTR, g_pStringClass);
                 }
             }
 #endif // FEATURE_CLASSIC_COMINTEROP
@@ -919,66 +750,76 @@ do                                                      \
             {
                 if (fDefault || ntype == NATIVE_TYPE_FUNC)
                 {
-                    INITFIELDMARSHALER(NFT_DELEGATE, FieldMarshaler_Delegate, (thNestedType.GetMethodTable()));
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_Delegate>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_INTEGER_LIKE, thNestedType.GetMethodTable());
                 }
+#ifdef FEATURE_COMINTEROP
+                else if (ntype == NATIVE_TYPE_IDISPATCH)
+                {
+                    ItfMarshalInfo itfInfo;
+                    if (FAILED(MarshalInfo::TryGetItfMarshalInfo(thNestedType, FALSE, FALSE, &itfInfo)))
+                        break;
+
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_Interface>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_INTERFACE_TYPE, itfInfo.thClass.GetMethodTable(), itfInfo.thItf.GetMethodTable(), itfInfo.dwFlags);
+                }
+#endif // FEATURE_COMINTEROP
                 else
                 {
-                    INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_DELEGATE));
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_DELEGATE);
                 }
             } 
             else if (thNestedType.CanCastTo(TypeHandle(MscorlibBinder::GetClass(CLASS__SAFE_HANDLE))))
             {
                 if (fDefault) 
                 {
-                    INITFIELDMARSHALER(NFT_SAFEHANDLE, FieldMarshaler_SafeHandle, ());
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_SafeHandle>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_INTEGER_LIKE);
                 }
                 else 
                 {
-                    INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_SAFEHANDLE));
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_SAFEHANDLE);
                 }
             }
             else if (thNestedType.CanCastTo(TypeHandle(MscorlibBinder::GetClass(CLASS__CRITICAL_HANDLE))))
             {
                 if (fDefault) 
                 {
-                    INITFIELDMARSHALER(NFT_CRITICALHANDLE, FieldMarshaler_CriticalHandle, ());
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_CriticalHandle>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_INTEGER_LIKE);
                 }
                 else 
                 {
-                    INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_CRITICALHANDLE));
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_CRITICALHANDLE);
                 }
             }
             else if (fsig.IsClass(g_StringBufferClassName))
             {
-                INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHALFIELD_NOSTRINGBUILDER));
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHALFIELD_NOSTRINGBUILDER);
             }
             else if (IsStructMarshalable(thNestedType))
             {
                 if (fDefault || ntype == NATIVE_TYPE_STRUCT)
                 {
-                    INITFIELDMARSHALER(NFT_NESTEDLAYOUTCLASS, FieldMarshaler_NestedLayoutClass, (thNestedType.GetMethodTable()));
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_NestedLayoutClass>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_NESTED, thNestedType.GetMethodTable());
                 }
                 else
                 {
-                    INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHALFIELD_LAYOUTCLASS));
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHALFIELD_LAYOUTCLASS);
                 }
             }
 #ifdef FEATURE_COMINTEROP
             else if (fIsWinRT)
             {
                 // no other reference types are allowed as field types in WinRT
-                INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_WINRT_ILLEGAL_TYPE));
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_WINRT_ILLEGAL_TYPE);
             }
             else if (fDefault)
             {
                 ItfMarshalInfo itfInfo;
                 if (FAILED(MarshalInfo::TryGetItfMarshalInfo(thNestedType, FALSE, FALSE, &itfInfo)))
                 {
-                    INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_BADMANAGED));
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_BADMANAGED);
                 }
                 else
                 {
-                    INITFIELDMARSHALER(NFT_INTERFACE, FieldMarshaler_Interface, (itfInfo.thClass.GetMethodTable(), itfInfo.thItf.GetMethodTable(), itfInfo.dwFlags));
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_Interface>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_INTERFACE_TYPE, itfInfo.thClass.GetMethodTable(), itfInfo.thItf.GetMethodTable(), itfInfo.dwFlags);
                 }
             }
 #endif  // FEATURE_COMINTEROP
@@ -991,7 +832,7 @@ do                                                      \
 #ifdef FEATURE_COMINTEROP
             if (fIsWinRT)
             {
-                INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_WINRT_ILLEGAL_TYPE));
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_WINRT_ILLEGAL_TYPE);
                 break;
             }
 #endif // FEATURE_COMINTEROP
@@ -1014,7 +855,7 @@ do                                                      \
                 // The size constant must be specified, if it isn't then the struct can't be marshalled.
                 if (S_OK != CheckForCompressedData(pNativeTypeStart, pNativeType, cbNativeTypeStart))
                 {
-                    INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHALFIELD_FIXEDARRAY_NOSIZE));                            
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHALFIELD_FIXEDARRAY_NOSIZE);                            
                     break;
                 }
 
@@ -1022,7 +863,7 @@ do                                                      \
                 ULONG numElements = CorSigUncompressData(pNativeType);            
                 if (numElements == 0)
                 {
-                    INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHALFIELD_FIXEDARRAY_ZEROSIZE));                            
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHALFIELD_FIXEDARRAY_ZEROSIZE);                            
                     break;
                 }
 
@@ -1035,7 +876,7 @@ do                                                      \
 
                 if (!arrayMarshalInfo.IsValid())
                 {
-                    INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (arrayMarshalInfo.GetErrorResourceId())); 
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, arrayMarshalInfo.GetErrorResourceId()); 
                     break;
                 }
 
@@ -1044,15 +885,15 @@ do                                                      \
                     // We need to special case fixed sized arrays of ANSI chars since the OleVariant code
                     // that is used by the generic fixed size array marshaller doesn't support them
                     // properly. 
-                    ReadBestFitCustomAttribute(pInternalImport, cl, &BestFit, &ThrowOnUnmappableChar);
-                    INITFIELDMARSHALER(NFT_FIXEDCHARARRAYANSI, FieldMarshaler_FixedCharArrayAnsi, (numElements, BestFit, ThrowOnUnmappableChar));
+                    ReadBestFitCustomAttribute(pModule, cl, &BestFit, &ThrowOnUnmappableChar);
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_FixedCharArrayAnsi>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_INTEGER_LIKE, numElements, BestFit, ThrowOnUnmappableChar);
                     break;                    
                 }
                 else
                 {
                     VARTYPE elementVT = arrayMarshalInfo.GetElementVT();
 
-                    INITFIELDMARSHALER(NFT_FIXEDARRAY, FieldMarshaler_FixedArray, (pInternalImport, cl, numElements, elementVT, arrayMarshalInfo.GetElementTypeHandle().GetMethodTable()));
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_FixedArray>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_NESTED, pModule, cl, numElements, elementVT, arrayMarshalInfo.GetElementTypeHandle().GetMethodTable());
                     break;
                 }
             }
@@ -1070,16 +911,16 @@ do                                                      \
 
                 if (!arrayMarshalInfo.IsValid())
                 {
-                    INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (arrayMarshalInfo.GetErrorResourceId())); 
+                    selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, arrayMarshalInfo.GetErrorResourceId()); 
                     break;
                 }
                     
-                INITFIELDMARSHALER(NFT_SAFEARRAY, FieldMarshaler_SafeArray, (arrayMarshalInfo.GetElementVT(), arrayMarshalInfo.GetElementTypeHandle().GetMethodTable()));
+                selectedNft = InitFieldMarshaler<FieldMarshaler_SafeArray>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_COM_STRUCT, arrayMarshalInfo.GetElementVT(), arrayMarshalInfo.GetElementTypeHandle().GetMethodTable());
             }
 #endif //FEATURE_CLASSIC_COMINTEROP
             else
             {
-                INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHALFIELD_ARRAY));                     
+                selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHALFIELD_ARRAY);                     
             }
             break;
         }            
@@ -1093,23 +934,81 @@ do                                                      \
             break;
     }
 
-    if (pfwalk->m_nft == NFT_NONE)
+    if (selectedNft == NFT_NONE)
     {
-        INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_BADMANAGED));
+        selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_BADMANAGED);
     }
 #ifdef FEATURE_COMINTEROP
-    else if (fIsWinRT && !NFTDataBase[pfwalk->m_nft].m_fWinRTSupported)
+    else if (fIsWinRT && !NFTDataBase[(UINT16)selectedNft].m_fWinRTSupported)
     {
         // the field marshaler we came up with is not supported in WinRT scenarios
         ZeroMemory(&pfwalk->m_FieldMarshaler, MAXFIELDMARSHALERSIZE);
-        INITFIELDMARSHALER(NFT_ILLEGAL, FieldMarshaler_Illegal, (IDS_EE_BADMARSHAL_WINRT_ILLEGAL_TYPE));
+        selectedNft = InitFieldMarshaler<FieldMarshaler_Illegal>(pfwalk->m_FieldMarshaler, NATIVE_FIELD_CATEGORY_ILLEGAL, IDS_EE_BADMARSHAL_WINRT_ILLEGAL_TYPE);
     }
 #endif // FEATURE_COMINTEROP
-#undef INITFIELDMARSHALER
 }
+
 #ifdef _PREFAST_
 #pragma warning(pop)
 #endif
+
+BOOL CheckIfDisqualifiedFromManagedSequential(CorElementType corElemType, LayoutRawFieldInfo * pRawFieldInfo, MetaSig &fsig)
+{
+    // This type may qualify for ManagedSequential. Collect managed size and alignment info.
+    if (CorTypeInfo::IsPrimitiveType(corElemType))
+    {
+        pRawFieldInfo->m_managedPlacement.m_size = ((UINT32)CorTypeInfo::Size(corElemType)); // Safe cast - no primitive type is larger than 4gb!
+#if defined(_TARGET_X86_) && defined(UNIX_X86_ABI)
+        switch (corElemType)
+        {
+            // The System V ABI for i386 defines different packing for these types.
+        case ELEMENT_TYPE_I8:
+        case ELEMENT_TYPE_U8:
+        case ELEMENT_TYPE_R8:
+        {
+            pRawFieldInfo->m_managedPlacement.m_alignment = 4;
+            break;
+        }
+
+        default:
+        {
+            pRawFieldInfo->m_managedPlacement.m_alignment = pRawFieldInfo->m_managedPlacement.m_size;
+            break;
+        }
+        }
+#else // _TARGET_X86_ && UNIX_X86_ABI
+        pRawFieldInfo->m_managedPlacement.m_alignment = pRawFieldInfo->m_managedPlacement.m_size;
+#endif
+
+        return FALSE;
+    }
+    else if (corElemType == ELEMENT_TYPE_PTR)
+    {
+        pRawFieldInfo->m_managedPlacement.m_size = TARGET_POINTER_SIZE;
+        pRawFieldInfo->m_managedPlacement.m_alignment = TARGET_POINTER_SIZE;
+        
+        return FALSE;
+    }
+    else if (corElemType == ELEMENT_TYPE_VALUETYPE)
+    {
+        TypeHandle pNestedType = fsig.GetLastTypeHandleThrowing(ClassLoader::LoadTypes,
+            CLASS_LOAD_APPROXPARENTS,
+            TRUE);
+        if (!pNestedType.GetMethodTable()->IsManagedSequential())
+        {
+            return TRUE;
+        }
+        
+        pRawFieldInfo->m_managedPlacement.m_size = (pNestedType.GetMethodTable()->GetNumInstanceFieldBytes());
+
+        _ASSERTE(pNestedType.GetMethodTable()->HasLayout()); // If it is ManagedSequential(), it also has Layout but doesn't hurt to check before we do a cast!
+        pRawFieldInfo->m_managedPlacement.m_alignment = pNestedType.GetMethodTable()->GetLayoutInfo()->m_ManagedLargestAlignmentRequirementOfAllMembers;
+        
+        return FALSE;
+    }
+    // No other type permitted for ManagedSequential.
+    return TRUE;
+}
 
 
 TypeHandle ArraySubTypeLoadWorker(const SString &strUserDefTypeName, Assembly* pAssembly)
@@ -1180,7 +1079,6 @@ BOOL IsStructMarshalable(TypeHandle th)
         NOTHROW;
         GC_NOTRIGGER;
         MODE_ANY;
-        SO_TOLERANT;
         PRECONDITION(!th.IsNull());
     }
     CONTRACTL_END;
@@ -1211,7 +1109,7 @@ BOOL IsStructMarshalable(TypeHandle th)
 
     while (numReferenceFields--)
     {
-        if (pFieldMarshaler->GetNStructFieldType() == NFT_ILLEGAL)
+        if (pFieldMarshaler->IsIllegalMarshaler())
             return FALSE;
 
         ((BYTE*&)pFieldMarshaler) += MAXFIELDMARSHALERSIZE;
@@ -1220,733 +1118,39 @@ BOOL IsStructMarshalable(TypeHandle th)
     return TRUE;
 }
 
-
-//=======================================================================
-// Called from the clsloader to load up and summarize the field metadata
-// for layout classes.
-//
-// Warning: This function can load other classes (esp. for nested structs.)
-//=======================================================================
-#ifdef _PREFAST_
-#pragma warning(push)
-#pragma warning(disable:21000) // Suppress PREFast warning about overly large function
-#endif
-VOID EEClassLayoutInfo::CollectLayoutFieldMetadataThrowing(
-   mdTypeDef      cl,               // cl of the NStruct being loaded
-   BYTE           packingSize,      // packing size (from @dll.struct)
-   BYTE           nlType,           // nltype (from @dll.struct)
-#ifdef FEATURE_COMINTEROP
-   BOOL           isWinRT,          // Is the type a WinRT type
-#endif // FEATURE_COMINTEROP
-   BOOL           fExplicitOffsets, // explicit offsets?
-   MethodTable   *pParentMT,        // the loaded superclass
-   ULONG          cMembers,         // total number of members (methods + fields)
-   HENUMInternal *phEnumField,      // enumerator for field
-   Module        *pModule,          // Module that defines the scope, loader and heap (for allocate FieldMarshalers)
-   const SigTypeContext *pTypeContext,          // Type parameters for NStruct being loaded
-   EEClassLayoutInfo    *pEEClassLayoutInfoOut, // caller-allocated structure to fill in.
-   LayoutRawFieldInfo   *pInfoArrayOut,         // caller-allocated array to fill in.  Needs room for cMember+1 elements
-   LoaderAllocator      *pAllocator,
-   AllocMemTracker      *pamTracker
-)
+BOOL IsFieldBlittable(FieldMarshaler* pFM)
 {
-    CONTRACTL
+    if (pFM->GetNativeFieldFlags() & NATIVE_FIELD_SUBCATEGORY_MAYBE_BLITTABLE)
     {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_ANY;
-        INJECT_FAULT(COMPlusThrowOM());
-        PRECONDITION(CheckPointer(pModule));
-    }
-    CONTRACTL_END;
+        if (pFM->GetNativeFieldFlags() & NATIVE_FIELD_SUBCATEGORY_FLOAT)
+        {
+            return TRUE;
+        }
+        else if (pFM->GetNativeFieldFlags() & NATIVE_FIELD_SUBCATEGORY_INTEGER)
+        {
+            return TRUE;
+        }
+        else if (pFM->GetNativeFieldFlags() & NATIVE_FIELD_SUBCATEGORY_NESTED)
+        {
+            FieldMarshaler_NestedType *pNestedFM = (FieldMarshaler_NestedType*)pFM;
 
-    HRESULT             hr;
-    MD_CLASS_LAYOUT     classlayout;
-    mdFieldDef          fd;
-    ULONG               ulOffset;
-    ULONG cFields = 0;
-
-    // Running tote - if anything in this type disqualifies it from being ManagedSequential, somebody will set this to TRUE by the the time
-    // function exits.
-    BOOL                fDisqualifyFromManagedSequential = FALSE; 
-
-    // Internal interface for the NStruct being loaded.
-    IMDInternalImport *pInternalImport = pModule->GetMDImport();
-
-
-#ifdef _DEBUG
-    LPCUTF8 szName; 
-    LPCUTF8 szNamespace; 
-    if (FAILED(pInternalImport->GetNameOfTypeDef(cl, &szName, &szNamespace)))
-    {
-        szName = szNamespace = "Invalid TypeDef record";
-    }
-    
-    if (g_pConfig->ShouldBreakOnStructMarshalSetup(szName))
-        CONSISTENCY_CHECK_MSGF(false, ("BreakOnStructMarshalSetup: '%s' ", szName));
-#endif
-
-
-    // Check if this type might be ManagedSequential. Only valuetypes marked Sequential can be
-    // ManagedSequential. Other issues checked below might also disqualify the type.
-    if ( (!fExplicitOffsets) &&    // Is it marked sequential?
-         (pParentMT && (pParentMT->IsValueTypeClass() || pParentMT->IsManagedSequential()))  // Is it a valuetype or derived from a qualifying valuetype?
-       )
-    {
-        // Type qualifies so far... need do nothing.
-    }
-    else
-    {
-        fDisqualifyFromManagedSequential = TRUE;
-    }
-
-
-    BOOL fHasNonTrivialParent = pParentMT &&
-                                !pParentMT->IsObjectClass() &&
-                                !pParentMT->IsValueTypeClass();
-
-
-    //====================================================================
-    // First, some validation checks.
-    //====================================================================
-    _ASSERTE(!(fHasNonTrivialParent && !(pParentMT->HasLayout())));
-
-    hr = pInternalImport->GetClassLayoutInit(cl, &classlayout);
-    if (FAILED(hr))
-    {
-        COMPlusThrowHR(hr, BFA_CANT_GET_CLASSLAYOUT);
-    }
-
-    pEEClassLayoutInfoOut->m_numCTMFields        = fHasNonTrivialParent ? pParentMT->GetLayoutInfo()->m_numCTMFields : 0;
-    pEEClassLayoutInfoOut->m_pFieldMarshalers    = NULL;
-    pEEClassLayoutInfoOut->SetIsBlittable(TRUE);
-    if (fHasNonTrivialParent)
-        pEEClassLayoutInfoOut->SetIsBlittable(pParentMT->IsBlittable());
-    pEEClassLayoutInfoOut->SetIsZeroSized(FALSE);    
-    pEEClassLayoutInfoOut->SetHasExplicitSize(FALSE);
-    pEEClassLayoutInfoOut->m_cbPackingSize = packingSize;
-
-    LayoutRawFieldInfo *pfwalk = pInfoArrayOut;
-    
-    S_UINT32 cbSortArraySize = S_UINT32(cMembers) * S_UINT32(sizeof(LayoutRawFieldInfo *));
-    if (cbSortArraySize.IsOverflow())
-    {
-        ThrowHR(COR_E_TYPELOAD);
-    }
-    LayoutRawFieldInfo **pSortArray = (LayoutRawFieldInfo **)_alloca(cbSortArraySize.Value());
-    LayoutRawFieldInfo **pSortArrayEnd = pSortArray;
-    
-    ULONG maxRid = pInternalImport->GetCountWithTokenKind(mdtFieldDef);
-    
-    
-    //=====================================================================
-    // Phase 1: Figure out the NFT of each field based on both the CLR
-    // signature of the field and the FieldMarshaler metadata. 
-    //=====================================================================
-    BOOL fParentHasLayout = pParentMT && pParentMT->HasLayout();
-    UINT32 cbAdjustedParentLayoutNativeSize = 0;
-    EEClassLayoutInfo *pParentLayoutInfo = NULL;;
-    if (fParentHasLayout)
-    {
-        pParentLayoutInfo = pParentMT->GetLayoutInfo();
-        // Treat base class as an initial member.
-        cbAdjustedParentLayoutNativeSize = pParentLayoutInfo->GetNativeSize();
-        // If the parent was originally a zero-sized explicit type but
-        // got bumped up to a size of 1 for compatibility reasons, then
-        // we need to remove the padding, but ONLY for inheritance situations.
-        if (pParentLayoutInfo->IsZeroSized()) {
-            CONSISTENCY_CHECK(cbAdjustedParentLayoutNativeSize == 1);
-            cbAdjustedParentLayoutNativeSize = 0;
+            if (pNestedFM->GetNestedNativeMethodTable()->IsBlittable())
+            {
+                return TRUE;
+            }
         }
     }
-
-    ULONG i;
-    for (i = 0; pInternalImport->EnumNext(phEnumField, &fd); i++)
-    {
-        DWORD dwFieldAttrs;
-        ULONG rid = RidFromToken(fd);
-
-        if((rid == 0)||(rid > maxRid))
-        {
-            COMPlusThrowHR(COR_E_TYPELOAD, BFA_BAD_FIELD_TOKEN);
-        }
-
-        IfFailThrow(pInternalImport->GetFieldDefProps(fd, &dwFieldAttrs));
-        
-        PCCOR_SIGNATURE pNativeType = NULL;
-        ULONG cbNativeType;
-        // We ignore marshaling data attached to statics and literals,
-        // since these do not contribute to instance data.
-        if (!IsFdStatic(dwFieldAttrs) && !IsFdLiteral(dwFieldAttrs))
-        {
-            PCCOR_SIGNATURE pCOMSignature;
-            ULONG       cbCOMSignature;
-
-            if (IsFdHasFieldMarshal(dwFieldAttrs))
-            {
-                hr = pInternalImport->GetFieldMarshal(fd, &pNativeType, &cbNativeType);
-                if (FAILED(hr))
-                    cbNativeType = 0;
-            }
-            else
-                cbNativeType = 0;
-            
-            IfFailThrow(pInternalImport->GetSigOfFieldDef(fd,&cbCOMSignature, &pCOMSignature));
-            
-            IfFailThrow(::validateTokenSig(fd,pCOMSignature,cbCOMSignature,dwFieldAttrs,pInternalImport));
-            
-            // fill the appropriate entry in pInfoArrayOut
-            pfwalk->m_MD = fd;
-            pfwalk->m_nft = NULL;
-            pfwalk->m_offset = (UINT32) -1;
-            pfwalk->m_sequence = 0;
-
-#ifdef _DEBUG
-            LPCUTF8 szFieldName;
-            if (FAILED(pInternalImport->GetNameOfFieldDef(fd, &szFieldName)))
-            {
-                szFieldName = "Invalid FieldDef record";
-            }
-#endif
-
-            ParseNativeTypeFlags flags = ParseNativeTypeFlag_None;
-#ifdef FEATURE_COMINTEROP
-            if (isWinRT)
-                flags |= ParseNativeTypeFlag_IsWinRT;
-            else // WinRT types have nlType == nltAnsi but should be treated as Unicode
-#endif // FEATURE_COMINTEROP
-            if (nlType == nltAnsi)
-                flags |=  ParseNativeTypeFlag_IsAnsi;
-
-            ParseNativeType(pModule,
-                            pCOMSignature,
-                            cbCOMSignature,
-                            flags,
-                            pfwalk,
-                            pNativeType,
-                            cbNativeType,
-                            pInternalImport,
-                            cl,
-                            pTypeContext,
-                            &fDisqualifyFromManagedSequential
-#ifdef _DEBUG
-                            ,
-                            szNamespace,
-                            szName,
-                            szFieldName
-#endif
-                                );
-
-
-            //<TODO>@nice: This is obviously not the place to bury this logic.
-            // We're replacing NFT's with MARSHAL_TYPES_* in the near future
-            // so this isn't worth perfecting.</TODO>
-
-            BOOL    resetBlittable = TRUE;
-
-            // if it's a simple copy...
-            if (pfwalk->m_nft == NFT_COPY1    ||
-                pfwalk->m_nft == NFT_COPY2    ||
-                pfwalk->m_nft == NFT_COPY4    ||
-                pfwalk->m_nft == NFT_COPY8)
-            {
-                resetBlittable = FALSE;
-            }
-
-            // Or if it's a nested value class that is itself blittable...
-            if (pfwalk->m_nft == NFT_NESTEDVALUECLASS)
-            {
-                FieldMarshaler *pFM = (FieldMarshaler*)&(pfwalk->m_FieldMarshaler);
-                _ASSERTE(pFM->IsNestedValueClassMarshaler());
-
-                if (((FieldMarshaler_NestedValueClass *) pFM)->IsBlittable())
-                    resetBlittable = FALSE;
-            }
-
-            // ...Otherwise, this field prevents blitting
-            if (resetBlittable)
-                pEEClassLayoutInfoOut->SetIsBlittable(FALSE);
-
-            cFields++;
-            pfwalk++;
-        }
-    }
-
-    _ASSERTE(i == cMembers);
-
-    // NULL out the last entry
-    pfwalk->m_MD = mdFieldDefNil;
-    
-    
-    //
-    // fill in the layout information 
-    //
-    
-    // pfwalk points to the beginging of the array
-    pfwalk = pInfoArrayOut;
-
-    while (SUCCEEDED(hr = pInternalImport->GetClassLayoutNext(
-                                     &classlayout,
-                                     &fd,
-                                     &ulOffset)) &&
-                                     fd != mdFieldDefNil)
-    {
-        // watch for the last entry: must be mdFieldDefNil
-        while ((mdFieldDefNil != pfwalk->m_MD)&&(pfwalk->m_MD < fd))
-            pfwalk++;
-
-        // if we haven't found a matching token, it must be a static field with layout -- ignore it
-        if(pfwalk->m_MD != fd) continue;
-
-        if (!fExplicitOffsets)
-        {
-            // ulOffset is the sequence
-            pfwalk->m_sequence = ulOffset;
-        }
-        else
-        {
-            // ulOffset is the explicit offset
-            pfwalk->m_offset = ulOffset;
-            pfwalk->m_sequence = (ULONG) -1;
-
-            // Treat base class as an initial member.
-            if (!SafeAddUINT32(&(pfwalk->m_offset), cbAdjustedParentLayoutNativeSize))
-                COMPlusThrowOM();
-        }
-    }
-    IfFailThrow(hr);
-
-    // now sort the array
-    if (!fExplicitOffsets)
-    { 
-        // sort sequential by ascending sequence
-        for (i = 0; i < cFields; i++)
-        {
-            LayoutRawFieldInfo**pSortWalk = pSortArrayEnd;
-            while (pSortWalk != pSortArray)
-            {
-                if (pInfoArrayOut[i].m_sequence >= (*(pSortWalk-1))->m_sequence)
-                    break;
-
-                pSortWalk--;
-            }
-
-            // pSortWalk now points to the target location for new FieldInfo.
-            MoveMemory(pSortWalk + 1, pSortWalk, (pSortArrayEnd - pSortWalk) * sizeof(LayoutRawFieldInfo*));
-            *pSortWalk = &pInfoArrayOut[i];
-            pSortArrayEnd++;
-        }
-    }
-    else // no sorting for explicit layout
-    {
-        for (i = 0; i < cFields; i++)
-        {
-            if(pInfoArrayOut[i].m_MD != mdFieldDefNil)
-            {
-                if (pInfoArrayOut[i].m_offset == (UINT32)-1)
-                {
-                    LPCUTF8 szFieldName;
-                    if (FAILED(pInternalImport->GetNameOfFieldDef(pInfoArrayOut[i].m_MD, &szFieldName)))
-                    {
-                        szFieldName = "Invalid FieldDef record";
-                    }
-                    pModule->GetAssembly()->ThrowTypeLoadException(pInternalImport, 
-                                                                   cl,
-                                                                   szFieldName,
-                                                                   IDS_CLASSLOAD_NSTRUCT_EXPLICIT_OFFSET);
-                }
-                else if ((INT)pInfoArrayOut[i].m_offset < 0)
-                {
-                    LPCUTF8 szFieldName;
-                    if (FAILED(pInternalImport->GetNameOfFieldDef(pInfoArrayOut[i].m_MD, &szFieldName)))
-                    {
-                        szFieldName = "Invalid FieldDef record";
-                    }
-                    pModule->GetAssembly()->ThrowTypeLoadException(pInternalImport, 
-                                                                   cl,
-                                                                   szFieldName,
-                                                                   IDS_CLASSLOAD_NSTRUCT_NEGATIVE_OFFSET);
-                }
-            }
-                
-            *pSortArrayEnd = &pInfoArrayOut[i];
-            pSortArrayEnd++;
-        }
-    }
-
-    //=====================================================================
-    // Phase 2: Compute the native size (in bytes) of each field.
-    // Store this in pInfoArrayOut[].cbNativeSize;
-    //=====================================================================
-
-    // Now compute the native size of each field
-    for (pfwalk = pInfoArrayOut; pfwalk->m_MD != mdFieldDefNil; pfwalk++)
-    {
-        UINT8 nft = pfwalk->m_nft;
-        pEEClassLayoutInfoOut->m_numCTMFields++;
-
-        // If the NFT's size never changes, it is stored in the database.
-        UINT32 cbNativeSize = NFTDataBase[nft].m_cbNativeSize;
-
-        if (cbNativeSize == 0)
-        {
-            // Size of 0 means NFT's size is variable, so we have to figure it
-            // out case by case.
-            cbNativeSize = ((FieldMarshaler*)&(pfwalk->m_FieldMarshaler))->NativeSize();
-        }
-        pfwalk->m_cbNativeSize = cbNativeSize;
-    }
-
-    if (pEEClassLayoutInfoOut->m_numCTMFields)
-    {
-        pEEClassLayoutInfoOut->m_pFieldMarshalers = (FieldMarshaler*)(pamTracker->Track(pAllocator->GetLowFrequencyHeap()->AllocMem(S_SIZE_T(MAXFIELDMARSHALERSIZE) * S_SIZE_T(pEEClassLayoutInfoOut->m_numCTMFields))));
-
-        // Bring in the parent's fieldmarshalers
-        if (fHasNonTrivialParent)
-        {
-            CONSISTENCY_CHECK(fParentHasLayout);
-            PREFAST_ASSUME(pParentLayoutInfo != NULL);  // See if (fParentHasLayout) branch above
-            
-            UINT numChildCTMFields = pEEClassLayoutInfoOut->m_numCTMFields - pParentLayoutInfo->m_numCTMFields;
-            memcpyNoGCRefs( ((BYTE*)pEEClassLayoutInfoOut->m_pFieldMarshalers) + MAXFIELDMARSHALERSIZE*numChildCTMFields,
-                            pParentLayoutInfo->m_pFieldMarshalers,
-                            MAXFIELDMARSHALERSIZE * (pParentLayoutInfo->m_numCTMFields) );
-        }
-
-    }
-
-
-    //=====================================================================
-    // Phase 3: If FieldMarshaler requires autooffsetting, compute the offset
-    // of each field and the size of the total structure. We do the layout
-    // according to standard VC layout rules:
-    //
-    //   Each field has an alignment requirement. The alignment-requirement
-    //   of a scalar field is the smaller of its size and the declared packsize.
-    //   The alighnment-requirement of a struct field is the smaller of the
-    //   declared packsize and the largest of the alignment-requirement
-    //   of its fields. The alignment requirement of an array is that
-    //   of one of its elements.
-    //
-    //   In addition, each struct gets padding at the end to ensure
-    //   that an array of such structs contain no unused space between
-    //   elements.
-    //=====================================================================
-    {
-        BYTE   LargestAlignmentRequirement = 1;
-        UINT32 cbCurOffset = 0;
-
-        // Treat base class as an initial member.
-        if (!SafeAddUINT32(&cbCurOffset, cbAdjustedParentLayoutNativeSize))
-            COMPlusThrowOM();
-
-        if (fParentHasLayout)
-        {
-            BYTE alignmentRequirement;
-            
-            alignmentRequirement = min(packingSize, pParentLayoutInfo->GetLargestAlignmentRequirementOfAllMembers());
-    
-            LargestAlignmentRequirement = max(LargestAlignmentRequirement, alignmentRequirement);                                          
-        }
-
-        // Start with the size inherited from the parent (if any).
-        unsigned calcTotalSize = cbAdjustedParentLayoutNativeSize;
-     
-        LayoutRawFieldInfo **pSortWalk;
-        for (pSortWalk = pSortArray, i=cFields; i; i--, pSortWalk++)
-        {
-            pfwalk = *pSortWalk;
-    
-            BYTE alignmentRequirement = static_cast<BYTE>(((FieldMarshaler*)&(pfwalk->m_FieldMarshaler))->AlignmentRequirement());
-            if (!(alignmentRequirement == 1 ||
-                     alignmentRequirement == 2 ||
-                     alignmentRequirement == 4 ||
-                  alignmentRequirement == 8))
-            {
-                COMPlusThrowHR(COR_E_INVALIDPROGRAM, BFA_METADATA_CORRUPT);
-            }
-    
-            alignmentRequirement = min(alignmentRequirement, packingSize);
-    
-            LargestAlignmentRequirement = max(LargestAlignmentRequirement, alignmentRequirement);
-    
-            // This assert means I forgot to special-case some NFT in the
-            // above switch.
-            _ASSERTE(alignmentRequirement <= 8);
-    
-            // Check if this field is overlapped with other(s)
-            pfwalk->m_fIsOverlapped = FALSE;
-            if (fExplicitOffsets) {
-                LayoutRawFieldInfo *pfwalk1;
-                DWORD dwBegin = pfwalk->m_offset;
-                DWORD dwEnd = dwBegin+pfwalk->m_cbNativeSize;
-                for (pfwalk1 = pInfoArrayOut; pfwalk1 < pfwalk; pfwalk1++)
-                {
-                    if((pfwalk1->m_offset >= dwEnd) || (pfwalk1->m_offset+pfwalk1->m_cbNativeSize <= dwBegin)) continue;
-                    pfwalk->m_fIsOverlapped = TRUE;
-                    pfwalk1->m_fIsOverlapped = TRUE;
-                }
-            }
-            else
-            {
-                // Insert enough padding to align the current data member.
-                while (cbCurOffset % alignmentRequirement)
-                {
-                    if (!SafeAddUINT32(&cbCurOffset, 1))
-                        COMPlusThrowOM();
-                }
-    
-                // Insert current data member.
-                pfwalk->m_offset = cbCurOffset;
-    
-                // if we overflow we will catch it below
-                cbCurOffset += pfwalk->m_cbNativeSize;
-            } 
-    
-            unsigned fieldEnd = pfwalk->m_offset + pfwalk->m_cbNativeSize;
-            if (fieldEnd < pfwalk->m_offset)
-                COMPlusThrowOM();
-    
-                // size of the structure is the size of the last field.  
-            if (fieldEnd > calcTotalSize)
-                calcTotalSize = fieldEnd;
-        }
-    
-        ULONG clstotalsize = 0;
-        if (FAILED(pInternalImport->GetClassTotalSize(cl, &clstotalsize)))
-        {
-            clstotalsize = 0;
-        }
-        
-        if (clstotalsize != 0)
-        {
-            if (!SafeAddULONG(&clstotalsize, (ULONG)cbAdjustedParentLayoutNativeSize))
-                COMPlusThrowOM();
-    
-            // size must be large enough to accomodate layout. If not, we use the layout size instead.
-            if (clstotalsize < calcTotalSize)
-            {
-                clstotalsize = calcTotalSize;
-            }
-            calcTotalSize = clstotalsize;   // use the size they told us 
-        } 
-        else
-        {
-            // The did not give us an explict size, so lets round up to a good size (for arrays) 
-            while (calcTotalSize % LargestAlignmentRequirement != 0)
-            {
-                if (!SafeAddUINT32(&calcTotalSize, 1))
-                    COMPlusThrowOM();
-            }
-        }
-        
-        // We'll cap the total native size at a (somewhat) arbitrary limit to ensure
-        // that we don't expose some overflow bug later on.
-        if (calcTotalSize >= MAX_SIZE_FOR_INTEROP)
-            COMPlusThrowOM();
-
-        // This is a zero-sized struct - need to record the fact and bump it up to 1.
-        if (calcTotalSize == 0)
-        {
-            pEEClassLayoutInfoOut->SetIsZeroSized(TRUE);
-            calcTotalSize = 1;
-        }
-    
-        pEEClassLayoutInfoOut->m_cbNativeSize = calcTotalSize;
-    
-        // The packingSize acts as a ceiling on all individual alignment
-        // requirements so it follows that the largest alignment requirement
-        // is also capped.
-        _ASSERTE(LargestAlignmentRequirement <= packingSize);
-        pEEClassLayoutInfoOut->m_LargestAlignmentRequirementOfAllMembers = LargestAlignmentRequirement;
-    }
-
-
-
-    //=====================================================================
-    // Phase 4: Now we do the same thing again for managedsequential layout.
-    //=====================================================================
-    if (!fDisqualifyFromManagedSequential)
-    {
-        BYTE   LargestAlignmentRequirement = 1;
-        UINT32 cbCurOffset = 0;
-    
-        if (pParentMT && pParentMT->IsManagedSequential())
-        {
-            // Treat base class as an initial member.
-            if (!SafeAddUINT32(&cbCurOffset, pParentMT->GetNumInstanceFieldBytes()))
-                COMPlusThrowOM();
-    
-            BYTE alignmentRequirement = 0;
-                
-            alignmentRequirement = min(packingSize, pParentLayoutInfo->m_ManagedLargestAlignmentRequirementOfAllMembers);
-    
-            LargestAlignmentRequirement = max(LargestAlignmentRequirement, alignmentRequirement);                                          
-        }
-    
-        // The current size of the structure as a whole, we start at 1, because we disallow 0 sized structures.
-        // NOTE: We do not need to do the same checking for zero-sized types as phase 3 because only ValueTypes
-        //       can be ManagedSequential and ValueTypes can not be inherited from.
-        unsigned calcTotalSize = 1;
-     
-        LayoutRawFieldInfo **pSortWalk;
-        for (pSortWalk = pSortArray, i=cFields; i; i--, pSortWalk++)
-        {
-            pfwalk = *pSortWalk;
-    
-            BYTE alignmentRequirement = ((BYTE)(pfwalk->m_managedAlignmentReq));
-            if (!(alignmentRequirement == 1 ||
-                     alignmentRequirement == 2 ||
-                     alignmentRequirement == 4 ||
-                  alignmentRequirement == 8))
-            {
-                COMPlusThrowHR(COR_E_INVALIDPROGRAM, BFA_METADATA_CORRUPT);
-            }
-            
-            alignmentRequirement = min(alignmentRequirement, packingSize);
-            
-            LargestAlignmentRequirement = max(LargestAlignmentRequirement, alignmentRequirement);
-            
-            _ASSERTE(alignmentRequirement <= 8);
-            
-            // Insert enough padding to align the current data member.
-            while (cbCurOffset % alignmentRequirement)
-            {
-                if (!SafeAddUINT32(&cbCurOffset, 1))
-                    COMPlusThrowOM();
-            }
-            
-            // Insert current data member.
-            pfwalk->m_managedOffset = cbCurOffset;
-            
-            // if we overflow we will catch it below
-            cbCurOffset += pfwalk->m_managedSize;
-            
-            unsigned fieldEnd = pfwalk->m_managedOffset + pfwalk->m_managedSize;
-            if (fieldEnd < pfwalk->m_managedOffset)
-                COMPlusThrowOM();
-            
-                // size of the structure is the size of the last field.  
-            if (fieldEnd > calcTotalSize)
-                calcTotalSize = fieldEnd;
-            
-#ifdef _DEBUG
-            // @perf: If the type is blittable, the managed and native layouts have to be identical
-            // so they really shouldn't be calculated twice. Until this code has been well tested and
-            // stabilized, however, it is useful to compute both and assert that they are equal in the blittable
-            // case.
-            if (pEEClassLayoutInfoOut->IsBlittable())
-            {
-                _ASSERTE(pfwalk->m_managedOffset == pfwalk->m_offset);
-                _ASSERTE(pfwalk->m_managedSize   == pfwalk->m_cbNativeSize);
-            }
-#endif
-        } //for
-        
-        ULONG clstotalsize = 0;
-        if (FAILED(pInternalImport->GetClassTotalSize(cl, &clstotalsize)))
-        {
-            clstotalsize = 0;
-        }
-        
-        if (clstotalsize != 0)
-        {
-            pEEClassLayoutInfoOut->SetHasExplicitSize(TRUE);
-            
-            if (pParentMT && pParentMT->IsManagedSequential())
-            {
-                // Treat base class as an initial member.
-                UINT32 parentSize = pParentMT->GetNumInstanceFieldBytes();
-                if (!SafeAddULONG(&clstotalsize, parentSize))
-                    COMPlusThrowOM();
-            }
-    
-            // size must be large enough to accomodate layout. If not, we use the layout size instead.
-            if (clstotalsize < calcTotalSize)
-            {
-                clstotalsize = calcTotalSize;
-            }
-            calcTotalSize = clstotalsize;   // use the size they told us 
-        } 
-        else
-        {
-            // The did not give us an explict size, so lets round up to a good size (for arrays) 
-            while (calcTotalSize % LargestAlignmentRequirement != 0)
-            {
-                if (!SafeAddUINT32(&calcTotalSize, 1))
-                    COMPlusThrowOM();
-            }
-        } 
-    
-        pEEClassLayoutInfoOut->m_cbManagedSize = calcTotalSize;
-
-        // The packingSize acts as a ceiling on all individual alignment
-        // requirements so it follows that the largest alignment requirement
-        // is also capped.
-        _ASSERTE(LargestAlignmentRequirement <= packingSize);
-        pEEClassLayoutInfoOut->m_ManagedLargestAlignmentRequirementOfAllMembers = LargestAlignmentRequirement;
-
-#ifdef _DEBUG
-            // @perf: If the type is blittable, the managed and native layouts have to be identical
-            // so they really shouldn't be calculated twice. Until this code has been well tested and
-            // stabilized, however, it is useful to compute both and assert that they are equal in the blittable
-            // case.
-            if (pEEClassLayoutInfoOut->IsBlittable())
-            {
-                _ASSERTE(pEEClassLayoutInfoOut->m_cbManagedSize == pEEClassLayoutInfoOut->m_cbNativeSize);
-                _ASSERTE(pEEClassLayoutInfoOut->m_ManagedLargestAlignmentRequirementOfAllMembers == pEEClassLayoutInfoOut->m_LargestAlignmentRequirementOfAllMembers);
-            }
-#endif
-    } //if
-
-    pEEClassLayoutInfoOut->SetIsManagedSequential(!fDisqualifyFromManagedSequential);
-
-#ifdef _DEBUG
-    {
-        BOOL illegalMarshaler = FALSE;
-        
-        LOG((LF_INTEROP, LL_INFO100000, "\n\n"));
-        LOG((LF_INTEROP, LL_INFO100000, "%s.%s\n", szNamespace, szName));
-        LOG((LF_INTEROP, LL_INFO100000, "Packsize      = %lu\n", (ULONG)packingSize));
-        LOG((LF_INTEROP, LL_INFO100000, "Max align req = %lu\n", (ULONG)(pEEClassLayoutInfoOut->m_LargestAlignmentRequirementOfAllMembers)));
-        LOG((LF_INTEROP, LL_INFO100000, "----------------------------\n"));
-        for (pfwalk = pInfoArrayOut; pfwalk->m_MD != mdFieldDefNil; pfwalk++)
-        {
-            LPCUTF8 fieldname;
-            if (FAILED(pInternalImport->GetNameOfFieldDef(pfwalk->m_MD, &fieldname)))
-            {
-                fieldname = "??";
-            }
-            LOG((LF_INTEROP, LL_INFO100000, "+%-5lu  ", (ULONG)(pfwalk->m_offset)));
-            LOG((LF_INTEROP, LL_INFO100000, "%s", fieldname));
-            LOG((LF_INTEROP, LL_INFO100000, "\n"));
-
-            if (((FieldMarshaler*)&pfwalk->m_FieldMarshaler)->GetNStructFieldType() == NFT_ILLEGAL)
-                illegalMarshaler = TRUE;             
-        }
-
-        // If we are dealing with a non trivial parent, determine if it has any illegal marshallers.
-        if (fHasNonTrivialParent)
-        {
-            FieldMarshaler *pParentFM = pParentMT->GetLayoutInfo()->GetFieldMarshalers();
-            for (i = 0; i < pParentMT->GetLayoutInfo()->m_numCTMFields; i++)
-            {
-                if (pParentFM->GetNStructFieldType() == NFT_ILLEGAL)
-                    illegalMarshaler = TRUE;                                 
-                ((BYTE*&)pParentFM) += MAXFIELDMARSHALERSIZE;
-            }
-        }
-        
-        LOG((LF_INTEROP, LL_INFO100000, "+%-5lu   EOS\n", (ULONG)(pEEClassLayoutInfoOut->m_cbNativeSize)));
-        LOG((LF_INTEROP, LL_INFO100000, "Allocated %d %s field marshallers for %s.%s\n", pEEClassLayoutInfoOut->m_numCTMFields, (illegalMarshaler ? "pointless" : "usable"), szNamespace, szName));
-    }
-#endif
-    return;
+    return FALSE;
 }
-#ifdef _PREFAST_
-#pragma warning(pop)
-#endif
 
+#ifdef _DEBUG
+BOOL IsFixedBuffer(mdFieldDef field, IMDInternalImport *pInternalImport)
+{
+    HRESULT hr = pInternalImport->GetCustomAttributeByName(field, g_FixedBufferAttribute, NULL, NULL);
+
+    return hr == S_OK ? TRUE : FALSE;
+}
+#endif
 
 #ifndef CROSSGEN_COMPILE
 
@@ -2003,11 +1207,11 @@ VOID LayoutUpdateNative(LPVOID *ppProtectedManagedData, SIZE_T offsetbias, Metho
             {
                 pCLRValue = *(OBJECTREF*)(internalOffset + offsetbias + (BYTE*)(*ppProtectedManagedData));
                 pFM->UpdateNative(&pCLRValue, pNativeData + pFM->GetExternalOffset(), ppCleanupWorkListOnStack);
-                SetObjectReferenceUnchecked( (OBJECTREF*) (internalOffset + offsetbias + (BYTE*)(*ppProtectedManagedData)), pCLRValue);
+                SetObjectReference( (OBJECTREF*) (internalOffset + offsetbias + (BYTE*)(*ppProtectedManagedData)), pCLRValue);
             }
 
             // The cleanup work list is not used to clean up the native contents. It is used
-            // to handle cleanup of any additionnal resources the FieldMarshalers allocate.
+            // to handle cleanup of any additional resources the FieldMarshalers allocate.
 
             ((BYTE*&)pFM) += MAXFIELDMARSHALERSIZE;
         }
@@ -2015,7 +1219,6 @@ VOID LayoutUpdateNative(LPVOID *ppProtectedManagedData, SIZE_T offsetbias, Metho
     GCPROTECT_END();
     GCPROTECT_END();
 }
-
 
 VOID FmtClassUpdateNative(OBJECTREF *ppProtectedManagedData, BYTE *pNativeData, OBJECTREF *ppCleanupWorkListOnStack)
 {        
@@ -2095,7 +1298,7 @@ VOID FmtClassUpdateCLR(OBJECTREF *ppProtectedManagedData, BYTE *pNativeData)
 // all of the native fields even if one or more of the conversions fail.
 //=======================================================================
 VOID LayoutUpdateCLR(LPVOID *ppProtectedManagedData, SIZE_T offsetbias, MethodTable *pMT, BYTE *pNativeData)
-{        
+{
     CONTRACTL
     {
         THROWS;
@@ -2108,8 +1311,8 @@ VOID LayoutUpdateCLR(LPVOID *ppProtectedManagedData, SIZE_T offsetbias, MethodTa
     // Don't try to destroy/free native the structure on exception, we may not own it. If we do own it and
     // are supposed to destroy/free it, we do it upstack (e.g. in a helper called from the marshaling stub).
 
-    FieldMarshaler* pFM                   = pMT->GetLayoutInfo()->GetFieldMarshalers();
-    UINT  numReferenceFields              = pMT->GetLayoutInfo()->GetNumCTMFields(); 
+    FieldMarshaler* pFM = pMT->GetLayoutInfo()->GetFieldMarshalers();
+    UINT  numReferenceFields = pMT->GetLayoutInfo()->GetNumCTMFields();
 
     struct _gc
     {
@@ -2117,10 +1320,10 @@ VOID LayoutUpdateCLR(LPVOID *ppProtectedManagedData, SIZE_T offsetbias, MethodTa
         OBJECTREF pOldCLRValue;
     } gc;
 
-    gc.pCLRValue    = NULL;
+    gc.pCLRValue = NULL;
     gc.pOldCLRValue = NULL;
-    LPVOID scalar    = NULL;
-    
+    LPVOID scalar = NULL;
+
     GCPROTECT_BEGIN(gc)
     GCPROTECT_BEGININTERIOR(scalar)
     {
@@ -2146,7 +1349,7 @@ VOID LayoutUpdateCLR(LPVOID *ppProtectedManagedData, SIZE_T offsetbias, MethodTa
             {
                 gc.pOldCLRValue = *(OBJECTREF*)(internalOffset + offsetbias + (BYTE*)(*ppProtectedManagedData));
                 pFM->UpdateCLR( pNativeData + pFM->GetExternalOffset(), &gc.pCLRValue, &gc.pOldCLRValue );
-                SetObjectReferenceUnchecked( (OBJECTREF*) (internalOffset + offsetbias + (BYTE*)(*ppProtectedManagedData)), gc.pCLRValue );
+                SetObjectReference( (OBJECTREF*) (internalOffset + offsetbias + (BYTE*)(*ppProtectedManagedData)), gc.pCLRValue );
             }
 
             ((BYTE*&)pFM) += MAXFIELDMARSHALERSIZE;
@@ -2263,9 +1466,6 @@ VOID FmtValueTypeUpdateCLR(LPVOID pProtectedManagedData, MethodTable *pMT, BYTE 
     }
 }
 
-
-#ifdef FEATURE_COMINTEROP
-
 //=======================================================================
 // BSTR <--> System.String
 // See FieldMarshaler for details.
@@ -2364,14 +1564,13 @@ VOID FieldMarshaler_BSTR::DestroyNativeImpl(LPVOID pNativeValue) const
     
     if (pBSTR)
     {
-        _ASSERTE (GetModuleHandleA("oleaut32.dll") != NULL);
-        // BSTR has been created, which means oleaut32 should have been loaded.
-        // Delay load will not fail.
+        // BSTR has been created, Delay load will not fail.
         CONTRACT_VIOLATION(ThrowsViolation);
         SysFreeString(pBSTR);
     }
 }
 
+#ifdef FEATURE_COMINTEROP
 //===========================================================================================
 // Windows.Foundation.IReference'1<-- System.Nullable'1
 //
@@ -2853,12 +2052,24 @@ VOID FieldMarshaler_NestedValueClass::NestedValueClassUpdateNativeImpl(const VOI
     }
     CONTRACTL_END;
 
+    MethodTable* pMT = GetMethodTable();
+
     // would be better to detect this at class load time (that have a nested value
     // class with no layout) but don't have a way to know
-    if (! GetMethodTable()->GetLayoutInfo())
+    if (!pMT->GetLayoutInfo())
         COMPlusThrow(kArgumentException, IDS_NOLAYOUT_IN_EMBEDDED_VALUECLASS);
 
-    LayoutUpdateNative((LPVOID*)ppProtectedCLR, startoffset, GetMethodTable(), (BYTE*)pNative, ppCleanupWorkListOnStack);
+    if (pMT->IsBlittable())
+    {
+        memcpyNoGCRefs(pNative, (BYTE*)(*ppProtectedCLR) + startoffset, pMT->GetNativeSize());
+    }
+    else
+    {
+#ifdef _DEBUG
+        _ASSERTE_MSG(!IsFixedBuffer(), "Cannot correctly marshal fixed buffers of non-blittable types");
+#endif
+        LayoutUpdateNative((LPVOID*)ppProtectedCLR, startoffset, pMT, (BYTE*)pNative, ppCleanupWorkListOnStack);
+    }
 }
 
 
@@ -2878,17 +2089,27 @@ VOID FieldMarshaler_NestedValueClass::NestedValueClassUpdateCLRImpl(const VOID *
     }
     CONTRACTL_END;
 
+    MethodTable* pMT = GetMethodTable();
+
     // would be better to detect this at class load time (that have a nested value
     // class with no layout) but don't have a way to know
-    if (! GetMethodTable()->GetLayoutInfo())
+    if (!pMT->GetLayoutInfo())
         COMPlusThrow(kArgumentException, IDS_NOLAYOUT_IN_EMBEDDED_VALUECLASS);
 
-    LayoutUpdateCLR( (LPVOID*)ppProtectedCLR,
-                         startoffset,
-                         GetMethodTable(),
-                         (BYTE *)pNative);
-    
-
+    if (pMT->IsBlittable())
+    {
+        memcpyNoGCRefs((BYTE*)(*ppProtectedCLR) + startoffset, pNative, pMT->GetNativeSize());
+    }
+    else
+    {
+#ifdef _DEBUG
+        _ASSERTE_MSG(!IsFixedBuffer(), "Cannot correctly marshal fixed buffers of non-blittable types");
+#endif
+        LayoutUpdateCLR((LPVOID*)ppProtectedCLR,
+            startoffset,
+            pMT,
+            (BYTE *)pNative);
+    }
 }
 
 
@@ -2907,7 +2128,12 @@ VOID FieldMarshaler_NestedValueClass::DestroyNativeImpl(LPVOID pNativeValue) con
     }
     CONTRACTL_END;
 
-    LayoutDestroyNative(pNativeValue, GetMethodTable());
+    MethodTable* pMT = GetMethodTable();
+
+    if (!pMT->IsBlittable())
+    {
+        LayoutDestroyNative(pNativeValue, pMT);
+    }
 }
 
 #endif // CROSSGEN_COMPILE
@@ -3233,16 +2459,12 @@ VOID FieldMarshaler_StringUtf8::UpdateCLRImpl(const VOID *pNativeValue, OBJECTRE
 
     STRINGREF pString = NULL;
     LPCUTF8  sz = (LPCUTF8)MAYBE_UNALIGNED_READ(pNativeValue, _PTR);
-    if (!sz)
-    {
-        pString = NULL;
-    }
-    else
+    if (sz)
     {
         MethodDescCallSite convertToManaged(METHOD__CUTF8MARSHALER__CONVERT_TO_MANAGED);
         ARG_SLOT args[] =
         {
-            PtrToArgSlot(pNativeValue),
+            PtrToArgSlot(sz),
         };
         pString = convertToManaged.Call_RetSTRINGREF(args);
     }
@@ -3522,7 +2744,7 @@ VOID FieldMarshaler_FixedCharArrayAnsi::UpdateCLRImpl(const VOID *pNativeValue, 
 // Embedded array
 // See FieldMarshaler for details.
 //=======================================================================
-FieldMarshaler_FixedArray::FieldMarshaler_FixedArray(IMDInternalImport *pMDImport, mdTypeDef cl, UINT32 numElems, VARTYPE vt, MethodTable* pElementMT)
+FieldMarshaler_FixedArray::FieldMarshaler_FixedArray(Module *pModule, mdTypeDef cl, UINT32 numElems, VARTYPE vt, MethodTable* pElementMT)
 : m_numElems(numElems)
 , m_vt(vt)
 , m_BestFitMap(FALSE)
@@ -3544,7 +2766,7 @@ FieldMarshaler_FixedArray::FieldMarshaler_FixedArray(IMDInternalImport *pMDImpor
     {
         BOOL BestFitMap = FALSE;
         BOOL ThrowOnUnmappableChar = FALSE;
-        ReadBestFitCustomAttribute(pMDImport, cl, &BestFitMap, &ThrowOnUnmappableChar);      
+        ReadBestFitCustomAttribute(pModule, cl, &BestFitMap, &ThrowOnUnmappableChar);      
         m_BestFitMap = !!BestFitMap;
         m_ThrowOnUnmappableChar = !!ThrowOnUnmappableChar;
     }
@@ -3620,7 +2842,7 @@ VOID FieldMarshaler_FixedArray::UpdateCLRImpl(const VOID *pNativeValue, OBJECTRE
     CONTRACTL_END;
 
     // Allocate the value class array.
-    *ppProtectedCLRValue = AllocateArrayEx(m_arrayType.GetValue(), (INT32*)&m_numElems, 1);
+    *ppProtectedCLRValue = AllocateSzArray(m_arrayType.GetValue(), (INT32)m_numElems);
 
     // Marshal the contents from the native array to the managed array.
     const OleVariant::Marshaler *pMarshaler = OleVariant::GetMarshalerForVarType(m_vt, TRUE);        
@@ -3726,7 +2948,7 @@ VOID FieldMarshaler_SafeArray::UpdateNativeImpl(OBJECTREF* pCLRValue, LPVOID pNa
     pSafeArray = (LPSAFEARRAY*)pNativeValue;
 
     VARTYPE vt = m_vt;
-    MethodTable* pMT = m_pMT.GetValue();
+    MethodTable* pMT = m_pMT.GetValueMaybeNull();
 
     GCPROTECT_BEGIN(pArray)
     {
@@ -3771,7 +2993,7 @@ VOID FieldMarshaler_SafeArray::UpdateCLRImpl(const VOID *pNativeValue, OBJECTREF
     }
 
     VARTYPE vt = m_vt;
-    MethodTable* pMT = m_pMT.GetValue();
+    MethodTable* pMT = m_pMT.GetValueMaybeNull();
 
     // If we have an empty vartype, get it from the safearray vartype
     if (vt == VT_EMPTY)
@@ -3852,6 +3074,24 @@ VOID FieldMarshaler_Delegate::UpdateNativeImpl(OBJECTREF* pCLRValue, LPVOID pNat
     CONTRACTL_END;
 
     LPVOID fnPtr = COMDelegate::ConvertToCallback(*pCLRValue);
+    
+    // If there is no CleanupWorkList (i.e. a call from Marshal.StructureToPtr), we don't use it to manage delegate lifetime.
+    // In that case, it falls on the user to manage the delegate lifetime. This is the cleanest way to do this since there is no well-defined
+    // object lifetime for the unmanaged memory that the structure would be marshalled to in the Marshal.StructureToPtr case.
+    if (*pCLRValue != NULL && ppCleanupWorkListOnStack != NULL)
+    {
+        // Call StubHelpers.AddToCleanupList to ensure the delegate is kept alive across the full native call.
+        MethodDescCallSite AddToCleanupList(METHOD__STUBHELPERS__KEEP_ALIVE_VIA_CLEANUP_LIST);
+
+        ARG_SLOT args[] =
+        {
+            (ARG_SLOT)ppCleanupWorkListOnStack,
+            ObjToArgSlot(*pCLRValue)
+        };
+
+        AddToCleanupList.Call(args);
+    }
+
     MAYBE_UNALIGNED_WRITE(pNativeValue, _PTR, fnPtr);
 }
 
@@ -3897,14 +3137,14 @@ VOID FieldMarshaler_SafeHandle::UpdateNativeImpl(OBJECTREF* pCLRValue, LPVOID pN
     // A cleanup list MUST be specified in order for us to be able to marshal
     // the SafeHandle.
     if (ppCleanupWorkListOnStack == NULL)
-        COMPlusThrow(kInvalidOperationException, IDS_EE_SH_FIELD_INVALID_OPERATION);
+        COMPlusThrow(kInvalidOperationException, IDS_EE_SH_FIELD_INVALID_OPERATION); 
 
     if (*pSafeHandleObj == NULL)
         COMPlusThrow(kArgumentNullException, W("ArgumentNull_SafeHandle"));
 
     // Call StubHelpers.AddToCleanupList to AddRef and schedule Release on this SafeHandle
     // This is realiable, i.e. the cleanup will happen if and only if the SH was actually AddRef'ed.
-    MethodDescCallSite AddToCleanupList(METHOD__STUBHELPERS__ADD_TO_CLEANUP_LIST);
+    MethodDescCallSite AddToCleanupList(METHOD__STUBHELPERS__ADD_TO_CLEANUP_LIST_SAFEHANDLE);
 
     ARG_SLOT args[] =
     {
@@ -4180,12 +3420,7 @@ VOID FieldMarshaler_Currency::ScalarUpdateCLRImpl(const VOID *pNative, LPVOID pC
     // no need to switch to preemptive mode because it's very primitive operaion, doesn't take 
     // long and is guaranteed not to call 3rd party code. 
     // But if we do need to switch to preemptive mode, we can't pass the managed pointer to native code directly
-    HRESULT hr = VarDecFromCy( *(CURRENCY*)pNative, (DECIMAL *)pCLR );
-    if (FAILED(hr))
-        COMPlusThrowHR(hr);
-
-    if (FAILED(DecimalCanonicalize((DECIMAL*)pCLR)))
-        COMPlusThrow(kOverflowException, W("Overflow_Currency"));
+    VarDecFromCyCanonicalize( *(CURRENCY*)pNative, (DECIMAL *)pCLR );
 }
 
 VOID FieldMarshaler_DateTimeOffset::ScalarUpdateNativeImpl(LPVOID pCLR, LPVOID pNative) const
@@ -4348,359 +3583,6 @@ VOID FieldMarshaler_Variant::DestroyNativeImpl(LPVOID pNativeValue) const
 
 #endif // FEATURE_COMINTEROP
 
-
-#ifdef _PREFAST_
-#pragma warning(push)
-#pragma warning(disable:21000) // Suppress PREFast warning about overly large function
-#endif
-VOID NStructFieldTypeToString(FieldMarshaler* pFM, SString& strNStructFieldType)
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_NOTRIGGER;
-        MODE_ANY;
-        INJECT_FAULT(COMPlusThrowOM());
-        PRECONDITION(CheckPointer(pFM));
-    }
-    CONTRACTL_END;
-
-    NStructFieldType cls = pFM->GetNStructFieldType();
-    LPCWSTR  strRetVal;
-    CorElementType elemType = pFM->GetFieldDesc()->GetFieldType();
-
-    // Some NStruct Field Types have extra information and require special handling.
-    if (cls == NFT_FIXEDCHARARRAYANSI)
-    {
-        strNStructFieldType.Printf(W("fixed array of ANSI char (size = %i bytes)"), pFM->NativeSize());
-        return;
-    }
-    else if (cls == NFT_FIXEDARRAY)
-    {
-        VARTYPE vtElement = ((FieldMarshaler_FixedArray*)pFM)->GetElementVT();
-        TypeHandle thElement = ((FieldMarshaler_FixedArray*)pFM)->GetElementTypeHandle();
-        BOOL fElementTypeUserDefined = FALSE;
-
-        // Determine if the array type is a user defined type.
-        if (vtElement == VT_RECORD)
-        {
-            fElementTypeUserDefined = TRUE;
-        }
-        else if (vtElement == VT_UNKNOWN || vtElement == VT_DISPATCH)
-        {
-            fElementTypeUserDefined = !thElement.IsObjectType();
-        }
-
-        // Retrieve the string representation for the VARTYPE.
-        StackSString strVarType;
-        MarshalInfo::VarTypeToString(vtElement, strVarType);
-
-        MethodTable *pMT = ((FieldMarshaler_FixedArray*)pFM)->GetElementTypeHandle().GetMethodTable();
-        DefineFullyQualifiedNameForClassW();
-        WCHAR* szClassName = (WCHAR*)GetFullyQualifiedNameForClassW(pMT);
-
-        if (fElementTypeUserDefined)
-        {
-            strNStructFieldType.Printf(W("fixed array of %s exposed as %s elements (array size = %i bytes)"),
-                                       szClassName,
-                                       strVarType.GetUnicode(), pFM->NativeSize());
-        }
-        else
-        {
-            strNStructFieldType.Printf(W("fixed array of %s (array size = %i bytes)"), 
-                szClassName, pFM->NativeSize());
-        }
-
-        return;
-    }
-#ifdef FEATURE_COMINTEROP
-    else if (cls == NFT_INTERFACE)
-    {
-        MethodTable *pItfMT     = NULL;
-        DWORD       dwFlags     = 0;
-
-        ((FieldMarshaler_Interface*)pFM)->GetInterfaceInfo(&pItfMT, &dwFlags);
-
-        if (dwFlags & ItfMarshalInfo::ITF_MARSHAL_DISP_ITF)
-        {
-            strNStructFieldType.Set(W("IDispatch "));
-        }
-        else
-        {
-            strNStructFieldType.Set(W("IUnknown "));
-        }
-
-        if (dwFlags & ItfMarshalInfo::ITF_MARSHAL_USE_BASIC_ITF)
-        {
-            strNStructFieldType.Append(W("(basic) "));
-        }
-            
-
-        if (pItfMT)
-        {
-            DefineFullyQualifiedNameForClassW();
-            GetFullyQualifiedNameForClassW(pItfMT);
-
-            strNStructFieldType.Append(GetFullyQualifiedNameForClassW(pItfMT));
-        }
-
-        return;
-    }
-#ifdef FEATURE_CLASSIC_COMINTEROP
-    else if (cls == NFT_SAFEARRAY)
-    {
-        VARTYPE vtElement = ((FieldMarshaler_SafeArray*)pFM)->GetElementVT();
-        TypeHandle thElement = ((FieldMarshaler_SafeArray*)pFM)->GetElementTypeHandle();
-        BOOL fElementTypeUserDefined = FALSE;
-
-        // Determine if the array type is a user defined type.
-        if (vtElement == VT_RECORD)
-        {
-            fElementTypeUserDefined = TRUE;
-        }
-        else if (vtElement == VT_UNKNOWN || vtElement == VT_DISPATCH)
-        {
-            fElementTypeUserDefined = !thElement.IsObjectType();
-        }
-
-        // Retrieve the string representation for the VARTYPE.
-        StackSString strVarType;
-        MarshalInfo::VarTypeToString(vtElement, strVarType);
-
-
-        StackSString strClassName;
-        if (!thElement.IsNull())
-        {
-            DefineFullyQualifiedNameForClassW();
-            MethodTable *pMT = ((FieldMarshaler_SafeArray*)pFM)->GetElementTypeHandle().GetMethodTable();
-            strClassName.Set((WCHAR*)GetFullyQualifiedNameForClassW(pMT));
-        }
-        else
-        {
-            strClassName.Set(W("object"));
-        }
-        
-        if (fElementTypeUserDefined)
-        {
-            strNStructFieldType.Printf(W("safe array of %s exposed as %s elements (array size = %i bytes)"),
-                                       strClassName.GetUnicode(),
-                                       strVarType.GetUnicode(), pFM->NativeSize());
-        }
-        else
-        {
-            strNStructFieldType.Printf(W("safearray of %s (array size = %i bytes)"), 
-                strClassName.GetUnicode(), pFM->NativeSize());
-        }
-        
-        return;            
-    }
-#endif // FEATURE_CLASSIC_COMINTEROP
-#endif // FEATURE_COMINTEROP
-    else if (cls == NFT_NESTEDLAYOUTCLASS)
-    {
-        MethodTable *pMT = ((FieldMarshaler_NestedLayoutClass*)pFM)->GetMethodTable();
-        DefineFullyQualifiedNameForClassW();
-        strNStructFieldType.Printf(W("nested layout class %s"),
-                                   GetFullyQualifiedNameForClassW(pMT));
-        return;
-    }
-    else if (cls == NFT_NESTEDVALUECLASS)
-    {
-        MethodTable     *pMT                = ((FieldMarshaler_NestedValueClass*)pFM)->GetMethodTable();
-        DefineFullyQualifiedNameForClassW();
-        strNStructFieldType.Printf(W("nested value class %s"),
-                                   GetFullyQualifiedNameForClassW(pMT));
-        return;
-    }
-    else if (cls == NFT_COPY1)
-    {
-        // The following CorElementTypes are the only ones handled with FieldMarshaler_Copy1. 
-        switch (elemType)
-        {
-            case ELEMENT_TYPE_I1:
-                strRetVal = W("SByte");
-                break;
-
-            case ELEMENT_TYPE_U1:
-                strRetVal = W("Byte");
-                break;
-
-            default:
-                strRetVal = W("Unknown");
-                break;
-        }
-    }
-    else if (cls == NFT_COPY2)
-    {
-        // The following CorElementTypes are the only ones handled with FieldMarshaler_Copy2. 
-        switch (elemType)
-        {
-            case ELEMENT_TYPE_CHAR:
-                strRetVal = W("Unicode char");
-                break;
-
-            case ELEMENT_TYPE_I2:
-                strRetVal = W("Int16");
-                break;
-
-            case ELEMENT_TYPE_U2:
-                strRetVal = W("UInt16");
-                break;
-
-            default:
-                strRetVal = W("Unknown");
-                break;
-        }
-    }
-    else if (cls == NFT_COPY4)
-    {
-        // The following CorElementTypes are the only ones handled with FieldMarshaler_Copy4. 
-        switch (elemType)
-        {
-            // At this point, ELEMENT_TYPE_I must be 4 bytes long.  Same for ELEMENT_TYPE_U.
-            case ELEMENT_TYPE_I:
-            case ELEMENT_TYPE_I4:
-                strRetVal = W("Int32");
-                break;
-
-            case ELEMENT_TYPE_U:
-            case ELEMENT_TYPE_U4:
-                strRetVal = W("UInt32");
-                break;
-
-            case ELEMENT_TYPE_R4:
-                strRetVal = W("Single");
-                break;
-
-            case ELEMENT_TYPE_PTR:
-                strRetVal = W("4-byte pointer");
-                break;
-
-            default:
-                strRetVal = W("Unknown");
-                break;
-        }
-    }
-    else if (cls == NFT_COPY8)
-    {
-        // The following CorElementTypes are the only ones handled with FieldMarshaler_Copy8. 
-        switch (elemType)
-        {
-            // At this point, ELEMENT_TYPE_I must be 8 bytes long.  Same for ELEMENT_TYPE_U.
-            case ELEMENT_TYPE_I:
-            case ELEMENT_TYPE_I8:
-                strRetVal = W("Int64");
-                break;
-
-            case ELEMENT_TYPE_U:
-            case ELEMENT_TYPE_U8:
-                strRetVal = W("UInt64");
-                break;
-
-            case ELEMENT_TYPE_R8:
-                strRetVal = W("Double");
-                break;
-
-            case ELEMENT_TYPE_PTR:
-                strRetVal = W("8-byte pointer");
-                break;
-
-            default:
-                strRetVal = W("Unknown");
-                break;
-        }
-    }
-    else if (cls == NFT_FIXEDSTRINGUNI)
-    {
-        int nativeSize = pFM->NativeSize();
-        int strLength = nativeSize / sizeof(WCHAR);
-
-        strNStructFieldType.Printf(W("embedded LPWSTR (length %d)"), strLength);
-        
-        return;
-    }
-    else if (cls == NFT_FIXEDSTRINGANSI)
-    {
-        int nativeSize = pFM->NativeSize();
-        int strLength = nativeSize / sizeof(CHAR);
-
-        strNStructFieldType.Printf(W("embedded LPSTR (length %d)"), strLength);
-
-        return;
-    }
-    else
-    {
-        // All other NStruct Field Types which do not require special handling.
-        switch (cls)
-        {
-#ifdef FEATURE_COMINTEROP
-            case NFT_BSTR:
-                strRetVal = W("BSTR");
-                break;
-            case NFT_HSTRING:
-                strRetVal = W("HSTRING");
-                break;
-#endif  // FEATURE_COMINTEROP
-            case NFT_STRINGUNI:
-                strRetVal = W("LPWSTR");
-                break;
-            case NFT_STRINGANSI:
-                strRetVal = W("LPSTR");
-                break;
-            case NFT_DELEGATE:
-                strRetVal = W("Delegate");
-                break;
-#ifdef FEATURE_COMINTEROP
-            case NFT_VARIANT:
-                strRetVal = W("VARIANT");
-                break;
-#endif  // FEATURE_COMINTEROP
-            case NFT_ANSICHAR:
-                strRetVal = W("ANSI char");
-                break;
-            case NFT_WINBOOL:
-                strRetVal = W("Windows Bool");
-                break;
-            case NFT_CBOOL:
-                strRetVal = W("CBool");
-                break;
-            case NFT_DECIMAL:
-                strRetVal = W("DECIMAL");
-                break;
-            case NFT_DATE:
-                strRetVal = W("DATE");
-                break;
-#ifdef FEATURE_COMINTEROP
-            case NFT_VARIANTBOOL:
-                strRetVal = W("VARIANT Bool");
-                break;
-            case NFT_CURRENCY:
-                strRetVal = W("CURRENCY");
-                break;
-#endif  // FEATURE_COMINTEROP
-            case NFT_ILLEGAL:
-                strRetVal = W("illegal type");
-                break;
-            case NFT_SAFEHANDLE:
-                strRetVal = W("SafeHandle");
-                break;
-            case NFT_CRITICALHANDLE:
-                strRetVal = W("CriticalHandle");
-                break;
-            default:
-                strRetVal = W("<UNKNOWN>");
-                break;
-        }
-    }
-
-    strNStructFieldType.Set(strRetVal);
-
-    return;
-}
-#ifdef _PREFAST_
-#pragma warning(pop)
-#endif
-
 #endif // CROSSGEN_COMPILE
 
 
@@ -4719,9 +3601,7 @@ VOID NStructFieldTypeToString(FieldMarshaler* pFM, SString& strNStructFieldType)
 
 #ifdef FEATURE_COMINTEROP
 
-#define IMPLEMENT_FieldMarshaler_METHOD(ret, name, argsdecl, rettype, args) \
-    ret FieldMarshaler::name argsdecl { \
-        WRAPPER_NO_CONTRACT; \
+#define FieldMarshaler_VTable(name, rettype, args) \
         switch (GetNStructFieldType()) { \
         case NFT_STRINGUNI: rettype ((FieldMarshaler_StringUni*)this)->name##Impl args; break; \
         case NFT_STRINGANSI: rettype ((FieldMarshaler_StringAnsi*)this)->name##Impl args; break; \
@@ -4757,14 +3637,12 @@ VOID NStructFieldTypeToString(FieldMarshaler* pFM, SString& strNStructFieldType)
         case NFT_WINDOWSFOUNDATIONIREFERENCE: rettype ((FieldMarshaler_Nullable*)this)->name##Impl args; break; \
         case NFT_ILLEGAL: rettype ((FieldMarshaler_Illegal*)this)->name##Impl args; break; \
         default: UNREACHABLE_MSG("unexpected type of FieldMarshaler"); break; \
-        } \
-    }
+        } 
 
 #else // FEATURE_COMINTEROP
 
-#define IMPLEMENT_FieldMarshaler_METHOD(ret, name, argsdecl, rettype, args) \
-    ret FieldMarshaler::name argsdecl { \
-        WRAPPER_NO_CONTRACT; \
+
+#define FieldMarshaler_VTable(name, rettype, args) \
         switch (GetNStructFieldType()) { \
         case NFT_STRINGUNI: rettype ((FieldMarshaler_StringUni*)this)->name##Impl args; break; \
         case NFT_STRINGANSI: rettype ((FieldMarshaler_StringAnsi*)this)->name##Impl args; break; \
@@ -4787,18 +3665,32 @@ VOID NStructFieldTypeToString(FieldMarshaler* pFM, SString& strNStructFieldType)
         case NFT_DECIMAL: rettype ((FieldMarshaler_Decimal*)this)->name##Impl args; break; \
         case NFT_SAFEHANDLE: rettype ((FieldMarshaler_SafeHandle*)this)->name##Impl args; break; \
         case NFT_CRITICALHANDLE: rettype ((FieldMarshaler_CriticalHandle*)this)->name##Impl args; break; \
+        case NFT_BSTR: rettype ((FieldMarshaler_BSTR*)this)->name##Impl args; break; \
         case NFT_ILLEGAL: rettype ((FieldMarshaler_Illegal*)this)->name##Impl args; break; \
         default: UNREACHABLE_MSG("unexpected type of FieldMarshaler"); break; \
-        } \
-    }
+        }
 
 #endif // FEATURE_COMINTEROP
 
+#define IMPLEMENT_FieldMarshaler_METHOD(ret, name, argsdecl, rettype, args) \
+    ret FieldMarshaler::name argsdecl { \
+        WRAPPER_NO_CONTRACT; \
+        FieldMarshaler_VTable(name, rettype, args) \
+    }
 
-IMPLEMENT_FieldMarshaler_METHOD(UINT32, NativeSize,
-    () const,
-    return,
-    ())
+UINT32 FieldMarshaler::NativeSize() const
+{
+    WRAPPER_NO_CONTRACT;
+    // Use the NFTDataBase to lookup the native size quickly to avoid a vtable call when the result is already known.
+    if (NFTDataBase[m_nft].m_cbNativeSize != 0)
+    {
+        return NFTDataBase[m_nft].m_cbNativeSize;
+    }
+    else
+    {
+        FieldMarshaler_VTable(NativeSize, return, ())
+    }
+}
 
 IMPLEMENT_FieldMarshaler_METHOD(UINT32, AlignmentRequirement,
     () const,
@@ -4868,3 +3760,48 @@ IMPLEMENT_FieldMarshaler_METHOD(void, Restore,
     (),
     ,
     ())
+
+#ifndef DACCESS_COMPILE
+IMPLEMENT_FieldMarshaler_METHOD(VOID, CopyTo,
+    (VOID *pDest, SIZE_T destSize) const,
+    ,
+    (pDest, destSize))
+#endif // !DACCESS_COMPILE
+
+
+
+MethodTable* FieldMarshaler_NestedType::GetNestedNativeMethodTable() const
+{
+    switch (GetNStructFieldType())
+    {
+        case NFT_NESTEDLAYOUTCLASS:
+            return ((FieldMarshaler_NestedLayoutClass*)this)->GetNestedNativeMethodTableImpl();
+        case NFT_NESTEDVALUECLASS:
+            return ((FieldMarshaler_NestedValueClass*)this)->GetNestedNativeMethodTableImpl();
+        case NFT_FIXEDARRAY:
+            return ((FieldMarshaler_FixedArray*)this)->GetNestedNativeMethodTableImpl();
+        case NFT_DECIMAL:
+            return ((FieldMarshaler_Decimal*)this)->GetNestedNativeMethodTableImpl();
+        default:
+            UNREACHABLE_MSG("unexpected type of FieldMarshaler_NestedType");
+            return nullptr;
+    }
+}
+
+UINT32 FieldMarshaler_NestedType::GetNumElements() const
+{
+    switch (GetNStructFieldType())
+    {
+        case NFT_NESTEDLAYOUTCLASS:
+            return ((FieldMarshaler_NestedLayoutClass*)this)->GetNumElementsImpl();
+        case NFT_NESTEDVALUECLASS:
+            return ((FieldMarshaler_NestedValueClass*)this)->GetNumElementsImpl();
+        case NFT_FIXEDARRAY:
+            return ((FieldMarshaler_FixedArray*)this)->GetNumElementsImpl();
+        case NFT_DECIMAL:
+            return ((FieldMarshaler_Decimal*)this)->GetNumElementsImpl();
+        default:
+            UNREACHABLE_MSG("unexpected type of FieldMarshaler_NestedType");
+            return 1;
+    }
+}

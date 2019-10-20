@@ -160,12 +160,12 @@ AliasSet::NodeInfo::NodeInfo(Compiler* compiler, GenTree* node)
 
     // Is the operation a write? If so, set `node` to the location that is being written to.
     bool isWrite = false;
-    if (node->OperIsAssignment())
+    if (node->OperIs(GT_ASG))
     {
         isWrite = true;
         node    = node->gtGetOp1();
     }
-    else if (node->OperIsStore() || node->OperIsAtomicOp())
+    else if (node->OperIsStore())
     {
         isWrite = true;
     }
@@ -252,8 +252,7 @@ void AliasSet::AddNode(Compiler* compiler, GenTree* node)
 {
     // First, add all lclVar uses associated with the node to the set. This is necessary because the lclVar reads occur
     // at the position of the user, not at the position of the GenTreeLclVar node.
-    for (GenTree* operand : node->Operands())
-    {
+    node->VisitOperands([compiler, this](GenTree* operand) -> GenTree::VisitResult {
         if (operand->OperIsLocalRead())
         {
             const unsigned lclNum = operand->AsLclVarCommon()->GetLclNum();
@@ -264,7 +263,12 @@ void AliasSet::AddNode(Compiler* compiler, GenTree* node)
 
             m_lclVarReads.Add(compiler, lclNum);
         }
-    }
+        if (!operand->IsArgPlaceHolderNode() && operand->isContained())
+        {
+            AddNode(compiler, operand);
+        }
+        return GenTree::VisitResult::Continue;
+    });
 
     NodeInfo nodeInfo(compiler, node);
     if (nodeInfo.ReadsAddressableLocation())
@@ -446,7 +450,7 @@ void SideEffectSet::AddNode(Compiler* compiler, GenTree* node)
 //    Two side effect sets interfere under any of the following
 //    conditions:
 //    - If the analysis is strict, and:
-//        - Either set contains a compiler barrier, or
+//        - One set contains a compiler barrier and the other set contains a global reference, or
 //        - Both sets produce an exception
 //    - Whether or not the analysis is strict:
 //        - One set produces an exception and the other set contains a
@@ -471,8 +475,14 @@ bool SideEffectSet::InterferesWith(unsigned               otherSideEffectFlags,
 
     if (strict)
     {
-        // If either set contains a compiler barrier, the sets interfere.
-        if (((m_sideEffectFlags | otherSideEffectFlags) & GTF_ORDER_SIDEEFF) != 0)
+        // If either set contains a compiler barrier, and the other set contains a global reference,
+        // the sets interfere.
+        if (((m_sideEffectFlags & GTF_ORDER_SIDEEFF) != 0) && ((otherSideEffectFlags & GTF_GLOB_REF) != 0))
+        {
+            return true;
+        }
+
+        if (((otherSideEffectFlags & GTF_ORDER_SIDEEFF) != 0) && ((m_sideEffectFlags & GTF_GLOB_REF) != 0))
         {
             return true;
         }

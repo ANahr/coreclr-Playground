@@ -7,7 +7,6 @@
 
 #include "bitset.h"
 #include "compiler.h"
-#include "iallocator.h"
 #include "bitsetasshortlong.h"
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -17,15 +16,15 @@
 // The classes in this file define "BitSetTraits" arguments to the "BitSetOps" type, ones that assume that
 // Compiler* is the "Env" type.
 //
-// This class just captures the compiler's allocator as an IAllocator.
+// This class just wraps the compiler's allocator.
 //
 class CompAllocBitSetTraits
 {
 public:
-    static inline IAllocator* GetAllocator(class Compiler* comp);
+    static inline void* Alloc(Compiler* comp, size_t byteSize);
 
 #ifdef DEBUG
-    static inline IAllocator* GetDebugOnlyAllocator(class Compiler* comp);
+    static inline void* DebugAlloc(Compiler* comp, size_t byteSize);
 #endif // DEBUG
 };
 
@@ -112,10 +111,10 @@ public:
     {
     }
 
-    static inline IAllocator* GetAllocator(BitVecTraits* b);
+    static inline void* Alloc(BitVecTraits* b, size_t byteSize);
 
 #ifdef DEBUG
-    static inline IAllocator* GetDebugOnlyAllocator(BitVecTraits* b);
+    static inline void* DebugAlloc(BitVecTraits* b, size_t byteSize);
 #endif // DEBUG
 
     static inline unsigned GetSize(BitVecTraits* b);

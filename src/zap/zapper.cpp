@@ -5,33 +5,9 @@
 
 #include "common.h"
 
-
-#ifndef FEATURE_MERGE_JIT_AND_ENGINE
-#include "metahost.h"
-#endif
-
-
 #include "coregen.h"
 
 #include "clr/fs/dir.h"
-
-/* --------------------------------------------------------------------------- *
- * Error Macros
- * --------------------------------------------------------------------------- */
-
-#ifdef ALLOW_LOCAL_WORKER
-namespace
-{
-
-bool g_eeInitialized = false;
-//these track the initialization state of the runtime in local worker mode.  If
-//the flags change during subsequent calls to InitEE, then fail.
-BOOL g_fForceDebug, g_fForceProfile, g_fForceInstrument;
-
-}
-#endif
-
-
 
 #pragma warning(push)
 #pragma warning(disable: 4995)
@@ -45,40 +21,10 @@ bool g_fNGenWinMDResilient;
 
 #ifdef FEATURE_READYTORUN_COMPILER
 bool g_fReadyToRunCompilation;
+bool g_fLargeVersionBubble;
 #endif
 
 static bool s_fNGenNoMetaData;
-
-// Event logging helper
-void Zapper::ReportEventNGEN(WORD wType, DWORD dwEventID, LPCWSTR format, ...)
-{
-    SString s;
-    va_list args;
-    va_start(args, format);
-    s.VPrintf(format, args);
-    va_end(args);
-
-    SString message;
-    message.Printf(W(".NET Runtime Optimization Service (%s) - %s"), VER_FILEVERSION_STR_L, s.GetUnicode());
-
-    // Note: We are using the same event log source as the ngen service. This may become problem 
-    // if we ever want to split the ngen service from the rest of the .NET Framework.
-    ClrReportEvent(W(".NET Runtime Optimization Service"),
-        wType,                  // event type 
-        0,                      // category zero
-        dwEventID,              // event identifier
-        NULL,                   // no user security identifier
-        message.GetUnicode());
-
-    // Output the message to the logger as well.
-    if (wType == EVENTLOG_WARNING_TYPE)
-        Warning(W("%s\n"), s.GetUnicode());
-}
-
-
-/* --------------------------------------------------------------------------- *
- * Private fusion entry points
- * --------------------------------------------------------------------------- */
 
 /* --------------------------------------------------------------------------- *
  * Public entry points for ngen
@@ -87,7 +33,7 @@ void Zapper::ReportEventNGEN(WORD wType, DWORD dwEventID, LPCWSTR format, ...)
 // Zapper Object instead of creating one on your own.
 
 
-STDAPI NGenWorker(LPCWSTR pwzFilename, DWORD dwFlags, LPCWSTR pwzPlatformAssembliesPaths, LPCWSTR pwzTrustedPlatformAssemblies, LPCWSTR pwzPlatformResourceRoots, LPCWSTR pwzAppPaths, LPCWSTR pwzOutputFilename=NULL, LPCWSTR pwzPlatformWinmdPaths=NULL, ICorSvcLogger *pLogger = NULL, LPCWSTR pwszCLRJITPath = nullptr)
+STDAPI NGenWorker(LPCWSTR pwzFilename, DWORD dwFlags, LPCWSTR pwzPlatformAssembliesPaths, LPCWSTR pwzTrustedPlatformAssemblies, LPCWSTR pwzPlatformResourceRoots, LPCWSTR pwzAppPaths, LPCWSTR pwzOutputFilename=NULL, SIZE_T customBaseAddress=0, LPCWSTR pwzPlatformWinmdPaths=NULL, ICorSvcLogger *pLogger = NULL, LPCWSTR pwszCLRJITPath = nullptr)
 {    
     HRESULT hr = S_OK;
 
@@ -105,7 +51,7 @@ STDAPI NGenWorker(LPCWSTR pwzFilename, DWORD dwFlags, LPCWSTR pwzPlatformAssembl
         ngo.fDebug = false;
         ngo.fDebugOpt = false;
         ngo.fProf = false;
-        ngo.fSilent = false;
+        ngo.fSilent = (dwFlags & NGENWORKER_FLAGS_SILENT) != 0;
         ngo.lpszExecutableFileName = pwzFilename;
 
         // V2 (Whidbey)
@@ -125,7 +71,7 @@ STDAPI NGenWorker(LPCWSTR pwzFilename, DWORD dwFlags, LPCWSTR pwzPlatformAssembl
         ngo.fEmitFixups = false;
         ngo.fFatHeaders = false;
 
-        ngo.fVerbose = false;
+        ngo.fVerbose = (dwFlags & NGENWORKER_FLAGS_VERBOSE) != 0;
         ngo.uStats = false;
 
         ngo.fNgenLastRetry = false;
@@ -136,6 +82,8 @@ STDAPI NGenWorker(LPCWSTR pwzFilename, DWORD dwFlags, LPCWSTR pwzPlatformAssembl
 
         if (pwzOutputFilename)
             zap->SetOutputFilename(pwzOutputFilename);
+
+        zap->SetCustomBaseAddress(customBaseAddress);
 
         if (pwzPlatformAssembliesPaths != nullptr)
             zap->SetPlatformAssembliesPaths(pwzPlatformAssembliesPaths);
@@ -157,8 +105,6 @@ STDAPI NGenWorker(LPCWSTR pwzFilename, DWORD dwFlags, LPCWSTR pwzPlatformAssembl
             zap->SetCLRJITPath(pwszCLRJITPath);
 #endif // !defined(FEATURE_MERGE_JIT_AND_ENGINE)
 
-        zap->SetForceFullTrust(!!(dwFlags & NGENWORKER_FLAGS_FULLTRUSTDOMAIN));
-
         g_fNGenMissingDependenciesOk = !!(dwFlags & NGENWORKER_FLAGS_MISSINGDEPENDENCIESOK);
 
 #ifdef FEATURE_WINMD_RESILIENT
@@ -167,6 +113,7 @@ STDAPI NGenWorker(LPCWSTR pwzFilename, DWORD dwFlags, LPCWSTR pwzPlatformAssembl
 
 #ifdef FEATURE_READYTORUN_COMPILER
         g_fReadyToRunCompilation = !!(dwFlags & NGENWORKER_FLAGS_READYTORUN);
+        g_fLargeVersionBubble = !!(dwFlags & NGENWORKER_FLAGS_LARGEVERSIONBUBBLE);
 #endif
 
         if (pLogger != NULL)
@@ -193,6 +140,8 @@ STDAPI CreatePDBWorker(LPCWSTR pwzAssemblyPath, LPCWSTR pwzPlatformAssembliesPat
 
     EX_TRY
     {
+        GetCompileInfo()->SetIsGeneratingNgenPDB(TRUE);
+
         NGenOptions ngo = {0};
         ngo.dwSize = sizeof(NGenOptions);
 
@@ -224,10 +173,6 @@ STDAPI CreatePDBWorker(LPCWSTR pwzAssemblyPath, LPCWSTR pwzPlatformAssembliesPat
         if (pwzDiasymreaderPath != nullptr)
             zap->SetDiasymreaderPath(pwzDiasymreaderPath);
 #endif // !defined(NO_NGENPDB)
-
-        // Avoid unnecessary security failures, since permissions are irrelevant when
-        // generating NGEN PDBs
-        zap->SetForceFullTrust(true);
 
         BSTRHolder strAssemblyPath(::SysAllocString(pwzAssemblyPath));
         BSTRHolder strPdbPath(::SysAllocString(pwzPdbPath));
@@ -275,11 +220,9 @@ ZapperOptions::ZapperOptions() :
   m_fPartialNGenSet(false),
   m_fNGenLastRetry(false),
   m_compilerFlags(),
-  m_legacyMode(false)
-  ,m_fNoMetaData(s_fNGenNoMetaData)
+  m_fNoMetaData(s_fNGenNoMetaData)
 {
-    m_compilerFlags.Set(CORJIT_FLAGS::CORJIT_FLAG_RELOC);
-    m_compilerFlags.Set(CORJIT_FLAGS::CORJIT_FLAG_PREJIT);
+    SetCompilerFlags();
 
     m_zapSet = CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_ZapSet);
     if (m_zapSet != NULL && wcslen(m_zapSet) > 3)
@@ -317,6 +260,18 @@ ZapperOptions::~ZapperOptions()
 
     if (m_repositoryDir != NULL)
         delete [] m_repositoryDir;
+}
+
+void ZapperOptions::SetCompilerFlags(void)
+{
+    m_compilerFlags.Set(CORJIT_FLAGS::CORJIT_FLAG_RELOC);
+    m_compilerFlags.Set(CORJIT_FLAGS::CORJIT_FLAG_PREJIT);
+
+#if defined(_TARGET_ARM_)
+# if defined(PLATFORM_UNIX)
+    m_compilerFlags.Set(CORJIT_FLAGS::CORJIT_FLAG_RELATIVE_CODE_RELOCS);
+# endif // defined(PLATFORM_UNIX)
+#endif // defined(_TARGET_ARM_)
 }
 
 /* --------------------------------------------------------------------------- *
@@ -370,8 +325,7 @@ Zapper::Zapper(NGenOptions *pOptions, bool fromDllHost)
     pOptions = &currentVersionOptions;
 
     zo->m_compilerFlags.Reset();
-    zo->m_compilerFlags.Set(CORJIT_FLAGS::CORJIT_FLAG_RELOC);
-    zo->m_compilerFlags.Set(CORJIT_FLAGS::CORJIT_FLAG_PREJIT);
+    zo->SetCompilerFlags();
     zo->m_autodebug = true;
 
     if (pOptions->fDebug)
@@ -434,15 +388,6 @@ Zapper::Zapper(ZapperOptions *pOptions)
     Init(pOptions);
 }
 
-#ifndef FEATURE_MERGE_JIT_AND_ENGINE
-
-//
-// Pointer to the activated CLR interface provided by the shim.
-//
-extern ICLRRuntimeInfo *g_pCLRRuntime;
-
-#endif // FEATURE_MERGE_JIT_AND_ENGINE
-
 void Zapper::Init(ZapperOptions *pOptions, bool fFreeZapperOptions)
 {
     m_pEEJitInfo = NULL;
@@ -464,6 +409,8 @@ void Zapper::Init(ZapperOptions *pOptions, bool fFreeZapperOptions)
 
     m_pAssemblyEmit = NULL;
     m_fFreeZapperOptions = fFreeZapperOptions;
+
+    m_customBaseAddress = 0;
 
 #ifdef LOGGING
     InitializeLogging();
@@ -496,8 +443,6 @@ void Zapper::Init(ZapperOptions *pOptions, bool fFreeZapperOptions)
 #if !defined(FEATURE_MERGE_JIT_AND_ENGINE)
     m_fDontLoadJit = false;
 #endif // !defined(FEATURE_MERGE_JIT_AND_ENGINE)
-
-    m_fForceFullTrust = false;
 }
 
 // LoadAndInitializeJITForNgen: load the JIT dll into the process, and initialize it (call the UtilCode initialization function,
@@ -569,24 +514,11 @@ void Zapper::LoadAndInitializeJITForNgen(LPCWSTR pwzJitName, OUT HINSTANCE* phJi
         ThrowLastError();
     }
 
-#if !defined(CROSSGEN_COMPILE)
-    typedef void (__stdcall* pSxsJitStartup) (CoreClrCallbacks const & cccallbacks);
-    pSxsJitStartup sxsJitStartupFn = (pSxsJitStartup) GetProcAddress(*phJit, "sxsJitStartup");
-    if (sxsJitStartupFn == NULL)
-    {
-        Error(W("Unable to load Jit startup function: %s\r\n"), pwzJitName);
-        ThrowLastError();
-    }
-
-    CoreClrCallbacks cccallbacks = GetClrCallbacks();
-    (*sxsJitStartupFn) (cccallbacks);
-#endif
-
     typedef void (__stdcall* pJitStartup)(ICorJitHost* host);
     pJitStartup jitStartupFn = (pJitStartup)GetProcAddress(*phJit, "jitStartup");
     if (jitStartupFn != nullptr)
     {
-        jitStartupFn(JitHost::getJitHost());
+        jitStartupFn(m_pEECompileInfo->GetJitHost());
     }
 
     //get the appropriate compiler interface
@@ -651,31 +583,7 @@ void Zapper::InitEE(BOOL fForceDebug, BOOL fForceProfile, BOOL fForceInstrument)
     if (m_pOpt->m_verbose)
         IfFailThrow(m_pEECompileInfo->SetVerboseLevel (CORCOMPILE_VERBOSE));
 
-#ifdef ALLOW_LOCAL_WORKER
-    //if this is not NULL it means that we've already initialized the EE.
-    //Do not do so again.  However, verify that it would get initialized
-    //the same way.
-    if (g_eeInitialized)
-    {
-        if (fForceDebug != g_fForceDebug ||
-            fForceProfile != g_fForceProfile ||
-            fForceInstrument != g_fForceInstrument)
-        {
-            Error(W("AllowLocalWorker does not support changing EE initialization state\r\n"));
-            ThrowHR(E_FAIL);
-        }
-    }
-    else
-    {
-#endif // ALLOW_LOCAL_WORKER
-        IfFailThrow(m_pEECompileInfo->Startup(fForceDebug, fForceProfile, fForceInstrument));
-#ifdef ALLOW_LOCAL_WORKER
-        g_fForceDebug = fForceDebug;
-        g_fForceProfile = fForceProfile;
-        g_fForceInstrument = fForceInstrument;
-        g_eeInitialized = true;
-    }
-#endif // ALLOW_LOCAL_WORKER
+    IfFailThrow(m_pEECompileInfo->Startup(fForceDebug, fForceProfile, fForceInstrument));
 
     m_pEEJitInfo = GetZapJitInfo();
 
@@ -684,7 +592,7 @@ void Zapper::InitEE(BOOL fForceDebug, BOOL fForceProfile, BOOL fForceInstrument)
     //
 
 #ifdef FEATURE_MERGE_JIT_AND_ENGINE
-    jitStartup(JitHost::getJitHost());
+    jitStartup(m_pEECompileInfo->GetJitHost());
     m_pJitCompiler = getJit();
 
     if (m_pJitCompiler == NULL)
@@ -836,15 +744,13 @@ void Zapper::CleanupAssembly()
 // To be used with GetSpecificCpuInfo()
 #ifdef _TARGET_X86_
 
-BOOL Runtime_Test_For_SSE2();
-
 #define CPU_X86_FAMILY(cpuType)     (((cpuType) & 0x0F00) >> 8)
 #define CPU_X86_MODEL(cpuType)      (((cpuType) & 0x00F0) >> 4)
 // Stepping is masked out by GetSpecificCpuInfo()
 // #define CPU_X86_STEPPING(cpuType)   (((cpuType) & 0x000F)     )
 
-#define CPU_X86_USE_CMOV(cpuFeat)   ((cpuFeat & 0x00008001) == 0x00008001)
-#define CPU_X86_USE_SSE2(cpuFeat)  (((cpuFeat & 0x04000000) == 0x04000000) && Runtime_Test_For_SSE2())
+#define CPU_X86_USE_CMOV(cpuFeat)   (((cpuFeat) & 0x00008001) == 0x00008001)
+#define CPU_X86_USE_SSE2(cpuFeat)   (((cpuFeat) & 0x04000000) == 0x04000000)
 
 // Values for CPU_X86_FAMILY(cpuType)
 #define CPU_X86_486                 4
@@ -919,37 +825,6 @@ BOOL Zapper::IsAssembly(LPCWSTR path)
     }
 
     return TRUE;
-}
-
-/*static*/ HRESULT Zapper::GenericDomainCallback(LPVOID pvArgs)
-{
-    STATIC_CONTRACT_ENTRY_POINT;
-
-    HRESULT hr = S_OK;
-
-    BEGIN_ENTRYPOINT_NOTHROW;
-    EX_TRY
-    {
-        REMOVE_STACK_GUARD;
-        ((DomainCallback *) pvArgs)->doCallback();
-    }
-    EX_CATCH_HRESULT(hr);
-
-    END_ENTRYPOINT_NOTHROW;
-    
-    return hr;
-}
-
-void Zapper::InvokeDomainCallback(DomainCallback *callback)
-{
-#ifdef CROSSGEN_COMPILE
-    // Call the callback directly for better error messages (avoids exception swallowing and rethrow)
-    callback->doCallback();
-#else
-    IfFailThrow(m_pEECompileInfo->MakeCrossDomainCallback(m_pDomain,
-                                                          Zapper::GenericDomainCallback,
-                                                          (LPVOID) callback));
-#endif
 }
 
 void Zapper::SetContextInfo(LPCWSTR assemblyName)
@@ -1028,8 +903,7 @@ void Zapper::CreateCompilationDomain()
                                                CreateAssemblyEmitter(),
                                                fForceDebug,
                                                fForceProfile,
-                                               fForceInstrument,
-                                               m_fForceFullTrust));
+                                               fForceInstrument));
 
 #ifdef CROSSGEN_COMPILE
     IfFailThrow(m_pDomain->SetPlatformWinmdPaths(m_platformWinmdPaths));
@@ -1047,78 +921,19 @@ void Zapper::CreateCompilationDomain()
 
 void Zapper::CreateDependenciesLookupDomain()
 {
-    class Callback : public DomainCallback
-    {
-    public:
-        Callback(Zapper *pZapper)
-        {
-            this->pZapper = pZapper;
-        }
-
-        virtual void doCallback()
-        {
-            pZapper->CreateDependenciesLookupDomainInCurrentDomain();
-        }
-
-        Zapper* pZapper;
-    };
-
-
     CreateCompilationDomain();
-
-    Callback callback(this);
-    InvokeDomainCallback(&callback);
+    CreateDependenciesLookupDomainInCurrentDomain();
 }
 
 void Zapper::CreatePdb(BSTR pAssemblyPathOrName, BSTR pNativeImagePath, BSTR pPdbPath, BOOL pdbLines, BSTR pManagedPdbSearchPath)
 {
-    class Callback : public DomainCallback {
-
-    public:
-
-        Callback(Zapper *pZapper, BSTR pAssemblyPathOrName, BSTR pNativeImagePath, BSTR pPdbPath, BOOL pdbLines, BSTR pManagedPdbSearchPath)
-            : m_pZapper(pZapper),
-              m_pAssemblyPathOrName(pAssemblyPathOrName),
-              m_pNativeImagePath(pNativeImagePath),
-              m_pPdbPath(pPdbPath),
-              m_pdbLines(pdbLines),
-              m_pManagedPdbSearchPath(pManagedPdbSearchPath)
-        {
-        }
-                
-        virtual void doCallback()
-        {
-            m_pZapper->CreatePdbInCurrentDomain(m_pAssemblyPathOrName, m_pNativeImagePath, m_pPdbPath, m_pdbLines, m_pManagedPdbSearchPath);
-        };
-
-    private:
-
-        Zapper *m_pZapper;
-        BSTR m_pAssemblyPathOrName;
-        BSTR m_pNativeImagePath;
-        BSTR m_pPdbPath;
-        BOOL m_pdbLines;
-        BSTR m_pManagedPdbSearchPath;
-
-    };
-
 #ifdef CROSSGEN_COMPILE
     CreateCompilationDomain();
 #endif
-    _ASSERTE(m_pDomain);
 
-    Callback callback(this, pAssemblyPathOrName, pNativeImagePath, pPdbPath, pdbLines, pManagedPdbSearchPath);
-    InvokeDomainCallback(&callback);
-}
-
-
-void Zapper::CreatePdbInCurrentDomain(BSTR pAssemblyPathOrName, BSTR pNativeImagePath, BSTR pPdbPath, BOOL pdbLines, BSTR pManagedPdbSearchPath)
-{
     EX_TRY
     {
         CORINFO_ASSEMBLY_HANDLE hAssembly = NULL;
-
-        m_pEECompileInfo->SetIsGeneratingNgenPDB(TRUE);
 
         IfFailThrow(m_pEECompileInfo->LoadAssemblyByPath(
             pAssemblyPathOrName, 
@@ -1186,26 +1001,6 @@ void Zapper::ComputeDependencies(LPCWSTR pAssemblyName, CORCOMPILE_NGEN_SIGNATUR
 
 HRESULT Zapper::Compile(LPCWSTR string, CORCOMPILE_NGEN_SIGNATURE * pNativeImageSig)
 {
-    class Callback : public DomainCallback
-    {
-    public:
-        Callback(Zapper *pZapper, LPCWSTR pAssemblyName, CORCOMPILE_NGEN_SIGNATURE * pNativeImageSig)
-        {
-            this->pZapper         = pZapper;
-            this->pAssemblyName   = pAssemblyName;
-            this->pNativeImageSig = pNativeImageSig;
-        }
-
-        virtual void doCallback()
-        {
-            pZapper->CompileInCurrentDomain(pAssemblyName, pNativeImageSig);
-        }
-
-        Zapper* pZapper;
-        LPCWSTR pAssemblyName;
-        CORCOMPILE_NGEN_SIGNATURE * pNativeImageSig;
-    };
-
     HRESULT hr = S_OK;
 
     bool fMscorlib = false;
@@ -1229,8 +1024,7 @@ HRESULT Zapper::Compile(LPCWSTR string, CORCOMPILE_NGEN_SIGNATURE * pNativeImage
 
     EX_TRY
     {
-        Callback callback(this, string, pNativeImageSig);
-        InvokeDomainCallback(&callback);
+        CompileInCurrentDomain(string, pNativeImageSig);
     }
     EX_CATCH
     {
@@ -1241,7 +1035,6 @@ HRESULT Zapper::Compile(LPCWSTR string, CORCOMPILE_NGEN_SIGNATURE * pNativeImage
         Error(W("\n"));
 
         hr = GET_EXCEPTION()->GetHR();
-        RetailAssertIfExpectedClean();
     }
     EX_END_CATCH(SwallowAllExceptions);
 
@@ -1367,18 +1160,25 @@ void Zapper::InitializeCompilerFlags(CORCOMPILE_VERSION_INFO * pVersionInfo)
     if (pVersionInfo->wCodegenFlags & CORCOMPILE_CODEGEN_PROF_INSTRUMENTING)
         m_pOpt->m_compilerFlags.Set(CORJIT_FLAGS::CORJIT_FLAG_BBINSTR);
 
+    // Set CORJIT_FLAG_MIN_OPT only if COMPlus_JitMinOpts == 1
+    static ConfigDWORD g_jitMinOpts;
+    if (g_jitMinOpts.val_DontUse_(CLRConfig::UNSUPPORTED_JITMinOpts, 0) == 1)
+    {
+        m_pOpt->m_compilerFlags.Set(CORJIT_FLAGS::CORJIT_FLAG_MIN_OPT);
+    }
+
 #if defined(_TARGET_X86_)
 
     // @TODO: This is a copy of SetCpuInfo() in vm\codeman.cpp. Unify the implementaion
 
     switch (CPU_X86_FAMILY(pVersionInfo->cpuInfo.dwCPUType))
     {
-    case CPU_X86_PENTIUM_4:
-        m_pOpt->m_compilerFlags.Set(CORJIT_FLAGS::CORJIT_FLAG_TARGET_P4);
-        break;
+        case CPU_X86_PENTIUM_4:
+            m_pOpt->m_compilerFlags.Set(CORJIT_FLAGS::CORJIT_FLAG_TARGET_P4);
+            break;
 
-    default:
-        break;
+        default:
+            break;
     }
 
     if (CPU_X86_USE_CMOV(pVersionInfo->cpuInfo.dwFeatures))
@@ -1391,6 +1191,35 @@ void Zapper::InitializeCompilerFlags(CORCOMPILE_VERSION_INFO * pVersionInfo)
     m_pOpt->m_compilerFlags.Set(CORJIT_FLAGS::CORJIT_FLAG_USE_SSE2);
 
 #endif // _TARGET_X86_
+
+#if defined(_TARGET_X86_) || defined(_TARGET_AMD64_) || defined(_TARGET_ARM64_)
+    // If we're crossgenning CoreLib, allow generating non-VEX intrinsics. The generated code might
+    // not actually be supported by the processor at runtime so we compensate for it by
+    // not letting the get_IsSupported method to be intrinsically expanded in crossgen
+    // (see special handling around CORINFO_FLG_JIT_INTRINSIC in ZapInfo).
+    // That way the actual support checks will always be jitted.
+    // We only do this for CoreLib because forgetting to wrap intrinsics under IsSupported
+    // checks can lead to illegal instruction traps (instead of a nice managed exception).
+    if (m_pEECompileInfo->GetAssemblyModule(m_hAssembly) == m_pEECompileInfo->GetLoaderModuleForMscorlib())
+    {
+        m_pOpt->m_compilerFlags.Set(CORJIT_FLAGS::CORJIT_FLAG_FEATURE_SIMD);
+
+#if defined(_TARGET_X86_) || defined(_TARGET_AMD64_)
+        m_pOpt->m_compilerFlags.Set(CORJIT_FLAGS::CORJIT_FLAG_USE_AES);
+        m_pOpt->m_compilerFlags.Set(CORJIT_FLAGS::CORJIT_FLAG_USE_PCLMULQDQ);
+        m_pOpt->m_compilerFlags.Set(CORJIT_FLAGS::CORJIT_FLAG_USE_SSE3);
+        m_pOpt->m_compilerFlags.Set(CORJIT_FLAGS::CORJIT_FLAG_USE_SSSE3);
+        m_pOpt->m_compilerFlags.Set(CORJIT_FLAGS::CORJIT_FLAG_USE_SSE41);
+        m_pOpt->m_compilerFlags.Set(CORJIT_FLAGS::CORJIT_FLAG_USE_SSE42);
+        m_pOpt->m_compilerFlags.Set(CORJIT_FLAGS::CORJIT_FLAG_USE_POPCNT);
+        // Leaving out CORJIT_FLAGS::CORJIT_FLAG_USE_AVX, CORJIT_FLAGS::CORJIT_FLAG_USE_FMA
+        // CORJIT_FLAGS::CORJIT_FLAG_USE_AVX2, CORJIT_FLAGS::CORJIT_FLAG_USE_BMI1,
+        // CORJIT_FLAGS::CORJIT_FLAG_USE_BMI2 on purpose - these require VEX encodings
+        // and the JIT doesn't support generating code for methods with mixed encodings.
+        m_pOpt->m_compilerFlags.Set(CORJIT_FLAGS::CORJIT_FLAG_USE_LZCNT);
+#endif // defined(_TARGET_X86_) || defined(_TARGET_AMD64_)
+    }
+#endif // defined(_TARGET_X86_) || defined(_TARGET_AMD64_) || defined(_TARGET_ARM64_)
 
     if (   m_pOpt->m_compilerFlags.IsSet(CORJIT_FLAGS::CORJIT_FLAG_DEBUG_INFO)
         && m_pOpt->m_compilerFlags.IsSet(CORJIT_FLAGS::CORJIT_FLAG_DEBUG_CODE)
@@ -1541,6 +1370,7 @@ void Zapper::CompileAssembly(CORCOMPILE_NGEN_SIGNATURE * pNativeImageSig)
     DefineOutputAssembly(strAssemblyName, &hashAlgId);
 
     SString strNativeImagePath;
+    SString strNativeImageTempPath;
     HANDLE hFile = INVALID_HANDLE_VALUE;
     StackSArray<HANDLE> hFiles;
 
@@ -1589,7 +1419,10 @@ void Zapper::CompileAssembly(CORCOMPILE_NGEN_SIGNATURE * pNativeImageSig)
 
         pAssemblyModule->SetPdbFileName(SString(strAssemblyName, SL(W(".ni.pdb"))));
 
-        hFile = pAssemblyModule->SaveImage(strNativeImagePath.GetUnicode(), pNativeImageSig);
+        strNativeImageTempPath = strNativeImagePath;
+        strNativeImageTempPath.Append(W(".tmp"));
+
+        hFile = pAssemblyModule->SaveImage(strNativeImageTempPath.GetUnicode(), strNativeImagePath.GetUnicode(), pNativeImageSig);
     }
 
     // Throw away the assembly if we have hit fatal error during compilation
@@ -1602,6 +1435,11 @@ void Zapper::CompileAssembly(CORCOMPILE_NGEN_SIGNATURE * pNativeImageSig)
     for (SArray<HANDLE>::Iterator i = hFiles.Begin(); i != hFiles.End(); ++i)
     {
         CloseHandle(*i);
+    }
+
+    if (!WszMoveFileEx(strNativeImageTempPath.GetUnicode(), strNativeImagePath.GetUnicode(), MOVEFILE_REPLACE_EXISTING))
+    {
+        ThrowLastError();
     }
 
     if (!m_pOpt->m_silent)
@@ -1657,19 +1495,16 @@ ZapImage * Zapper::CompileModule(CORINFO_MODULE_HANDLE hModule,
 
     module->Compile();
 
-    if (IsReadyToRunCompilation())
+    if (!IsReadyToRunCompilation())
     {
-        return module.Extract();
+        //
+        // Link preloaded module.
+        //
+
+        Info(W("Linking preloaded input file %s\n"), module->m_pModuleFileName);
+
+        module->LinkPreload();
     }
-
-    //
-    // Link preloaded module.
-    //
-
-    Info(W("Linking preloaded input file %s\n"), module->m_pModuleFileName);
-
-    module->LinkPreload();
-
     return module.Extract();
 }
 
@@ -1846,12 +1681,6 @@ void Zapper::SetPlatformWinmdPaths(LPCWSTR pwzPlatformWinmdPaths)
     m_platformWinmdPaths.Set(pwzPlatformWinmdPaths);
 }
 
-void Zapper::SetForceFullTrust(bool val)
-{
-    m_fForceFullTrust = val;
-}
-
-
 
 void Zapper::SetOutputFilename(LPCWSTR pwzOutputFilename)
 {
@@ -1864,10 +1693,13 @@ SString Zapper::GetOutputFileName()
     return m_outputFilename;
 }
 
-void Zapper::SetLegacyMode()
-{
-    LIMITED_METHOD_CONTRACT;
 
-    m_pOpt->m_legacyMode = true;
+void Zapper::SetCustomBaseAddress(SIZE_T baseAddress)
+{
+    m_customBaseAddress = baseAddress;
 }
 
+SIZE_T Zapper::GetCustomBaseAddress()
+{
+    return m_customBaseAddress;
+}

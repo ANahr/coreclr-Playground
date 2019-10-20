@@ -8,13 +8,11 @@
 #include "appdomain.hpp"
 #include "peimagelayout.inl"
 #include "field.h"
-#include "security.h"
 #include "strongnameinternal.h"
 #include "excep.h"
 #include "eeconfig.h"
 #include "gcheaputilities.h"
 #include "eventtrace.h"
-#include "perfcounters.h"
 #include "assemblyname.hpp"
 #include "eeprofinterfaces.h"
 #include "dbginterface.h"
@@ -47,26 +45,20 @@
 
 #ifdef FEATURE_COMINTEROP
 #include "comtoclrcall.h"
-#include "sxshelpers.h"
 #include "runtimecallablewrapper.h"
 #include "mngstdinterfaces.h"
 #include "olevariant.h"
 #include "rcwrefcache.h"
 #include "olecontexthelpers.h"
 #endif // FEATURE_COMINTEROP
-#ifdef FEATURE_TYPEEQUIVALENCE
-#include "typeequivalencehash.hpp"
-#endif
 
-#include "listlock.inl"
+#include "typeequivalencehash.hpp"
+
 #include "appdomain.inl"
 #include "typeparse.h"
-#include "mdaassistants.h"
 #include "threadpoolrequest.h"
 
 #include "nativeoverlapped.h"
-
-#include "compatibilityflags.h"
 
 #ifndef FEATURE_PAL
 #include "dwreport.h"
@@ -78,14 +70,6 @@
 
 
 #include "clrprivtypecachewinrt.h"
-
-
-#ifdef FEATURE_RANDOMIZED_STRING_HASHING
-#pragma warning(push)
-#pragma warning(disable:4324) 
-#include "marvin32.h"
-#pragma warning(pop)
-#endif
 
 // this file handles string conversion errors for itself
 #undef  MAKE_TRANSLATIONFAILED
@@ -110,24 +94,15 @@ static const WCHAR OTHER_DOMAIN_FRIENDLY_NAME_PREFIX[] = W("Domain");
 
 #define STATIC_OBJECT_TABLE_BUCKET_SIZE 1020
 
-#define MAX_URL_LENGTH                  2084 // same as INTERNET_MAX_URL_LENGTH
-
-//#define _DEBUG_ADUNLOAD 1
-
-HRESULT RunDllMain(MethodDesc *pMD, HINSTANCE hInst, DWORD dwReason, LPVOID lpReserved); // clsload.cpp
-
-
-
-
-
 // Statics
 
+SPTR_IMPL(AppDomain, AppDomain, m_pTheAppDomain);
 SPTR_IMPL(SystemDomain, SystemDomain, m_pSystemDomain);
-SVAL_IMPL(ArrayListStatic, SystemDomain, m_appDomainIndexList);
-SPTR_IMPL(SharedDomain, SharedDomain, m_pSharedDomain);
+#ifdef FEATURE_PREJIT
 SVAL_IMPL(BOOL, SystemDomain, s_fForceDebug);
 SVAL_IMPL(BOOL, SystemDomain, s_fForceProfiling);
 SVAL_IMPL(BOOL, SystemDomain, s_fForceInstrument);
+#endif
 
 #ifndef DACCESS_COMPILE
 
@@ -136,31 +111,16 @@ CrstStatic          BaseDomain::m_SpecialStaticsCrst;
 
 int                 BaseDomain::m_iNumberOfProcessors = 0;
 
-// Shared Domain Statics
-DECLSPEC_ALIGN(16) 
-static BYTE         g_pSharedDomainMemory[sizeof(SharedDomain)];
-
 // System Domain Statics
 GlobalStringLiteralMap* SystemDomain::m_pGlobalStringLiteralMap = NULL;
 
 DECLSPEC_ALIGN(16) 
 static BYTE         g_pSystemDomainMemory[sizeof(SystemDomain)];
 
-#ifdef FEATURE_APPDOMAIN_RESOURCE_MONITORING
-size_t              SystemDomain::m_totalSurvivedBytes = 0;
-#endif //FEATURE_APPDOMAIN_RESOURCE_MONITORING
-
 CrstStatic          SystemDomain::m_SystemDomainCrst;
 CrstStatic          SystemDomain::m_DelayedUnloadCrst;
 
 ULONG               SystemDomain::s_dNumAppDomains = 0;
-
-AppDomain *         SystemDomain::m_pAppDomainBeingUnloaded = NULL;
-ADIndex             SystemDomain::m_dwIndexOfAppDomainBeingUnloaded;
-Thread            *SystemDomain::m_pAppDomainUnloadRequestingThread = 0;
-Thread            *SystemDomain::m_pAppDomainUnloadingThread = 0;
-
-ArrayListStatic     SystemDomain::m_appDomainIdList;
 
 DWORD               SystemDomain::m_dwLowestFreeIndex        = 0;
 
@@ -174,7 +134,6 @@ BOOL CompareCLSID(UPTR u1, UPTR u2)
         THROWS;
         GC_TRIGGERS;
         MODE_ANY;
-        SO_INTOLERANT;
         INJECT_FAULT(COMPlusThrowOM(););
     }
     CONTRACTL_END;
@@ -195,7 +154,7 @@ BOOL CompareCLSID(UPTR u1, UPTR u2)
 
 #ifndef CROSSGEN_COMPILE
 // Constructor for the LargeHeapHandleBucket class.
-LargeHeapHandleBucket::LargeHeapHandleBucket(LargeHeapHandleBucket *pNext, DWORD Size, BaseDomain *pDomain, BOOL bCrossAD)
+LargeHeapHandleBucket::LargeHeapHandleBucket(LargeHeapHandleBucket *pNext, DWORD Size, BaseDomain *pDomain)
 : m_pNext(pNext)
 , m_ArraySize(Size)
 , m_CurrentPos(0)
@@ -214,34 +173,8 @@ LargeHeapHandleBucket::LargeHeapHandleBucket(LargeHeapHandleBucket *pNext, DWORD
     PTRARRAYREF HandleArrayObj;
 
     // Allocate the array in the large object heap.
-    if (!bCrossAD) 
-    {
-        OVERRIDE_TYPE_LOAD_LEVEL_LIMIT(CLASS_LOADED);
-        HandleArrayObj = (PTRARRAYREF)AllocateObjectArray(Size, g_pObjectClass, TRUE);
-    }
-    else 
-    {
-        // During AD creation we don't want to assign the handle array to the currently running AD but
-        // to the AD being created.  Ensure that AllocateArrayEx doesn't set the AD and then set it here.
-        AppDomain *pAD = pDomain->AsAppDomain();
-        _ASSERTE(pAD);
-        _ASSERTE(pAD->IsBeingCreated());
-
-        OBJECTREF array;
-        {
-            OVERRIDE_TYPE_LOAD_LEVEL_LIMIT(CLASS_LOADED);
-            array = AllocateArrayEx(
-                ClassLoader::LoadArrayTypeThrowing(g_pObjectClass),
-                (INT32 *)(&Size),
-                1,
-                TRUE
-                DEBUG_ARG(TRUE));
-        }
-
-        array->SetAppDomain(pAD);
-
-        HandleArrayObj = (PTRARRAYREF)array;
-    }
+    OVERRIDE_TYPE_LOAD_LEVEL_LIMIT(CLASS_LOADED);
+    HandleArrayObj = (PTRARRAYREF)AllocateObjectArray(Size, g_pObjectClass, TRUE);
 
     // Retrieve the pointer to the data inside the array. This is legal since the array
     // is located in the large object heap and is guaranteed not to move.
@@ -445,31 +378,19 @@ LargeHeapHandleTable::~LargeHeapHandleTable()
 // Third case:  Releases for use in a string literal entry
 //
 // CrstHolder gch(&(SystemDomain::GetGlobalStringLiteralMap()->m_HashTableCrstGlobal));
-// taken in the AppDomainStringLiteralMap functions below protects the 4 ways that this can happen
+// taken in the AppDomainStringLiteralMap functions below protects the 3 ways that this can happen
 //
 // case 3a)
-//
-// in an appdomain unload case
-//
-// AppDomainStringLiteralMap::~AppDomainStringLiteralMap() takes the lock then
-// leads to calls to
-//     StringLiteralEntry::Release
-//    which leads to
-//        SystemDomain::GetGlobalStringLiteralMapNoCreate()->RemoveStringLiteralEntry(this)
-//        which leads to
-//            m_LargeHeapHandleTable.ReleaseHandles((OBJECTREF*)pObjRef, 1);
-//
-// case 3b)
 //
 // AppDomainStringLiteralMap::GetStringLiteral() can call StringLiteralEntry::Release in some
 // error cases, leading to the same stack as above
 //
-// case 3c)
+// case 3b)
 //
 // AppDomainStringLiteralMap::GetInternedString() can call StringLiteralEntry::Release in some
 // error cases, leading to the same stack as above
 //
-// case 3d)
+// case 3c)
 //
 // The same code paths in 3b and 3c and also end up releasing if an exception is thrown
 // during their processing.  Both these paths use a StringLiteralEntryHolder to assist in cleanup,
@@ -478,7 +399,7 @@ LargeHeapHandleTable::~LargeHeapHandleTable()
 
 
 // Allocate handles from the large heap handle table.
-OBJECTREF* LargeHeapHandleTable::AllocateHandles(DWORD nRequested, BOOL bCrossAD)
+OBJECTREF* LargeHeapHandleTable::AllocateHandles(DWORD nRequested)
 {
     CONTRACTL
     {
@@ -548,7 +469,7 @@ OBJECTREF* LargeHeapHandleTable::AllocateHandles(DWORD nRequested, BOOL bCrossAD
         // We need a block big enough to hold the requested handles
         DWORD NewBucketSize = max(m_NextBucketSize, nRequested);
 
-        m_pHead = new LargeHeapHandleBucket(m_pHead, NewBucketSize, m_pDomain, bCrossAD);
+        m_pHead = new LargeHeapHandleBucket(m_pHead, NewBucketSize, m_pDomain);
 
         m_NextBucketSize = min(m_NextBucketSize * 2, MAX_BUCKETSIZE);
     }
@@ -584,7 +505,7 @@ void LargeHeapHandleTable::ReleaseHandles(OBJECTREF *pObjRef, DWORD nReleased)
     // Add the released handles to the list of available handles.
     for (DWORD i = 0; i < nReleased; i++)
     {
-        SetObjectReference(&pObjRef[i], pPreallocatedSentinalObject, NULL);
+        SetObjectReference(&pObjRef[i], pPreallocatedSentinalObject);
     }
 
     m_cEmbeddedFree += nReleased;
@@ -711,10 +632,6 @@ OBJECTHANDLE ThreadStaticHandleTable::AllocateHandles(DWORD nRequested)
 //*****************************************************************************
 void BaseDomain::Attach()
 {
-#ifdef  FEATURE_RANDOMIZED_STRING_HASHING
-    // Randomized string hashing is on by default for String.GetHashCode in coreclr.
-    COMNlsHashProvider::s_NlsHashProvider.SetUseRandomHashing((CorHost2::GetStartupFlags() & STARTUP_DISABLE_RANDOMIZED_STRING_HASHING) == 0);
-#endif // FEATURE_RANDOMIZED_STRING_HASHING
     m_SpecialStaticsCrst.Init(CrstSpecialStatics);
 }
 
@@ -740,15 +657,12 @@ BaseDomain::BaseDomain()
     m_pLargeHeapHandleTable = NULL;
 
 #ifndef CROSSGEN_COMPILE
-    // Note that m_hHandleTableBucket is overridden by app domains
-    m_hHandleTableBucket = g_HandleTableMap.pBuckets[0];
+    // Note that m_handleStore is overridden by app domains
+    m_handleStore = GCHandleUtilities::GetGCHandleManager()->GetGlobalHandleStore();
 #else
-    m_hHandleTableBucket = NULL;
+    m_handleStore = NULL;
 #endif
 
-    m_pMarshalingData = NULL;
-
-    m_dwContextStatics = 0;
 #ifdef FEATURE_COMINTEROP
     m_pMngStdInterfacesInfo = NULL;
     m_pWinRtBinder = NULL;
@@ -758,8 +672,8 @@ BaseDomain::BaseDomain()
     m_ClassInitLock.PreInit();
     m_ILStubGenLock.PreInit();
 
-#ifdef FEATURE_REJIT
-    m_reJitMgr.PreInit(this == (BaseDomain *) g_pSharedDomainMemory);
+#ifdef FEATURE_CODE_VERSIONING
+    m_codeVersionManager.PreInit();
 #endif
 
 } //BaseDomain::BaseDomain
@@ -780,9 +694,7 @@ void BaseDomain::Init()
     // Initialize the domain locks
     //
 
-    if (this == reinterpret_cast<BaseDomain*>(&g_pSharedDomainMemory[0]))
-        m_DomainCrst.Init(CrstSharedBaseDomain);
-    else if (this == reinterpret_cast<BaseDomain*>(&g_pSystemDomainMemory[0]))
+    if (this == reinterpret_cast<BaseDomain*>(&g_pSystemDomainMemory[0]))
         m_DomainCrst.Init(CrstSystemBaseDomain);
     else
         m_DomainCrst.Init(CrstBaseDomain);
@@ -823,9 +735,6 @@ void BaseDomain::Init()
     m_crstAssemblyList.Init(CrstAssemblyList, CrstFlags(
         CRST_GC_NOTRIGGER_WHEN_TAKEN | CRST_DEBUGGER_THREAD | CRST_TAKEN_DURING_SHUTDOWN));
 
-    // Initialize the EE marshaling data to NULL.
-    m_pMarshalingData = NULL;
-
 #ifdef FEATURE_COMINTEROP
     // Allocate the managed standard interfaces information.
     m_pMngStdInterfacesInfo = new MngStdInterfacesInfo();
@@ -856,115 +765,6 @@ void BaseDomain::Init()
 
 #undef LOADERHEAP_PROFILE_COUNTER
 
-#ifndef CROSSGEN_COMPILE
-//*****************************************************************************
-void BaseDomain::Terminate()
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_TRIGGERS;
-        MODE_ANY;
-    }
-    CONTRACTL_END;
-
-    m_crstLoaderAllocatorReferences.Destroy();
-    m_DomainCrst.Destroy();
-    m_DomainCacheCrst.Destroy();
-    m_DomainLocalBlockCrst.Destroy();
-    m_InteropDataCrst.Destroy();
-
-    ListLockEntry* pElement;
-
-    // All the threads that are in this domain had better be stopped by this
-    // point.
-    //
-    // We might be jitting or running a .cctor so we need to empty that queue.
-    pElement = m_JITLock.Pop(TRUE);
-    while (pElement)
-    {
-#ifdef STRICT_JITLOCK_ENTRY_LEAK_DETECTION
-        _ASSERTE ((m_JITLock.m_pHead->m_dwRefCount == 1
-            && m_JITLock.m_pHead->m_hrResultCode == E_FAIL) ||
-            dbg_fDrasticShutdown || g_fInControlC);
-#endif // STRICT_JITLOCK_ENTRY_LEAK_DETECTION
-        delete(pElement);
-        pElement = m_JITLock.Pop(TRUE);
-
-    }
-    m_JITLock.Destroy();
-
-    pElement = m_ClassInitLock.Pop(TRUE);
-    while (pElement)
-    {
-#ifdef STRICT_CLSINITLOCK_ENTRY_LEAK_DETECTION
-        _ASSERTE (dbg_fDrasticShutdown || g_fInControlC);
-#endif
-        delete(pElement);
-        pElement = m_ClassInitLock.Pop(TRUE);
-    }
-    m_ClassInitLock.Destroy();
-
-    FileLoadLock* pFileElement;
-    pFileElement = (FileLoadLock*) m_FileLoadLock.Pop(TRUE);
-    while (pFileElement)
-    {
-#ifdef STRICT_CLSINITLOCK_ENTRY_LEAK_DETECTION
-        _ASSERTE (dbg_fDrasticShutdown || g_fInControlC);
-#endif
-        pFileElement->Release();
-        pFileElement = (FileLoadLock*) m_FileLoadLock.Pop(TRUE);
-    }
-    m_FileLoadLock.Destroy();
-
-    pElement = m_ILStubGenLock.Pop(TRUE);
-    while (pElement)
-    {
-#ifdef STRICT_JITLOCK_ENTRY_LEAK_DETECTION
-        _ASSERTE ((m_ILStubGenLock.m_pHead->m_dwRefCount == 1
-            && m_ILStubGenLock.m_pHead->m_hrResultCode == E_FAIL) ||
-            dbg_fDrasticShutdown || g_fInControlC);
-#endif // STRICT_JITLOCK_ENTRY_LEAK_DETECTION
-        delete(pElement);
-        pElement = m_ILStubGenLock.Pop(TRUE);
-    }
-    m_ILStubGenLock.Destroy();
-
-    m_LargeHeapHandleTableCrst.Destroy();
-
-    if (m_pLargeHeapHandleTable != NULL)
-    {
-        delete m_pLargeHeapHandleTable;
-        m_pLargeHeapHandleTable = NULL;
-    }
-
-    if (!IsAppDomain())
-    {
-        // Kind of a workaround - during unloading, we need to have an EE halt
-        // around deleting this stuff. So it gets deleted in AppDomain::Terminate()
-        // for those things (because there is a convenient place there.)
-        GetLoaderAllocator()->CleanupStringLiteralMap();
-    }
-
-#ifdef FEATURE_COMINTEROP
-    if (m_pMngStdInterfacesInfo)
-    {
-        delete m_pMngStdInterfacesInfo;
-        m_pMngStdInterfacesInfo = NULL;
-    }
-    
-    if (m_pWinRtBinder != NULL)
-    {
-        m_pWinRtBinder->Release();
-    }
-#endif // FEATURE_COMINTEROP
-
-    ClearFusionContext();
-
-    m_dwSizedRefHandles = 0;
-}
-#endif // CROSSGEN_COMPILE
-
 void BaseDomain::InitVSD()
 {
     STANDARD_VM_CONTRACT;
@@ -993,40 +793,6 @@ void BaseDomain::InitVSD()
 }
 
 #ifndef CROSSGEN_COMPILE
-BOOL BaseDomain::ContainsOBJECTHANDLE(OBJECTHANDLE handle)
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-    }
-    CONTRACTL_END;
-
-    return Ref_ContainHandle(m_hHandleTableBucket,handle);
-}
-
-DWORD BaseDomain::AllocateContextStaticsOffset(DWORD* pOffsetSlot)
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-    }
-    CONTRACTL_END;
-
-    CrstHolder ch(&m_SpecialStaticsCrst);
-
-    DWORD dwOffset = *pOffsetSlot;
-
-    if (dwOffset == (DWORD)-1)
-    {
-        // Allocate the slot
-        dwOffset = m_dwContextStatics++;
-        *pOffsetSlot = dwOffset;
-    }
-
-    return dwOffset;
-}
 
 void BaseDomain::ClearFusionContext()
 {
@@ -1048,87 +814,7 @@ void BaseDomain::ClearFusionContext()
     }
 }
 
-#ifdef  FEATURE_PREJIT
-void AppDomain::DeleteNativeCodeRanges()
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_PREEMPTIVE;
-        FORBID_FAULT;
-    }
-    CONTRACTL_END;
-
-    // Fast path to skip using the assembly iterator when the appdomain has not yet completely been initialized 
-    // and yet we are destroying it.  (This is the case if we OOM during AppDomain creation.)
-    if (m_Assemblies.IsEmpty())
-        return;
-
-    // Shutdown assemblies
-    AssemblyIterator i = IterateAssembliesEx( (AssemblyIterationFlags)(kIncludeLoaded | kIncludeLoading | kIncludeExecution | kIncludeIntrospection | kIncludeFailedToLoad) );
-    CollectibleAssemblyHolder<DomainAssembly *> pDomainAssembly;
-
-    while (i.Next(pDomainAssembly.This()))
-    {
-        Assembly * assembly = pDomainAssembly->m_pAssembly;
-        if ((assembly != NULL) && !assembly->IsDomainNeutral())
-            assembly->DeleteNativeCodeRanges();
-    }
-}
-#endif
-
-void AppDomain::ShutdownAssemblies()
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_TRIGGERS;
-        MODE_ANY;
-    }
-    CONTRACTL_END;
-
-    // Fast path to skip using the assembly iterator when the appdomain has not yet completely been initialized 
-    // and yet we are destroying it.  (This is the case if we OOM during AppDomain creation.)
-    if (m_Assemblies.IsEmpty())
-        return;
-
-    // Shutdown assemblies
-    // has two stages because Terminate needs info from the Assembly's dependencies
-
-    // Stage 1: call code:Assembly::Terminate
-    AssemblyIterator i = IterateAssembliesEx((AssemblyIterationFlags)(
-        kIncludeLoaded | kIncludeLoading | kIncludeExecution | kIncludeIntrospection | kIncludeFailedToLoad | kIncludeCollected));
-    DomainAssembly * pDomainAssembly = NULL;
-
-    while (i.Next_UnsafeNoAddRef(&pDomainAssembly))
-    {
-        // Note: cannot use DomainAssembly::GetAssembly() here as it asserts that the assembly has been
-        // loaded to at least the FILE_LOAD_ALLOCATE level. Since domain shutdown can take place
-        // asynchronously this property cannot be guaranteed. Access the m_pAssembly field directly instead.
-        Assembly * assembly = pDomainAssembly->m_pAssembly;
-        if (assembly && !assembly->IsDomainNeutral())
-            assembly->Terminate();
-    }
-    
-    // Stage 2: Clear the list of assemblies
-    i = IterateAssembliesEx((AssemblyIterationFlags)(
-        kIncludeLoaded | kIncludeLoading | kIncludeExecution | kIncludeIntrospection | kIncludeFailedToLoad | kIncludeCollected));
-    while (i.Next_UnsafeNoAddRef(&pDomainAssembly))
-    {
-        // We are in shutdown path, no one else can get to the list anymore
-        delete pDomainAssembly;
-    }
-    m_Assemblies.Clear(this);
-    
-    // Stage 2: Clear the loader allocators registered for deletion from code:Assembly:Terminate calls in 
-    // stage 1
-    // Note: It is not clear to me why we cannot delete the loader allocator from within 
-    // code:DomainAssembly::~DomainAssembly
-    ShutdownFreeLoaderAllocators(FALSE);
-} // AppDomain::ShutdownAssemblies
-
-void AppDomain::ShutdownFreeLoaderAllocators(BOOL bFromManagedCode)
+void AppDomain::ShutdownFreeLoaderAllocators()
 {
     // If we're called from managed code (i.e. the finalizer thread) we take a lock in
     // LoaderAllocator::CleanupFailedTypeInit, which may throw. Otherwise we're called
@@ -1136,7 +822,7 @@ void AppDomain::ShutdownFreeLoaderAllocators(BOOL bFromManagedCode)
     CONTRACTL
     {
         GC_TRIGGERS;
-        if (bFromManagedCode) THROWS; else NOTHROW;
+        THROWS;
         MODE_ANY;
         CAN_TAKE_LOCK;
     }
@@ -1151,24 +837,16 @@ void AppDomain::ShutdownFreeLoaderAllocators(BOOL bFromManagedCode)
         // Remove next loader allocator from the list
         m_pDelayedLoaderAllocatorUnloadList = m_pDelayedLoaderAllocatorUnloadList->m_pLoaderAllocatorDestroyNext;
 
-        if (bFromManagedCode)
-        {
-            // For loader allocator finalization, we need to be careful about cleaning up per-appdomain allocations
-            // and synchronizing with GC using delay unload list. We need to wait for next Gen2 GC to finish to ensure
-            // that GC heap does not have any references to the MethodTables being unloaded.
+        // For loader allocator finalization, we need to be careful about cleaning up per-appdomain allocations
+        // and synchronizing with GC using delay unload list. We need to wait for next Gen2 GC to finish to ensure
+        // that GC heap does not have any references to the MethodTables being unloaded.
 
-            pCurrentLoaderAllocator->CleanupFailedTypeInit();
+        pCurrentLoaderAllocator->CleanupFailedTypeInit();
 
-            pCurrentLoaderAllocator->CleanupHandles();
+        pCurrentLoaderAllocator->CleanupHandles();
 
-            GCX_COOP();
-            SystemDomain::System()->AddToDelayedUnloadList(pCurrentLoaderAllocator);
-        }
-        else
-        {
-            // For appdomain unload, delete the loader allocator right away
-            delete pCurrentLoaderAllocator;
-        }
+        GCX_COOP();
+        SystemDomain::System()->AddToDelayedUnloadList(pCurrentLoaderAllocator);
     }
 } // AppDomain::ShutdownFreeLoaderAllocators
 
@@ -1193,38 +871,49 @@ void AppDomain::RegisterLoaderAllocatorForDeletion(LoaderAllocator * pLoaderAllo
     m_pDelayedLoaderAllocatorUnloadList = pLoaderAllocator;
 }
 
-void AppDomain::ShutdownNativeDllSearchDirectories()
+void AppDomain::SetNativeDllSearchDirectories(LPCWSTR wszNativeDllSearchDirectories)
 {
-    LIMITED_METHOD_CONTRACT;
-    // Shutdown assemblies
-    PathIterator i = IterateNativeDllSearchDirectories();
+    STANDARD_VM_CONTRACT;
 
-    while (i.Next())
+    SString sDirectories(wszNativeDllSearchDirectories);
+
+    if (sDirectories.GetCount() > 0)
     {
-        delete i.GetPath();
-    }
+        SString::CIterator start = sDirectories.Begin();
+        SString::CIterator itr = sDirectories.Begin();
+        SString::CIterator end = sDirectories.End();
+        SString qualifiedPath;
 
-    m_NativeDllSearchDirectories.Clear();
-}
+        while (itr != end)
+        {
+            start = itr;
+            BOOL found = sDirectories.Find(itr, PATH_SEPARATOR_CHAR_W);
+            if (!found)
+            {
+                itr = end;
+            }
 
-void AppDomain::ReleaseDomainBoundInfo()
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_TRIGGERS;
-        MODE_ANY;
-    }
-    CONTRACTL_END;;
-    // Shutdown assemblies
-    m_AssemblyCache.OnAppDomainUnload();
+            SString qualifiedPath(sDirectories, start, itr);
 
-    AssemblyIterator i = IterateAssembliesEx( (AssemblyIterationFlags)(kIncludeFailedToLoad) );
-    CollectibleAssemblyHolder<DomainAssembly *> pDomainAssembly;
-    
-    while (i.Next(pDomainAssembly.This()))
-    {
-       pDomainAssembly->ReleaseManagedData();
+            if (found)
+            {
+                itr++;
+            }
+
+            unsigned len = qualifiedPath.GetCount();
+
+            if (len > 0)
+            {
+                if (qualifiedPath[len - 1] != DIRECTORY_SEPARATOR_CHAR_W)
+                {
+                    qualifiedPath.Append(DIRECTORY_SEPARATOR_CHAR_W);
+                }
+
+                NewHolder<SString> stringHolder(new SString(qualifiedPath));
+                IfFailThrow(m_NativeDllSearchDirectories.Append(stringHolder.GetValue()));
+                stringHolder.SuppressRelease();
+            }
+        }
     }
 }
 
@@ -1234,7 +923,7 @@ void AppDomain::ReleaseFiles()
 
     // Shutdown assemblies
     AssemblyIterator i = IterateAssembliesEx((AssemblyIterationFlags)(
-        kIncludeLoaded  | kIncludeExecution | kIncludeIntrospection | kIncludeFailedToLoad | kIncludeLoading));
+        kIncludeLoaded  | kIncludeExecution | kIncludeFailedToLoad | kIncludeLoading));
     CollectibleAssemblyHolder<DomainAssembly *> pAsm;
 
     while (i.Next(pAsm.This()))
@@ -1249,14 +938,13 @@ void AppDomain::ReleaseFiles()
         }
         else
         {
-            if (!pAsm->GetCurrentAssembly()->IsDomainNeutral())
-                pAsm->ReleaseFiles();
+            pAsm->ReleaseFiles();
         }
     }
 } // AppDomain::ReleaseFiles
 
 
-OBJECTREF* BaseDomain::AllocateObjRefPtrsInLargeTable(int nRequested, OBJECTREF** ppLazyAllocate, BOOL bCrossAD)
+OBJECTREF* BaseDomain::AllocateObjRefPtrsInLargeTable(int nRequested, OBJECTREF** ppLazyAllocate)
 {
     CONTRACTL
     {
@@ -1290,7 +978,7 @@ OBJECTREF* BaseDomain::AllocateObjRefPtrsInLargeTable(int nRequested, OBJECTREF*
             InitLargeHeapHandleTable();
 
         // Allocate the handles.
-        OBJECTREF* result = m_pLargeHeapHandleTable->AllocateHandles(nRequested, bCrossAD);
+        OBJECTREF* result = m_pLargeHeapHandleTable->AllocateHandles(nRequested);
 
         if (ppLazyAllocate)
         {
@@ -1303,70 +991,6 @@ OBJECTREF* BaseDomain::AllocateObjRefPtrsInLargeTable(int nRequested, OBJECTREF*
 #endif // CROSSGEN_COMPILE
 
 #endif // !DACCESS_COMPILE
-
-/*static*/
-PTR_BaseDomain BaseDomain::ComputeBaseDomain(
-    BaseDomain * pGenericDefinitionDomain,   // the domain that owns the generic type or method
-    Instantiation classInst,                // the type arguments to the type (if any)
-    Instantiation methodInst)               // the type arguments to the method (if any)
-{
-    CONTRACT(PTR_BaseDomain)
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        FORBID_FAULT;
-        MODE_ANY;
-        POSTCONDITION(CheckPointer(RETVAL));
-        SUPPORTS_DAC;
-        SO_TOLERANT;
-    }
-    CONTRACT_END
-
-    if (pGenericDefinitionDomain && pGenericDefinitionDomain->IsAppDomain())
-        RETURN PTR_BaseDomain(pGenericDefinitionDomain);
-
-    for (DWORD i = 0; i < classInst.GetNumArgs(); i++)
-    {
-        PTR_BaseDomain pArgDomain = classInst[i].GetDomain();
-        if (pArgDomain->IsAppDomain())
-            RETURN pArgDomain;
-    }
-
-    for (DWORD i = 0; i < methodInst.GetNumArgs(); i++)
-    {
-        PTR_BaseDomain pArgDomain = methodInst[i].GetDomain();
-        if (pArgDomain->IsAppDomain())
-            RETURN pArgDomain;
-    }
-    RETURN (pGenericDefinitionDomain ? 
-            PTR_BaseDomain(pGenericDefinitionDomain) : 
-            PTR_BaseDomain(SystemDomain::System()));
-}
-
-PTR_BaseDomain BaseDomain::ComputeBaseDomain(TypeKey * pKey)
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_ANY;
-        SUPPORTS_DAC;
-    }
-    CONTRACTL_END;
-
-
-    if (pKey->GetKind() == ELEMENT_TYPE_CLASS)
-        return BaseDomain::ComputeBaseDomain(pKey->GetModule()->GetDomain(),
-                                             pKey->GetInstantiation());
-    else if (pKey->GetKind() != ELEMENT_TYPE_FNPTR)
-        return pKey->GetElementType().GetDomain();
-    else
-        return BaseDomain::ComputeBaseDomain(NULL,Instantiation(pKey->GetRetAndArgTypes(), pKey->GetNumArgs()+1));
-}
-
-
-
-
 
 #ifndef DACCESS_COMPILE
 
@@ -1760,7 +1384,8 @@ void AppDomain::CacheWinRTFactoryObject(MethodTable *pClassMT, OBJECTREF *refFac
         pNewCtxEntry = pEntry->m_pCtxEntry;
         pEntry->m_pCtxEntry = pTemp;
 
-        HndAssignHandle(pEntry->m_ohFactoryObject, *refFactory);
+        IGCHandleManager *mgr = GCHandleUtilities::GetGCHandleManager();
+        mgr->StoreObjectInHandle(pEntry->m_ohFactoryObject, OBJECTREFToObject(*refFactory));
     }
 }
 
@@ -1894,51 +1519,6 @@ OBJECTREF AppDomain::GetMissingObject()
 
 #ifndef DACCESS_COMPILE
 
-EEMarshalingData *BaseDomain::GetMarshalingData()
-{
-    CONTRACT (EEMarshalingData*)
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_ANY;
-        INJECT_FAULT(COMPlusThrowOM());
-        POSTCONDITION(CheckPointer(m_pMarshalingData));
-    }
-    CONTRACT_END;
-
-    if (!m_pMarshalingData)
-    {
-        // Take the lock
-        CrstHolder holder(&m_InteropDataCrst);
-
-        if (!m_pMarshalingData)
-        {
-            LoaderHeap* pHeap = GetLoaderAllocator()->GetLowFrequencyHeap();
-            m_pMarshalingData = new (pHeap) EEMarshalingData(this, pHeap, &m_DomainCrst);
-        }
-    }
-
-    RETURN m_pMarshalingData;
-}
-
-void BaseDomain::DeleteMarshalingData()
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_TRIGGERS;
-        MODE_ANY;
-    }
-    CONTRACTL_END;
-
-    // We are in shutdown - no need to take any lock
-    if (m_pMarshalingData)
-    {
-        delete m_pMarshalingData;
-        m_pMarshalingData = NULL;
-    }
-}
-
 #ifndef CROSSGEN_COMPILE
 
 STRINGREF *BaseDomain::IsStringInterned(STRINGREF *pString)
@@ -1990,111 +1570,6 @@ void BaseDomain::InitLargeHeapHandleTable()
 #endif
 }
 
-#ifdef FEATURE_COMINTEROP
-MethodTable* AppDomain::GetLicenseInteropHelperMethodTable()
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-    }
-    CONTRACTL_END;
-
-    if(m_pLicenseInteropHelperMT == NULL)
-    {
-        // Do this work outside of the lock so we don't have an unbreakable lock condition
-
-        TypeHandle licenseMgrTypeHnd;
-        MethodDescCallSite  loadLM(METHOD__MARSHAL__LOAD_LICENSE_MANAGER);
-
-        licenseMgrTypeHnd = (MethodTable*) loadLM.Call_RetLPVOID((ARG_SLOT*)NULL);
-
-        //
-        // Look up this method by name, because the type is actually declared in System.dll.  <TODO>@todo: why?</TODO>
-        //
-
-        MethodDesc *pGetLIHMD = MemberLoader::FindMethod(licenseMgrTypeHnd.AsMethodTable(),
-                "GetLicenseInteropHelperType", &gsig_SM_Void_RetIntPtr);
-        _ASSERTE(pGetLIHMD);
-
-        TypeHandle lihTypeHnd;
-
-        MethodDescCallSite getLIH(pGetLIHMD);
-        lihTypeHnd = (MethodTable*) getLIH.Call_RetLPVOID((ARG_SLOT*)NULL);
-
-        BaseDomain::LockHolder lh(this);
-
-        if(m_pLicenseInteropHelperMT == NULL)
-            m_pLicenseInteropHelperMT = lihTypeHnd.AsMethodTable();
-    }
-    return m_pLicenseInteropHelperMT;
-}
-
-COMorRemotingFlag AppDomain::GetComOrRemotingFlag()
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_TRIGGERS;
-        MODE_ANY;
-    }
-    CONTRACTL_END;
-
-    // 0. check if the value is already been set
-    if (m_COMorRemotingFlag != COMorRemoting_NotInitialized)
-        return m_COMorRemotingFlag;
-
-    // 1. check whether the process is AppX
-    if (AppX::IsAppXProcess())
-    {
-        // do not use Remoting in AppX
-        m_COMorRemotingFlag = COMorRemoting_COM;
-        return m_COMorRemotingFlag;
-    }
-
-    // 2. check the xml file
-    m_COMorRemotingFlag = GetPreferComInsteadOfManagedRemotingFromConfigFile();
-    if (m_COMorRemotingFlag != COMorRemoting_NotInitialized)
-    {
-        return m_COMorRemotingFlag;
-    }
-
-    // 3. check the global setting
-    if (NULL != g_pConfig && g_pConfig->ComInsteadOfManagedRemoting())
-    {
-        m_COMorRemotingFlag = COMorRemoting_COM;
-    }
-    else
-    {
-        m_COMorRemotingFlag = COMorRemoting_Remoting;
-    }
-
-    return m_COMorRemotingFlag;
-}
-
-BOOL AppDomain::GetPreferComInsteadOfManagedRemoting()
-{
-    WRAPPER_NO_CONTRACT;
-
-    return (GetComOrRemotingFlag() == COMorRemoting_COM);
-}
-
-STDAPI GetXMLObjectEx(IXMLParser **ppv);
-
-COMorRemotingFlag AppDomain::GetPreferComInsteadOfManagedRemotingFromConfigFile()
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_TRIGGERS;
-        MODE_ANY;
-    }
-    CONTRACTL_END;
-
-    return COMorRemoting_COM;
-}
-#endif // FEATURE_COMINTEROP
-
 #endif // CROSSGEN_COMPILE
 
 //*****************************************************************************
@@ -2114,7 +1589,7 @@ void SystemDomain::operator delete(void *pMem)
     // Do nothing - new() was in-place
 }
 
-
+#ifdef FEATURE_PREJIT
 void    SystemDomain::SetCompilationOverrides(BOOL fForceDebug,
                                               BOOL fForceProfiling,
                                               BOOL fForceInstrument)
@@ -2124,9 +1599,11 @@ void    SystemDomain::SetCompilationOverrides(BOOL fForceDebug,
     s_fForceProfiling = fForceProfiling;
     s_fForceInstrument = fForceInstrument;
 }
+#endif
 
 #endif //!DACCESS_COMPILE
 
+#ifdef FEATURE_PREJIT
 void    SystemDomain::GetCompilationOverrides(BOOL * fForceDebug,
                                               BOOL * fForceProfiling,
                                               BOOL * fForceInstrument)
@@ -2136,6 +1613,7 @@ void    SystemDomain::GetCompilationOverrides(BOOL * fForceDebug,
     *fForceProfiling = s_fForceProfiling;
     *fForceInstrument = s_fForceInstrument;
 }
+#endif
 
 #ifndef DACCESS_COMPILE
 
@@ -2168,9 +1646,6 @@ void SystemDomain::Attach()
     PerAppDomainTPCountList::InitAppDomainIndexList();
 #endif // CROSSGEN_COMPILE
 
-    m_appDomainIndexList.Init();
-    m_appDomainIdList.Init();
-
     m_SystemDomainCrst.Init(CrstSystemDomain, (CrstFlags)(CRST_REENTRANCY | CRST_TAKEN_DURING_SHUTDOWN));
     m_DelayedUnloadCrst.Init(CrstSystemDomainDelayedUnloadList, CRST_UNSAFE_COOPGC);
 
@@ -2190,9 +1665,8 @@ void SystemDomain::Attach()
     // We need to initialize the memory pools etc. for the system domain.
     m_pSystemDomain->BaseDomain::Init(); // Setup the memory heaps
 
-    // Create the default domain
-    m_pSystemDomain->CreateDefaultDomain();
-    SharedDomain::Attach();
+    // Create the one and only app domain
+    AppDomain::Create();
 
     // Each domain gets its own ReJitManager, and ReJitManager has its own static
     // initialization to run
@@ -2232,8 +1706,9 @@ void SystemDomain::DetachEnd()
     {
         GCX_PREEMP();
         m_pSystemDomain->ClearFusionContext();
-        if (m_pSystemDomain->m_pDefaultDomain)
-            m_pSystemDomain->m_pDefaultDomain->ClearFusionContext();
+        AppDomain* pAppDomain = GetAppDomain();
+        if (pAppDomain)
+            pAppDomain->ClearFusionContext();
     }
 }
 
@@ -2243,62 +1718,8 @@ void SystemDomain::Stop()
     AppDomainIterator i(TRUE);
 
     while (i.Next())
-        if (i.GetDomain()->m_Stage < AppDomain::STAGE_CLEARED)
-            i.GetDomain()->Stop();
+        i.GetDomain()->Stop();
 }
-
-
-void SystemDomain::Terminate() // bNotifyProfiler is ignored
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_TRIGGERS;
-        MODE_ANY;
-    }
-    CONTRACTL_END;
-
-    // This ignores the refences and terminates the appdomains
-    AppDomainIterator i(FALSE);
-
-    while (i.Next())
-    {
-        delete i.GetDomain();
-        // Keep the iterator from Releasing the current domain
-        i.m_pCurrent = NULL;
-    }
-
-    if (m_pSystemFile != NULL) {
-        m_pSystemFile->Release();
-        m_pSystemFile = NULL;
-    }
-
-    m_pSystemAssembly = NULL;
-
-    if(m_pwDevpath) {
-        delete[] m_pwDevpath;
-        m_pwDevpath = NULL;
-    }
-    m_dwDevpath = 0;
-    m_fDevpath = FALSE;
-
-    if (m_pGlobalStringLiteralMap) {
-        delete m_pGlobalStringLiteralMap;
-        m_pGlobalStringLiteralMap = NULL;
-    }
-
-
-    SharedDomain::Detach();
-
-    BaseDomain::Terminate();
-
-#ifdef FEATURE_COMINTEROP
-    if (g_pRCWCleanupList != NULL)
-        delete g_pRCWCleanupList;
-#endif // FEATURE_COMINTEROP
-    m_GlobalAllocator.Terminate();
-}
-
 
 void SystemDomain::PreallocateSpecialObjects()
 {
@@ -2314,9 +1735,6 @@ void SystemDomain::PreallocateSpecialObjects()
     _ASSERTE(g_pPreallocatedSentinelObject == NULL);
 
     OBJECTREF pPreallocatedSentinalObject = AllocateObject(g_pObjectClass);
-#if CHECK_APP_DOMAIN_LEAKS
-    pPreallocatedSentinalObject->SetSyncBlockAppDomainAgile();
-#endif
     g_pPreallocatedSentinelObject = CreatePinningHandle( pPreallocatedSentinalObject );
 
 #ifdef FEATURE_PREJIT
@@ -2368,9 +1786,6 @@ void SystemDomain::CreatePreallocatedExceptions()
 
 
     EXCEPTIONREF pRudeAbortException = (EXCEPTIONREF)AllocateObject(g_pThreadAbortExceptionClass);
-#if CHECK_APP_DOMAIN_LEAKS
-    pRudeAbortException->SetSyncBlockAppDomainAgile();
-#endif
     pRudeAbortException->SetHResult(COR_E_THREADABORTED);
     pRudeAbortException->SetXCode(EXCEPTION_COMPLUS);
     _ASSERTE(g_pPreallocatedRudeThreadAbortException == NULL);
@@ -2378,9 +1793,6 @@ void SystemDomain::CreatePreallocatedExceptions()
 
 
     EXCEPTIONREF pAbortException = (EXCEPTIONREF)AllocateObject(g_pThreadAbortExceptionClass);
-#if CHECK_APP_DOMAIN_LEAKS
-    pAbortException->SetSyncBlockAppDomainAgile();
-#endif
     pAbortException->SetHResult(COR_E_THREADABORTED);
     pAbortException->SetXCode(EXCEPTION_COMPLUS);
     _ASSERTE(g_pPreallocatedThreadAbortException == NULL);
@@ -2414,18 +1826,6 @@ void SystemDomain::Init()
     // The base domain is initialized in SystemDomain::Attach()
     // to allow stub caches to use the memory pool. Do not
     // initialze it here!
-
-#ifndef CROSSGEN_COMPILE
-#ifdef _DEBUG
-    Context     *curCtx = GetCurrentContext();
-#endif
-    _ASSERTE(curCtx);
-    _ASSERTE(curCtx->GetDomain() != NULL);
-#endif
-
-#ifdef _DEBUG
-    g_fVerifierOff = g_pConfig->IsVerifierOff();
-#endif
 
 #ifdef FEATURE_PREJIT
     if (CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_ZapDisable) != 0)
@@ -2517,21 +1917,6 @@ void SystemDomain::LazyInitGlobalStringLiteralMap()
     }
 }
 
-void AppDomain::CreateADUnloadStartEvent()
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_NOTRIGGER;
-        SO_TOLERANT;
-        MODE_ANY;
-    }
-    CONTRACTL_END;
-
-    g_pUnloadStartEvent = new CLREvent();
-    g_pUnloadStartEvent->CreateAutoEvent(FALSE);
-}
-
 /*static*/ void SystemDomain::EnumAllStaticGCRefs(promote_func* fn, ScanContext* sc)
 {
     CONTRACT_VOID
@@ -2562,118 +1947,15 @@ void AppDomain::CreateADUnloadStartEvent()
     SystemDomain* sysDomain = SystemDomain::System();
     if (sysDomain)
     {
-        DWORD i;
-        DWORD count = (DWORD) m_appDomainIdList.GetCount();
-        for (i = 0 ; i < count ; i++)
+        AppDomain* pAppDomain = ::GetAppDomain();
+        if (pAppDomain && pAppDomain->IsActive())
         {
-            AppDomain* pAppDomain = (AppDomain *)m_appDomainIdList.Get(i);
-            if (pAppDomain && pAppDomain->IsActive() && !pAppDomain->IsUnloading())
-            {
-#ifdef FEATURE_APPDOMAIN_RESOURCE_MONITORING
-                if (g_fEnableARM)
-                {
-                    sc->pCurrentDomain = pAppDomain;
-                }
-#endif //FEATURE_APPDOMAIN_RESOURCE_MONITORING
-                pAppDomain->EnumStaticGCRefs(fn, sc);
-            }
+            pAppDomain->EnumStaticGCRefs(fn, sc);
         }
     }
 
     RETURN;
 }
-
-#ifdef FEATURE_APPDOMAIN_RESOURCE_MONITORING
-void SystemDomain::ResetADSurvivedBytes()
-{
-    CONTRACT_VOID
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_ANY;
-    }
-    CONTRACT_END;
-
-    _ASSERTE(GCHeapUtilities::IsGCInProgress());
-
-    SystemDomain* sysDomain = SystemDomain::System();
-    if (sysDomain)
-    {
-        DWORD i;
-        DWORD count = (DWORD) m_appDomainIdList.GetCount();
-        for (i = 0 ; i < count ; i++)
-        {
-            AppDomain* pAppDomain = (AppDomain *)m_appDomainIdList.Get(i);
-            if (pAppDomain && pAppDomain->IsUserActive())
-            {
-                pAppDomain->ResetSurvivedBytes();
-            }
-        }
-    }
-
-    RETURN;
-}
-
-ULONGLONG SystemDomain::GetADSurvivedBytes()
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_ANY;
-    }
-    CONTRACTL_END;
-
-    SystemDomain* sysDomain = SystemDomain::System();
-    ULONGLONG ullTotalADSurvived = 0;
-    if (sysDomain)
-    {
-        DWORD i;
-        DWORD count = (DWORD) m_appDomainIdList.GetCount();
-        for (i = 0 ; i < count ; i++)
-        {
-            AppDomain* pAppDomain = (AppDomain *)m_appDomainIdList.Get(i);
-            if (pAppDomain && pAppDomain->IsUserActive())
-            {
-                ULONGLONG ullSurvived = pAppDomain->GetSurvivedBytes();
-                ullTotalADSurvived += ullSurvived;
-            }
-        }
-    }
-
-    return ullTotalADSurvived;
-}
-
-void SystemDomain::RecordTotalSurvivedBytes(size_t totalSurvivedBytes)
-{
-    CONTRACT_VOID
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_ANY;
-    }
-    CONTRACT_END;
-
-    m_totalSurvivedBytes = totalSurvivedBytes;
-
-    SystemDomain* sysDomain = SystemDomain::System();
-    if (sysDomain)
-    {
-        DWORD i;
-        DWORD count = (DWORD) m_appDomainIdList.GetCount();
-        for (i = 0 ; i < count ; i++)
-        {
-            AppDomain* pAppDomain = (AppDomain *)m_appDomainIdList.Get(i);
-            if (pAppDomain && pAppDomain->IsUserActive())
-            {
-                FireEtwAppDomainMemSurvived((ULONGLONG)pAppDomain, pAppDomain->GetSurvivedBytes(), totalSurvivedBytes, GetClrInstanceId());
-            }
-        }
-    }
-
-    RETURN;
-}
-#endif //FEATURE_APPDOMAIN_RESOURCE_MONITORING
 
 // Only called when EE is suspended.
 DWORD SystemDomain::GetTotalNumSizedRefHandles()
@@ -2690,15 +1972,10 @@ DWORD SystemDomain::GetTotalNumSizedRefHandles()
     DWORD dwTotalNumSizedRefHandles = 0;
     if (sysDomain)
     {
-        DWORD i;
-        DWORD count = (DWORD) m_appDomainIdList.GetCount();
-        for (i = 0 ; i < count ; i++)
+        AppDomain* pAppDomain = ::GetAppDomain();
+        if (pAppDomain && pAppDomain->IsActive())
         {
-            AppDomain* pAppDomain = (AppDomain *)m_appDomainIdList.Get(i);
-            if (pAppDomain && pAppDomain->IsActive() && !pAppDomain->IsUnloading())
-            {
-                dwTotalNumSizedRefHandles += pAppDomain->GetNumSizedRefHandles();
-            }
+            dwTotalNumSizedRefHandles += pAppDomain->GetNumSizedRefHandles();
         }
     }
 
@@ -2717,16 +1994,13 @@ void SystemDomain::LoadBaseSystemClasses()
     }
     // Only partially load the system assembly. Other parts of the code will want to access
     // the globals in this function before finishing the load.
-    m_pSystemAssembly = DefaultDomain()->LoadDomainAssembly(NULL, m_pSystemFile, FILE_LOAD_POST_LOADLIBRARY, NULL)->GetCurrentAssembly();
+    m_pSystemAssembly = DefaultDomain()->LoadDomainAssembly(NULL, m_pSystemFile, FILE_LOAD_POST_LOADLIBRARY)->GetCurrentAssembly();
 
     // Set up binder for mscorlib
     MscorlibBinder::AttachModule(m_pSystemAssembly->GetManifestModule());
 
     // Load Object
     g_pObjectClass = MscorlibBinder::GetClass(CLASS__OBJECT);
-
-    // get the Object::.ctor method desc so we can special-case it
-    g_pObjectCtorMD = MscorlibBinder::GetMethod(METHOD__OBJECT__CTOR);
 
     // Now that ObjectClass is loaded, we can set up
     // the system for finalizers.  There is no point in deferring this, since we need
@@ -2747,10 +2021,6 @@ void SystemDomain::LoadBaseSystemClasses()
     _ASSERTE(!g_pEnumClass->IsValueType());
 
     // Load System.RuntimeType
-    // We need to load this after ValueType and Enum because RuntimeType now
-    // contains an enum field (m_invocationFlags). Otherwise INVOCATION_FLAGS
-    // would be treated as a reference type and clr!SigPointer::GetTypeHandleThrowing
-    // throws an exception.
     g_pRuntimeTypeClass = MscorlibBinder::GetClass(CLASS__CLASS);
     _ASSERTE(g_pRuntimeTypeClass->IsFullyLoaded());
 
@@ -2807,35 +2077,18 @@ void SystemDomain::LoadBaseSystemClasses()
 
     // Load String
     g_pStringClass = MscorlibBinder::LoadPrimitiveType(ELEMENT_TYPE_STRING);
-    _ASSERTE(g_pStringClass->GetBaseSize() == ObjSizeOf(StringObject)+sizeof(WCHAR));
-    _ASSERTE(g_pStringClass->GetComponentSize() == 2);
 
-    // Used by Buffer::BlockCopy
-    g_pByteArrayMT = ClassLoader::LoadArrayTypeThrowing(
-        TypeHandle(MscorlibBinder::GetElementType(ELEMENT_TYPE_U1))).AsArray()->GetMethodTable();
+#ifdef FEATURE_UTF8STRING
+    // Load Utf8String
+    g_pUtf8StringClass = MscorlibBinder::GetClass(CLASS__UTF8_STRING);
+#endif // FEATURE_UTF8STRING
+
+#ifndef CROSSGEN_COMPILE
+    CrossLoaderAllocatorHashSetup::EnsureTypesLoaded();
+#endif
 
 #ifndef CROSSGEN_COMPILE
     ECall::PopulateManagedStringConstructors();
-
-    if (CLRIoCompletionHosted())
-    {
-        g_pOverlappedDataClass = MscorlibBinder::GetClass(CLASS__OVERLAPPEDDATA);
-        _ASSERTE (g_pOverlappedDataClass);
-        if (CorHost2::GetHostOverlappedExtensionSize() != 0)
-        {
-            // Overlapped may have an extension if a host hosts IO completion subsystem
-            DWORD instanceFieldBytes = g_pOverlappedDataClass->GetNumInstanceFieldBytes() + CorHost2::GetHostOverlappedExtensionSize();
-            _ASSERTE (instanceFieldBytes + ObjSizeOf(Object) >= MIN_OBJECT_SIZE);
-            DWORD baseSize = (DWORD) (instanceFieldBytes + ObjSizeOf(Object));
-            baseSize = (baseSize + ALLOC_ALIGN_CONSTANT) & ~ALLOC_ALIGN_CONSTANT;  // m_BaseSize must be aligned
-            DWORD adjustSize = baseSize - g_pOverlappedDataClass->GetBaseSize();
-            CGCDesc* map = CGCDesc::GetCGCDescFromMT(g_pOverlappedDataClass);
-            CGCDescSeries * cur = map->GetHighestSeries();
-            _ASSERTE ((SSIZE_T)map->GetNumSeries() == 1);
-            cur->SetSeriesSize(cur->GetSeriesSize() - adjustSize);
-            g_pOverlappedDataClass->SetBaseSize(baseSize);
-        }
-    }
 #endif // CROSSGEN_COMPILE
 
     g_pExceptionClass = MscorlibBinder::GetClass(CLASS__EXCEPTION);
@@ -2844,8 +2097,6 @@ void SystemDomain::LoadBaseSystemClasses()
     g_pExecutionEngineExceptionClass = MscorlibBinder::GetException(kExecutionEngineException);
     g_pThreadAbortExceptionClass = MscorlibBinder::GetException(kThreadAbortException);
 
-
-    // used by gc to handle predefined agility checking
     g_pThreadClass = MscorlibBinder::GetClass(CLASS__THREAD);
 
 #ifdef FEATURE_COMINTEROP
@@ -2870,10 +2121,6 @@ void SystemDomain::LoadBaseSystemClasses()
 #ifdef FEATURE_ICASTABLE
     g_pICastableInterface = MscorlibBinder::GetClass(CLASS__ICASTABLE);
 #endif // FEATURE_ICASTABLE
-
-    // Load a special marker method used to detect Constrained Execution Regions
-    // at jit time.
-    g_pExecuteBackoutCodeHelperMethod = MscorlibBinder::GetMethod(METHOD__RUNTIME_HELPERS__EXECUTE_BACKOUT_CODE_HELPER);
 
     // Make sure that FCall mapping for Monitor.Enter is initialized. We need it in case Monitor.Enter is used only as JIT helper. 
     // For more details, see comment in code:JITutil_MonEnterWorker around "__me = GetEEFuncEntryPointMacro(JIT_MonEnter)".
@@ -2922,185 +2169,14 @@ void SystemDomain::LoadDomain(AppDomain *pDomain)
     }
     CONTRACTL_END;
 
-    pDomain->SetCanUnload();    // by default can unload any domain
     SystemDomain::System()->AddDomain(pDomain);
-}
-
-ADIndex SystemDomain::GetNewAppDomainIndex(AppDomain *pAppDomain)
-{
-    STANDARD_VM_CONTRACT;
-
-    DWORD count = m_appDomainIndexList.GetCount();
-    DWORD i;
-
-#ifdef _DEBUG
-    if (count < 2000)
-    {
-        // So that we can keep AD index inside object header.
-        // We do not want to create syncblock unless needed.
-        i = count;
-    }
-    else
-    {
-#endif // _DEBUG
-        //
-        // Look for an unused index.  Note that in a checked build,
-        // we never reuse indexes - this makes it easier to tell
-        // when we are looking at a stale app domain.
-        //
-
-        i = m_appDomainIndexList.FindElement(m_dwLowestFreeIndex, NULL);
-        if (i == (DWORD) ArrayList::NOT_FOUND)
-            i = count;
-        m_dwLowestFreeIndex = i+1;
-#ifdef _DEBUG
-        if (m_dwLowestFreeIndex >= 2000)
-        {
-            m_dwLowestFreeIndex = 0;
-        }
-    }
-#endif // _DEBUG
-
-    if (i == count)
-        IfFailThrow(m_appDomainIndexList.Append(pAppDomain));
-    else
-        m_appDomainIndexList.Set(i, pAppDomain);
-
-    _ASSERTE(i < m_appDomainIndexList.GetCount());
-
-    // Note that index 0 means domain agile.
-    return ADIndex(i+1);
-}
-
-void SystemDomain::ReleaseAppDomainIndex(ADIndex index)
-{
-    WRAPPER_NO_CONTRACT;
-    SystemDomain::LockHolder lh;
-    // Note that index 0 means domain agile.
-    index.m_dwIndex--;
-
-    _ASSERTE(m_appDomainIndexList.Get(index.m_dwIndex) != NULL);
-
-    m_appDomainIndexList.Set(index.m_dwIndex, NULL);
-
-#ifndef _DEBUG
-    if (index.m_dwIndex < m_dwLowestFreeIndex)
-        m_dwLowestFreeIndex = index.m_dwIndex;
-#endif // !_DEBUG
 }
 
 #endif // !DACCESS_COMPILE
 
-PTR_AppDomain SystemDomain::GetAppDomainAtIndex(ADIndex index)
-{
-    LIMITED_METHOD_CONTRACT;
-    SUPPORTS_DAC;
-    _ASSERTE(index.m_dwIndex != 0);
-
-    PTR_AppDomain pAppDomain = TestGetAppDomainAtIndex(index);
-
-    _ASSERTE(pAppDomain || !"Attempt to access unloaded app domain");
-
-    return pAppDomain;
-}
-
-PTR_AppDomain SystemDomain::TestGetAppDomainAtIndex(ADIndex index)
-{
-    LIMITED_METHOD_CONTRACT;
-    SUPPORTS_DAC;
-    _ASSERTE(index.m_dwIndex != 0);
-    index.m_dwIndex--;
-
 #ifndef DACCESS_COMPILE
-    _ASSERTE(index.m_dwIndex < (DWORD)m_appDomainIndexList.GetCount());
-    AppDomain *pAppDomain = (AppDomain*) m_appDomainIndexList.Get(index.m_dwIndex);
-#else // DACCESS_COMPILE
-    PTR_ArrayListStatic pList = &m_appDomainIndexList;
-    AppDomain *pAppDomain = dac_cast<PTR_AppDomain>(pList->Get(index.m_dwIndex));
-#endif // DACCESS_COMPILE
-    return PTR_AppDomain(pAppDomain);
-}
-
-#ifndef DACCESS_COMPILE
-
-// See also code:SystemDomain::ReleaseAppDomainId
-ADID SystemDomain::GetNewAppDomainId(AppDomain *pAppDomain)
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_ANY;
-        INJECT_FAULT(COMPlusThrowOM(););
-    }
-    CONTRACTL_END;
-
-    DWORD i = m_appDomainIdList.GetCount();
-
-    IfFailThrow(m_appDomainIdList.Append(pAppDomain));
-
-    _ASSERTE(i < m_appDomainIdList.GetCount());
-
-    return ADID(i+1);
-}
-
-AppDomain *SystemDomain::GetAppDomainAtId(ADID index)
-{
-    CONTRACTL
-    {
-#ifdef _DEBUG
-        if (!SystemDomain::IsUnderDomainLock() && !IsGCThread()) { MODE_COOPERATIVE;} else { DISABLED(MODE_ANY);}
-#endif
-        GC_NOTRIGGER;
-        SO_TOLERANT;
-        NOTHROW;
-    }
-    CONTRACTL_END;
-
-    if(index.m_dwId == 0)
-        return NULL;
-    DWORD requestedID = index.m_dwId - 1;
-
-    if(requestedID  >= (DWORD)m_appDomainIdList.GetCount())
-        return NULL;
-
-    AppDomain * result = (AppDomain *)m_appDomainIdList.Get(requestedID);
-
-#ifndef CROSSGEN_COMPILE
-    if(result==NULL && GetThread() == FinalizerThread::GetFinalizerThread() &&
-        SystemDomain::System()->AppDomainBeingUnloaded()!=NULL &&
-        SystemDomain::System()->AppDomainBeingUnloaded()->GetId()==index)
-        result=SystemDomain::System()->AppDomainBeingUnloaded();
-    // If the current thread can't enter the AppDomain, then don't return it.
-    if (!result || !result->CanThreadEnter(GetThread()))
-        return NULL;
-#endif // CROSSGEN_COMPILE
-
-    return result;
-}
-
-// Releases an appdomain index.   Note that today we have code that depends on these
-// indexes not being recycled, so we don't actually shrink m_appDomainIdList, but 
-// simply zero out an entry.   THus we 'leak' the memory associated the slot in
-// m_appDomainIdList.  
-// 
-// TODO make this a sparse structure so that we avoid that leak.  
-//
-void SystemDomain::ReleaseAppDomainId(ADID index)
-{
-    LIMITED_METHOD_CONTRACT;
-    index.m_dwId--;
-
-    _ASSERTE(index.m_dwId < (DWORD)m_appDomainIdList.GetCount());
-
-    m_appDomainIdList.Set(index.m_dwId, NULL);
-}
 
 #if defined(FEATURE_COMINTEROP_APARTMENT_SUPPORT) && !defined(CROSSGEN_COMPILE)
-
-#ifdef _DEBUG
-int g_fMainThreadApartmentStateSet = 0;
-#endif
 
 Thread::ApartmentState SystemDomain::GetEntryPointThreadAptState(IMDInternalImport* pScope, mdMethodDef mdMethod)
 {
@@ -3134,38 +2210,9 @@ Thread::ApartmentState SystemDomain::GetEntryPointThreadAptState(IMDInternalImpo
     return Thread::AS_Unknown;
 }
 
-void SystemDomain::SetThreadAptState (IMDInternalImport* pScope, Thread::ApartmentState state)
+void SystemDomain::SetThreadAptState (Thread::ApartmentState state)
 {
     STANDARD_VM_CONTRACT;
-
-    BOOL fIsLegacy = FALSE;
-
-    // Check for legacy behavior regarding COM Apartment state of the main thread.
-
-#define METAMODEL_MAJOR_VER_WITH_NEW_BEHAVIOR 2
-#define METAMODEL_MINOR_VER_WITH_NEW_BEHAVIOR 0
-
-    LPCSTR pVer;
-    IfFailThrow(pScope->GetVersionString(&pVer));
-    
-    // Does this look like a version?
-    if (pVer != NULL)
-    {
-        // Is it 'vN.' where N is a digit?
-        if ((pVer[0] == 'v' || pVer[0] == 'V') &&
-            IS_DIGIT(pVer[1]) &&
-            (pVer[2] == '.') )
-        {
-            // Looks like a version.  Is it lesser than v2.0 major version where we start using new behavior?
-            fIsLegacy = DIGIT_TO_INT(pVer[1]) < METAMODEL_MAJOR_VER_WITH_NEW_BEHAVIOR;
-        }
-    }
-
-    if (!fIsLegacy && g_pConfig != NULL)
-    {
-        fIsLegacy = g_pConfig->LegacyApartmentInitPolicy();
-    }
-
 
     Thread* pThread = GetThread();
     _ASSERTE(pThread);
@@ -3175,204 +2222,14 @@ void SystemDomain::SetThreadAptState (IMDInternalImport* pScope, Thread::Apartme
         Thread::ApartmentState pState = pThread->SetApartment(Thread::AS_InSTA, TRUE);
         _ASSERTE(pState == Thread::AS_InSTA);
     }
-    else if ((state == Thread::AS_InMTA) || (!fIsLegacy))
+    else
     {
-        // If either MTAThreadAttribute is specified or (if no attribute is specified and we are not
-        // running in legacy mode), then
-        // we will set the apartment state to MTA. The reason for this is to ensure the apartment
-        // state is consistent and reliably set. Without this, the apartment state for the main
-        // thread would be undefined and would actually be dependent on if the assembly was
-        // ngen'd, which other type were loaded, etc.
+        // If an apartment state was not explicitly requested, default to MTA
         Thread::ApartmentState pState = pThread->SetApartment(Thread::AS_InMTA, TRUE);
         _ASSERTE(pState == Thread::AS_InMTA);
     }
-
-#ifdef _DEBUG
-    g_fMainThreadApartmentStateSet++;
-#endif
 }
 #endif // defined(FEATURE_COMINTEROP_APARTMENT_SUPPORT) && !defined(CROSSGEN_COMPILE)
-
-// Looks in all the modules for the DefaultDomain attribute
-// The order is assembly and then the modules. It is first
-// come, first serve.
-BOOL SystemDomain::SetGlobalSharePolicyUsingAttribute(IMDInternalImport* pScope, mdMethodDef mdMethod)
-{
-    STANDARD_VM_CONTRACT;
-
-
-    return FALSE;
-}
-
-void SystemDomain::SetupDefaultDomain()
-{
-    CONTRACT_VOID
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_ANY;
-        INJECT_FAULT(COMPlusThrowOM(););
-    }
-    CONTRACT_END;
-
-
-    Thread *pThread = GetThread();
-    _ASSERTE(pThread);
-
-    AppDomain *pDomain;
-    pDomain = pThread->GetDomain();
-    _ASSERTE(pDomain);
-
-    GCX_COOP();
-
-    ENTER_DOMAIN_PTR(SystemDomain::System()->DefaultDomain(),ADV_DEFAULTAD)
-    {
-        // Push this frame around loading the main assembly to ensure the
-        // debugger can properly recgonize any managed code that gets run
-        // as "class initializaion" code.
-        FrameWithCookie<DebuggerClassInitMarkFrame> __dcimf;
-
-        {
-            GCX_PREEMP();
-            InitializeDefaultDomain(TRUE);
-        }
-
-        __dcimf.Pop();
-    }
-    END_DOMAIN_TRANSITION;
-
-    RETURN;
-}
-
-HRESULT SystemDomain::SetupDefaultDomainNoThrow()
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        MODE_ANY;
-    }
-    CONTRACTL_END;
-
-    HRESULT hr = S_OK;
-
-    EX_TRY
-    {
-        SystemDomain::SetupDefaultDomain();
-    }
-    EX_CATCH_HRESULT(hr);
-
-    return hr;
-}
-
-#ifdef _DEBUG
-int g_fInitializingInitialAD = 0;
-#endif
-
-// This routine completes the initialization of the default domaine.
-// After this call mananged code can be executed.
-void SystemDomain::InitializeDefaultDomain(
-    BOOL allowRedirects,
-    ICLRPrivBinder * pBinder)
-{
-    STANDARD_VM_CONTRACT;
-
-    WCHAR* pwsConfig = NULL;
-    WCHAR* pwsPath = NULL;
-
-    ETWOnStartup (InitDefaultDomain_V1, InitDefaultDomainEnd_V1);
-
-
-    // Setup the default AppDomain.
-
-#ifdef _DEBUG
-    g_fInitializingInitialAD++;
-#endif
-
-    AppDomain* pDefaultDomain = SystemDomain::System()->DefaultDomain();
-
-    if (pBinder != nullptr)
-    {
-        pDefaultDomain->SetLoadContextHostBinder(pBinder);
-    }
-
-    {
-        GCX_COOP();
-
-#ifndef CROSSGEN_COMPILE
-        if (!NingenEnabled())
-        {
-        }
-#endif // CROSSGEN_COMPILE
-
-        pDefaultDomain->InitializeDomainContext(allowRedirects, pwsPath, pwsConfig);
-
-#ifndef CROSSGEN_COMPILE
-        if (!NingenEnabled())
-        {
-    
-            if (!IsSingleAppDomain())
-            {
-                pDefaultDomain->InitializeDefaultDomainManager();
-                pDefaultDomain->InitializeDefaultDomainSecurity();
-            }
-        }
-#endif // CROSSGEN_COMPILE
-    }
-
-    // DefaultDomain Load event
-    ETW::LoaderLog::DomainLoad(pDefaultDomain);
-
-#ifdef _DEBUG
-    g_fInitializingInitialAD--;
-#endif
-
-    TESTHOOKCALL(RuntimeStarted(RTS_DEFAULTADREADY));
-}
-
-
-
-#ifndef CROSSGEN_COMPILE
-
-#ifdef _DEBUG
-Volatile<LONG> g_fInExecuteMainMethod = 0;
-#endif
-
-
-
-
-#endif // CROSSGEN_COMPILE
-
-
-
-// Helper function to load an assembly. This is called from LoadCOMClass.
-/* static */
-
-Assembly *AppDomain::LoadAssemblyHelper(LPCWSTR wszAssembly,
-                                        LPCWSTR wszCodeBase)
-{
-    CONTRACT(Assembly *)
-    {
-        THROWS;
-        POSTCONDITION(CheckPointer(RETVAL));
-        PRECONDITION(wszAssembly || wszCodeBase);
-        INJECT_FAULT(COMPlusThrowOM(););
-    }
-    CONTRACT_END;
-
-    AssemblySpec spec;
-    if(wszAssembly) {
-        #define MAKE_TRANSLATIONFAILED  { ThrowOutOfMemory(); }
-        MAKE_UTF8PTR_FROMWIDE(szAssembly,wszAssembly);
-        #undef  MAKE_TRANSLATIONFAILED
-       
-        IfFailThrow(spec.Init(szAssembly));
-    }
-
-    if (wszCodeBase) {
-        spec.SetCodeBase(wszCodeBase);
-    }
-    RETURN spec.LoadAssembly(FILE_LOADED);
-}
 
 #if defined(FEATURE_CLASSIC_COMINTEROP) && !defined(CROSSGEN_COMPILE)
 
@@ -3381,6 +2238,7 @@ MethodTable *AppDomain::LoadCOMClass(GUID clsid,
                                      BOOL* pfAssemblyInReg/*=NULL*/)
 {
     // @CORESYSTODO: what to do here?
+    // If implemented, this should handle checking that the type actually has the requested CLSID
     return NULL;
 }
 
@@ -3429,18 +2287,10 @@ bool SystemDomain::IsReflectionInvocationMethod(MethodDesc* pMeth)
         CLASS__ASSEMBLY,
         CLASS__TYPE_DELEGATOR,
         CLASS__RUNTIME_HELPERS,
-        CLASS__LAZY_INITIALIZER,
         CLASS__DYNAMICMETHOD,
         CLASS__DELEGATE,
         CLASS__MULTICAST_DELEGATE
     };
-
-    static const BinderClassID genericReflectionInvocationTypes[] = {
-        CLASS__LAZY_HELPERS,
-        CLASS__LAZY
-    };
-
-    static mdTypeDef genericReflectionInvocationTypeDefs[NumItems(genericReflectionInvocationTypes)];
 
     static bool fInited = false;
 
@@ -3452,46 +2302,15 @@ bool SystemDomain::IsReflectionInvocationMethod(MethodDesc* pMeth)
             MscorlibBinder::GetClass(reflectionInvocationTypes[i]);
         }
 
-        // Make sure all types are loaded so that we can use faster GetExistingClass()
-        for (unsigned i = 0; i < NumItems(genericReflectionInvocationTypes); i++)
-        {
-            genericReflectionInvocationTypeDefs[i] = MscorlibBinder::GetClass(genericReflectionInvocationTypes[i])->GetCl();
-        }
-
-        MscorlibBinder::GetClass(CLASS__APP_DOMAIN);
-
         VolatileStore(&fInited, true);
     }
 
-    if (pCaller->HasInstantiation())
-    {
-        // For generic types, pCaller will be an instantiated type and never equal to the type definition.
-        // So we compare their TypeDef tokens instead.
-        for (unsigned i = 0; i < NumItems(genericReflectionInvocationTypeDefs); i++)
-        {
-            if (pCaller->GetCl() == genericReflectionInvocationTypeDefs[i])
-                return true;
-        }
-    }
-    else
+    if (!pCaller->HasInstantiation())
     {
         for (unsigned i = 0; i < NumItems(reflectionInvocationTypes); i++)
         {
             if (MscorlibBinder::GetExistingClass(reflectionInvocationTypes[i]) == pCaller)
                 return true;
-        }
-
-        // AppDomain is an example of a type that is both used in the implementation of
-        // reflection, and also a type that contains methods that are clients of reflection
-        // (i.e., they instigate their own CreateInstance). Skip all AppDomain frames that
-        // are NOT known clients of reflection. NOTE: The ever-increasing complexity of this
-        // exclusion list is a sign that we need a better way--this is error-prone and
-        // unmaintainable as more changes are made to BCL types.
-        if ((pCaller == MscorlibBinder::GetExistingClass(CLASS__APP_DOMAIN))
-            && (pMeth != MscorlibBinder::GetMethod(METHOD__APP_DOMAIN__CREATE_APP_DOMAIN_MANAGER)) // This uses reflection to create an AppDomainManager
-            )
-        {
-            return true;
         }
     }
 
@@ -3613,32 +2432,6 @@ Assembly* SystemDomain::GetCallersAssembly(StackCrawlMark *stackMark,
     return NULL;
 }
 
-/*static*/
-Module* SystemDomain::GetCallersModule(int skip)
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_ANY;
-        INJECT_FAULT(COMPlusThrowOM(););
-    }
-    CONTRACTL_END;
-
-    GCX_COOP();
-
-    CallersData cdata;
-    ZeroMemory(&cdata, sizeof(CallersData));
-    cdata.skip = skip;
-
-    StackWalkFunctions(GetThread(), CallersMethodCallback, &cdata);
-
-    if(cdata.pMethod)
-        return cdata.pMethod->GetModule();
-    else
-        return NULL;
-}
-
 /*private static*/
 StackWalkAction SystemDomain::CallersMethodCallbackWithStackMark(CrawlFrame* pCf, VOID* data)
 {
@@ -3647,7 +2440,6 @@ StackWalkAction SystemDomain::CallersMethodCallbackWithStackMark(CrawlFrame* pCf
         THROWS;
         GC_TRIGGERS;
         MODE_COOPERATIVE;
-        SO_INTOLERANT;
         INJECT_FAULT(COMPlusThrowOM(););
     }
     CONTRACTL_END;
@@ -3789,15 +2581,10 @@ StackWalkAction SystemDomain::CallersMethodCallbackWithStackMark(CrawlFrame* pCf
 StackWalkAction SystemDomain::CallersMethodCallback(CrawlFrame* pCf, VOID* data)
 {
     LIMITED_METHOD_CONTRACT;
-    STATIC_CONTRACT_SO_TOLERANT;
     MethodDesc *pFunc = pCf->GetFunction();
 
     /* We asked to be called back only for functions */
     _ASSERTE(pFunc);
-
-    // Ignore intercepted frames
-    if(pFunc->IsInterceptedForDeclSecurity())
-        return SWA_CONTINUE;
 
     CallersData* pCaller = (CallersData*) data;
     if(pCaller->skip == 0) {
@@ -3817,7 +2604,7 @@ StackWalkAction SystemDomain::CallersMethodCallback(CrawlFrame* pCf, VOID* data)
 extern CompilationDomain * theDomain;
 #endif
 
-void SystemDomain::CreateDefaultDomain()
+void AppDomain::Create()
 {
     STANDARD_VM_CONTRACT;
 
@@ -3827,27 +2614,19 @@ void SystemDomain::CreateDefaultDomain()
     AppDomainRefHolder pDomain(new AppDomain());
 #endif
 
-    SystemDomain::LockHolder lh;
     pDomain->Init();
 
-    Security::SetDefaultAppDomainProperty(pDomain->GetSecurityDescriptor());
-
-    // need to make this assignment here since we'll be releasing
-    // the lock before calling AddDomain. So any other thread
-    // grabbing this lock after we release it will find that
-    // the COM Domain has already been created
-    m_pDefaultDomain = pDomain;
-    _ASSERTE (pDomain->GetId().m_dwId == DefaultADID);
-
     // allocate a Virtual Call Stub Manager for the default domain
-    m_pDefaultDomain->InitVSD();
+    pDomain->InitVSD();
 
     pDomain->SetStage(AppDomain::STAGE_OPEN);
     pDomain.SuppressRelease();
 
+    m_pTheAppDomain = pDomain;
+
     LOG((LF_CLASSLOADER | LF_CORDB,
          LL_INFO10,
-         "Created default domain at %p\n", m_pDefaultDomain));
+         "Created the app domain at %p\n", m_pTheAppDomain));
 }
 
 #ifdef DEBUGGING_SUPPORTED
@@ -3893,7 +2672,6 @@ void SystemDomain::AddDomain(AppDomain* pDomain)
             pDomain->m_Stage == AppDomain::STAGE_ACTIVE)
         {
             pDomain->SetStage(AppDomain::STAGE_OPEN);
-            IncrementNumAppDomains(); // Maintain a count of app domains added to the list.
         }
     }
 
@@ -3966,20 +2744,6 @@ void SystemDomain::NotifyProfilerStartup()
         g_profControlBlock.pProfInterface->AppDomainCreationFinished((AppDomainID) System()->DefaultDomain(), S_OK);
         END_PIN_PROFILER();
     }
-
-    {
-        BEGIN_PIN_PROFILER(CORProfilerTrackAppDomainLoads());
-        _ASSERTE(SharedDomain::GetDomain());
-        g_profControlBlock.pProfInterface->AppDomainCreationStarted((AppDomainID) SharedDomain::GetDomain());
-        END_PIN_PROFILER();
-    }
-
-    {
-        BEGIN_PIN_PROFILER(CORProfilerTrackAppDomainLoads());
-        _ASSERTE(SharedDomain::GetDomain());
-        g_profControlBlock.pProfInterface->AppDomainCreationFinished((AppDomainID) SharedDomain::GetDomain(), S_OK);
-        END_PIN_PROFILER();
-    }
 }
 
 HRESULT SystemDomain::NotifyProfilerShutdown()
@@ -4023,14 +2787,6 @@ HRESULT SystemDomain::NotifyProfilerShutdown()
 }
 #endif // PROFILING_SUPPORTED
 
-
-#ifdef _DEBUG
-struct AppDomain::ThreadTrackInfo {
-    Thread *pThread;
-    CDynArray<Frame *> frameStack;
-};
-#endif // _DEBUG
-
 AppDomain::AppDomain()
 {
     // initialize fields so the appdomain can be safely destructed
@@ -4045,56 +2801,21 @@ AppDomain::AppDomain()
     CONTRACTL_END;
 
     m_cRef=1;
-    m_pNextInDelayedUnloadList = NULL;
-    m_pSecContext = NULL;
-    m_fRudeUnload = FALSE;
-    m_pUnloadRequestThread = NULL;
-    m_ADUnloadSink=NULL;
-
-
-    // Initialize Shared state. Assemblies are loaded
-    // into each domain by default.
-#ifdef FEATURE_LOADER_OPTIMIZATION    
-    m_SharePolicy = SHARE_POLICY_UNSPECIFIED;
-#endif
 
     m_pRootAssembly = NULL;
 
-    m_pwDynamicDir = NULL;
-
     m_dwFlags = 0;
-    m_pSecDesc = NULL;
-    m_pDefaultContext = NULL;
 #ifdef FEATURE_COMINTEROP
-    m_pComCallWrapperCache = NULL;
     m_pRCWCache = NULL;
     m_pRCWRefCache = NULL;
-    m_pLicenseInteropHelperMT = NULL;
-    m_COMorRemotingFlag = COMorRemoting_NotInitialized;
     memset(m_rpCLRTypes, 0, sizeof(m_rpCLRTypes));
 #endif // FEATURE_COMINTEROP
 
-    m_pUMEntryThunkCache = NULL;
+    m_handleStore = NULL;
 
-    m_pAsyncPool = NULL;
-    m_hHandleTableBucket = NULL;
-
-    m_ExposedObject = NULL;
-    m_pComIPForExposedObject = NULL;
-
- #ifdef _DEBUG
-    m_pThreadTrackInfoList = NULL;
-    m_TrackSpinLock = 0;
+#ifdef _DEBUG
     m_Assemblies.Debug_SetAppDomain(this);
 #endif // _DEBUG
-
-    m_dwThreadEnterCount = 0;
-    m_dwThreadsStillInAppDomain = (ULONG)-1;
-
-    m_pSecDesc = NULL;
-    m_hHandleTableBucket=NULL;
-
-    m_ExposedObject = NULL;
 
 #ifdef FEATURE_COMINTEROP
     m_pRefDispIDCache = NULL;
@@ -4102,25 +2823,15 @@ AppDomain::AppDomain()
 #endif
 
     m_pRefClassFactHash = NULL;
-    m_anonymouslyHostedDynamicMethodsAssembly = NULL;
 
-    m_ReversePInvokeCanEnter=TRUE;
     m_ForceTrivialWaitOperations = false;
     m_Stage=STAGE_CREATING;
 
-    m_bForceGCOnUnload=FALSE;
-    m_bUnloadingFromUnloadEvent=FALSE;
 #ifdef _DEBUG
     m_dwIterHolders=0;
     m_dwRefTakers=0;
     m_dwCreationHolders=0;
 #endif
-    
-#ifdef FEATURE_APPDOMAIN_RESOURCE_MONITORING
-    m_ullTotalProcessorUsage = 0;
-    m_pullAllocBytes = NULL;
-    m_pullSurvivedBytes = NULL;
-#endif //FEATURE_APPDOMAIN_RESOURCE_MONITORING
 
 #ifdef FEATURE_TYPEEQUIVALENCE
     m_pTypeEquivalenceTable = NULL;
@@ -4133,14 +2844,9 @@ AppDomain::AppDomain()
     m_pWinRTFactoryCache = NULL;
 #endif // FEATURE_COMINTEROP
 
-    m_fAppDomainManagerSetInConfig = FALSE;
-    m_dwAppDomainManagerInitializeDomainFlags = eInitializeNewDomainFlags_None;
-
 #ifdef FEATURE_PREJIT
     m_pDomainFileWithNativeImageList = NULL;
 #endif
-
-    m_fIsBindingModelLocked.Store(FALSE);
 
 } // AppDomain::AppDomain
 
@@ -4163,22 +2869,7 @@ AppDomain::~AppDomain()
     if (GetTPIndex().m_dwIndex != 0)
         PerAppDomainTPCountList::ResetAppDomainIndex(GetTPIndex());
 
-    if (m_dwId.m_dwId!=0)
-        SystemDomain::ReleaseAppDomainId(m_dwId);
-
     m_AssemblyCache.Clear();
-
-    if (m_ADUnloadSink)
-        m_ADUnloadSink->Release();
-
-    if (m_pSecContext)
-        delete m_pSecContext;
-
-    if(!g_fEEInit)
-        Terminate();
-
-
-
 
 #ifdef FEATURE_COMINTEROP
     if (m_pNameToTypeMap != nullptr)
@@ -4193,47 +2884,17 @@ AppDomain::~AppDomain()
     }
 #endif //FEATURE_COMINTEROP
     
-#ifdef _DEBUG
-    // If we were tracking thread AD transitions, cleanup the list on shutdown
-    if (m_pThreadTrackInfoList)
-    {
-        while (m_pThreadTrackInfoList->Count() > 0)
-        {
-            // Get the very last element
-            ThreadTrackInfo *pElem = *(m_pThreadTrackInfoList->Get(m_pThreadTrackInfoList->Count() - 1));
-            _ASSERTE(pElem);
-
-            // Free the memory
-            delete pElem;
-
-            // Remove pointer entry from the list
-            m_pThreadTrackInfoList->Delete(m_pThreadTrackInfoList->Count() - 1);
-        }
-
-        // Now delete the list itself
-        delete m_pThreadTrackInfoList;
-        m_pThreadTrackInfoList = NULL;
-    }
-#endif // _DEBUG
-
 #endif // CROSSGEN_COMPILE
 }
 
 //*****************************************************************************
 //*****************************************************************************
 //*****************************************************************************
-#ifdef _DEBUG
-#include "handletablepriv.h"
-#endif
-
-
-
 void AppDomain::Init()
 {
     CONTRACTL
     {
         STANDARD_VM_CHECK;
-        PRECONDITION(SystemDomain::IsUnderDomainLock());
     }
     CONTRACTL_END;
 
@@ -4252,31 +2913,14 @@ void AppDomain::Init()
                     INDEBUG(| CRST_DEBUG_ONLY_CHECK_FORBID_SUSPEND_THREAD)));
     m_crstHostAssemblyMapAdd.Init(CrstHostAssemblyMapAdd);
 
-    m_dwId = SystemDomain::GetNewAppDomainId(this);
-
-    m_LoaderAllocator.Init(this);
-
 #ifndef CROSSGEN_COMPILE
-    //Allocate the threadpool entry before the appdomin id list. Otherwise,
+    //Allocate the threadpool entry before the appdomain id list. Otherwise,
     //the thread pool list will be out of sync if insertion of id in 
     //the appdomain fails. 
     m_tpIndex = PerAppDomainTPCountList::AddNewTPIndex();    
 #endif // CROSSGEN_COMPILE
 
-    m_dwIndex = SystemDomain::GetNewAppDomainIndex(this);
-
-#ifndef CROSSGEN_COMPILE
-    PerAppDomainTPCountList::SetAppDomainId(m_tpIndex, m_dwId);
-
-    m_ADUnloadSink=new ADUnloadSink();
-#endif
-
     BaseDomain::Init();
-
-    // Set up the IL stub cache
-    m_ILStubCache.Init(GetLoaderAllocator()->GetHighFrequencyHeap());
-
-    m_pSecContext = new SecurityContext (GetLowFrequencyHeap());
 
 // Set up the binding caches
     m_AssemblyCache.Init(&m_DomainCacheCrst, GetHighFrequencyHeap());
@@ -4284,46 +2928,15 @@ void AppDomain::Init()
 
     m_MemoryPressure = 0;
 
-    m_sDomainLocalBlock.Init(this);
-
 #ifndef CROSSGEN_COMPILE
 
-#ifdef FEATURE_APPDOMAIN_RESOURCE_MONITORING
-    // NOTE: it's important that we initialize ARM data structures before calling
-    // Ref_CreateHandleTableBucket, this is because AD::Init() can race with GC
-    // and once we add ourselves to the handle table map the GC can start walking
-    // our handles and calling AD::RecordSurvivedBytes() which touches ARM data.
-    if (GCHeapUtilities::IsServerHeap())
-        m_dwNumHeaps = CPUGroupInfo::CanEnableGCCPUGroups() ?
-                           CPUGroupInfo::GetNumActiveProcessors() :
-                           GetCurrentProcessCpuCount();
-    else
-        m_dwNumHeaps = 1;
-    m_pullAllocBytes = new ULONGLONG [m_dwNumHeaps * ARM_CACHE_LINE_SIZE_ULL];
-    m_pullSurvivedBytes = new ULONGLONG [m_dwNumHeaps * ARM_CACHE_LINE_SIZE_ULL];
-    for (DWORD i = 0; i < m_dwNumHeaps; i++)
-    {
-        m_pullAllocBytes[i * ARM_CACHE_LINE_SIZE_ULL] = 0;
-        m_pullSurvivedBytes[i * ARM_CACHE_LINE_SIZE_ULL] = 0;
-    }
-    m_ullLastEtwAllocBytes = 0;
-#endif //FEATURE_APPDOMAIN_RESOURCE_MONITORING
+    // Default domain reuses the handletablemap that was created during EEStartup
+    m_handleStore = GCHandleUtilities::GetGCHandleManager()->GetGlobalHandleStore();
 
-    // Default domain reuses the handletablemap that was created during EEStartup since
-    // default domain cannot be unloaded.
-    if (GetId().m_dwId == DefaultADID)
+    if (!m_handleStore)
     {
-        m_hHandleTableBucket = g_HandleTableMap.pBuckets[0];
+        COMPlusThrowOM();
     }
-    else
-    {
-        m_hHandleTableBucket = Ref_CreateHandleTableBucket(m_dwIndex);
-    }
-
-#ifdef _DEBUG
-    if (((HandleTable *)(m_hHandleTableBucket->pTable[0]))->uADIndex != m_dwIndex)
-        _ASSERTE (!"AD index mismatch");
-#endif // _DEBUG
 
 #endif // CROSSGEN_COMPILE
 
@@ -4339,24 +2952,13 @@ void AppDomain::Init()
         m_clsidHash.Init(0,&CompareCLSID,true, &lock); // init hash table
     }
 
-    CreateSecurityDescriptor();
     SetStage(STAGE_READYFORMANAGEDCODE);
 
 #ifndef CROSSGEN_COMPILE
-    m_pDefaultContext = new Context(this);
 
-    m_ExposedObject = CreateHandle(NULL);
-
-    // Create the Application Security Descriptor
-
-    COUNTER_ONLY(GetPerfCounters().m_Loading.cAppDomains++);
-
-#ifdef FEATURE_COMINTEROP
-    if (!AppX::IsAppXProcess())
-    {
-    }
-#endif //FEATURE_COMINTEROP
-
+#ifdef FEATURE_TIERED_COMPILATION
+    m_tieredCompilationManager.Init();
+#endif
 #endif // CROSSGEN_COMPILE
 } // AppDomain::Init
 
@@ -4369,92 +2971,12 @@ BOOL AppDomain::IsCompilationDomain()
 
     BOOL isCompilationDomain = (m_dwFlags & COMPILATION_DOMAIN) != 0;
 #ifdef FEATURE_PREJIT
-    _ASSERTE(!isCompilationDomain ||
-             (IsCompilationProcess() && IsPassiveDomain()));
+    _ASSERTE(!isCompilationDomain || IsCompilationProcess());
 #endif // FEATURE_PREJIT
     return isCompilationDomain;
 }
 
 #ifndef CROSSGEN_COMPILE
-
-extern int g_fADUnloadWorkerOK;
-
-// Notes:
-//   This helper will send the AppDomain creation notifications for profiler / debugger.
-//   If it throws, its backout code will also send a notification.
-//   If it succeeds, then we still need to send a AppDomainCreateFinished notification.
-void AppDomain::CreateUnmanagedObject(AppDomainCreationHolder<AppDomain>& pDomain)
-{
-    CONTRACTL
-    {
-        THROWS;
-        MODE_COOPERATIVE;
-        GC_TRIGGERS;
-        INJECT_FAULT(COMPlusThrowOM(););
-    }
-    CONTRACTL_END;
-
-    GCX_PREEMP();
-
-    pDomain.Assign(new AppDomain());
-    if (g_fADUnloadWorkerOK<0)
-    {
-        AppDomain::CreateADUnloadWorker();
-    }
-
-    //@todo: B#25921
-    // We addref Appdomain object here and notify a profiler that appdomain 
-    // creation has started, then return to managed code which will  call 
-    // the function that releases the appdomain and notifies a profiler that we finished
-    // creating the appdomain. If an exception is raised while we're in that managed code
-    // we will leak memory and the profiler will not be notified about the failure
-
-#ifdef PROFILING_SUPPORTED
-    // Signal profile if present.
-    {
-        BEGIN_PIN_PROFILER(CORProfilerTrackAppDomainLoads());
-        g_profControlBlock.pProfInterface->AppDomainCreationStarted((AppDomainID) (AppDomain*) pDomain);
-        END_PIN_PROFILER();
-    }
-    EX_TRY
-#endif // PROFILING_SUPPORTED
-    {
-        {
-            SystemDomain::LockHolder lh;
-            pDomain->Init(); 
-            // allocate a Virtual Call Stub Manager for this domain
-            pDomain->InitVSD();
-        }
-
-        pDomain->SetCanUnload();    // by default can unload any domain
-        
-        #ifdef DEBUGGING_SUPPORTED    
-        // Notify the debugger here, before the thread transitions into the 
-        // AD to finish the setup, and before any assemblies are loaded into it.
-        SystemDomain::PublishAppDomainAndInformDebugger(pDomain);
-        #endif // DEBUGGING_SUPPORTED
-
-        STRESS_LOG2 (LF_APPDOMAIN, LL_INFO100, "Create domain [%d] %p\n", pDomain->GetId().m_dwId, (AppDomain*)pDomain);
-        pDomain->LoadSystemAssemblies();
-        pDomain->SetupSharedStatics();
-
-        pDomain->SetStage(AppDomain::STAGE_ACTIVE);    
-    }        
-#ifdef PROFILING_SUPPORTED
-    EX_HOOK
-    {
-        // Need the first assembly loaded in to get any data on an app domain.
-        {
-            BEGIN_PIN_PROFILER(CORProfilerTrackAppDomainLoads());
-            g_profControlBlock.pProfInterface->AppDomainCreationFinished((AppDomainID)(AppDomain*) pDomain, GET_EXCEPTION()->GetHR());
-            END_PIN_PROFILER();
-        }
-    }
-    EX_END_HOOK;
-
-    // On success, caller must still send the AppDomainCreationFinished notification.
-#endif // PROFILING_SUPPORTED
-}
 
 void AppDomain::Stop()
 {
@@ -4476,17 +2998,7 @@ void AppDomain::Stop()
 #ifdef DEBUGGING_SUPPORTED
     if (IsDebuggerAttached())
         NotifyDebuggerUnload();
-#endif // DEBUGGING_SUPPORTED
 
-    m_pRootAssembly = NULL; // This assembly is in the assembly list;
-
-    if (m_pSecDesc != NULL)
-    {
-        delete m_pSecDesc;
-        m_pSecDesc = NULL;
-    }
-
-#ifdef DEBUGGING_SUPPORTED
     if (NULL != g_pDebugInterface)
     {
         // Call the publisher API to delete this appdomain entry from the list
@@ -4496,353 +3008,9 @@ void AppDomain::Stop()
 #endif // DEBUGGING_SUPPORTED
 }
 
-void AppDomain::Terminate()
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_TRIGGERS;
-        MODE_ANY;
-    }
-    CONTRACTL_END;
-
-    GCX_PREEMP();
-
-
-    _ASSERTE(m_dwThreadEnterCount == 0 || IsDefaultDomain());
-
-    if (m_pComIPForExposedObject)
-    {
-        m_pComIPForExposedObject->Release();
-        m_pComIPForExposedObject = NULL;
-    }
-
-    delete m_pDefaultContext;
-    m_pDefaultContext = NULL;
-
-    if (m_pUMEntryThunkCache)
-    {
-        delete m_pUMEntryThunkCache;
-        m_pUMEntryThunkCache = NULL;
-    }
-
-#ifdef FEATURE_COMINTEROP
-    if (m_pRCWCache)
-    {
-        delete m_pRCWCache;
-        m_pRCWCache = NULL;
-    }
-
-    if (m_pRCWRefCache)
-    {
-        delete m_pRCWRefCache;
-        m_pRCWRefCache = NULL;
-    }
-    
-    if (m_pComCallWrapperCache)
-    {
-        m_pComCallWrapperCache->Neuter();
-        m_pComCallWrapperCache->Release();
-    }
-
-    // if the above released the wrapper cache, then it will call back and reset our
-    // m_pComCallWrapperCache to null. If not null, then need to set it's domain pointer to
-    // null.
-    if (! m_pComCallWrapperCache)
-    {
-        LOG((LF_APPDOMAIN, LL_INFO10, "AppDomain::Terminate ComCallWrapperCache released\n"));
-    }
-#ifdef _DEBUG
-    else
-    {
-        m_pComCallWrapperCache = NULL;
-        LOG((LF_APPDOMAIN, LL_INFO10, "AppDomain::Terminate ComCallWrapperCache not released\n"));
-    }
-#endif // _DEBUG
-
-#endif // FEATURE_COMINTEROP
-
-
-    if (!IsAtProcessExit())
-    {
-        // if we're not shutting down everything then clean up the string literals associated
-        // with this appdomain -- note that is no longer needs to happen while suspended
-        // because the appropriate locks are taken in the GlobalStringLiteralMap
-        // this is important as this locks have a higher lock number than does the
-        // thread-store lock which is taken when we suspend.
-        GetLoaderAllocator()->CleanupStringLiteralMap();
-
-        // Suspend the EE to do some clean up that can only occur
-        // while no threads are running.
-        GCX_COOP (); // SuspendEE may require current thread to be in Coop mode
-        ThreadSuspend::SuspendEE(ThreadSuspend::SUSPEND_FOR_APPDOMAIN_SHUTDOWN);
-    }
-
-    // Note that this must be performed before restarting the EE. It will clean
-    // the cache and prevent others from using stale cache entries.
-    //@TODO: Would be nice to get this back to BaseDomain, but need larger fix for that.
-    // NOTE: Must have the runtime suspended to unlink managers
-    // NOTE: May be NULL due to OOM during initialization. Can skip in that case.
-    GetLoaderAllocator()->UninitVirtualCallStubManager();
-    MethodTable::ClearMethodDataCache();
-    ClearJitGenericHandleCache(this);
-
-    // @TODO s_TPMethodTableCrst prevents us from from keeping the whole
-    // assembly shutdown logic here. See if we can do better in the next milestone
-#ifdef  FEATURE_PREJIT
-    DeleteNativeCodeRanges();
-#endif
-
-    if (!IsAtProcessExit())
-    {
-        // Resume the EE.
-        ThreadSuspend::RestartEE(FALSE, TRUE);
-    }
-
-    ShutdownAssemblies();
-    ShutdownNativeDllSearchDirectories();
-
-    if (m_pRefClassFactHash)
-    {
-        m_pRefClassFactHash->Destroy();
-        // storage for m_pRefClassFactHash itself is allocated on the loader heap
-    }
-
-#ifdef FEATURE_TYPEEQUIVALENCE
-    m_TypeEquivalenceCrst.Destroy();
-#endif
-
-    m_ReflectionCrst.Destroy();
-    m_RefClassFactCrst.Destroy();
-
-    m_LoaderAllocator.Terminate();
-
-    BaseDomain::Terminate();
-
-#ifdef _DEBUG
-    if (m_hHandleTableBucket &&
-        m_hHandleTableBucket->pTable &&
-        ((HandleTable *)(m_hHandleTableBucket->pTable[0]))->uADIndex != m_dwIndex)
-        _ASSERTE (!"AD index mismatch");
-#endif // _DEBUG
-
-    if (m_hHandleTableBucket) {
-        Ref_DestroyHandleTableBucket(m_hHandleTableBucket);
-        m_hHandleTableBucket = NULL;
-    }
-
-#ifdef FEATURE_APPDOMAIN_RESOURCE_MONITORING
-    if (m_pullAllocBytes)
-    {
-        delete [] m_pullAllocBytes;
-    }
-    if (m_pullSurvivedBytes)
-    {
-        delete [] m_pullSurvivedBytes;
-    }
-#endif //FEATURE_APPDOMAIN_RESOURCE_MONITORING
-
-    if(m_dwIndex.m_dwIndex != 0)
-        SystemDomain::ReleaseAppDomainIndex(m_dwIndex);
-} // AppDomain::Terminate
-
-void AppDomain::CloseDomain()
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_TRIGGERS;
-        MODE_ANY;
-    }
-    CONTRACTL_END;
-
-
-    BOOL bADRemoved=FALSE;;
-
-    AddRef();  // Hold a reference
-    AppDomainRefHolder AdHolder(this);
-    {
-        SystemDomain::LockHolder lh;
-
-        SystemDomain::System()->DecrementNumAppDomains(); // Maintain a count of app domains added to the list.
-        bADRemoved = SystemDomain::System()->RemoveDomain(this);
-    }
-
-    if(bADRemoved)
-        Stop();
-}
-
-/*********************************************************************/
-
-struct GetExposedObject_Args
-{
-    AppDomain *pDomain;
-    OBJECTREF *ref;
-};
-
-static void GetExposedObject_Wrapper(LPVOID ptr)
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_COOPERATIVE;
-    }
-    CONTRACTL_END;
-    GetExposedObject_Args *args = (GetExposedObject_Args *) ptr;
-    *(args->ref) = args->pDomain->GetExposedObject();
-}
-
-
-OBJECTREF AppDomain::GetExposedObject()
-{
-    CONTRACTL
-    {
-        MODE_COOPERATIVE;
-        THROWS;
-        GC_TRIGGERS;
-        INJECT_FAULT(COMPlusThrowOM(););
-    }
-    CONTRACTL_END;
-
-    OBJECTREF ref = GetRawExposedObject();
-    if (ref == NULL)
-    {
-        APPDOMAINREF obj = NULL;
-
-        Thread *pThread = GetThread();
-        if (pThread->GetDomain() != this)
-        {
-            GCPROTECT_BEGIN(ref);
-            GetExposedObject_Args args = {this, &ref};
-            // call through DoCallBack with a domain transition
-            pThread->DoADCallBack(this,GetExposedObject_Wrapper, &args,ADV_CREATING|ADV_RUNNINGIN);
-            GCPROTECT_END();
-            return ref;
-        }
-        MethodTable *pMT = MscorlibBinder::GetClass(CLASS__APP_DOMAIN);
-
-        // Create the module object
-        obj = (APPDOMAINREF) AllocateObject(pMT);
-        obj->SetDomain(this);
-
-        if(StoreFirstObjectInHandle(m_ExposedObject, (OBJECTREF) obj) == FALSE) {
-            obj = (APPDOMAINREF) GetRawExposedObject();
-            _ASSERTE(obj);
-        }
-
-        return (OBJECTREF) obj;
-    }
-
-    return ref;
-}
-
-
-
-OBJECTREF AppDomain::DoSetup(OBJECTREF* setupInfo)
-{
-    CONTRACTL
-    {
-        MODE_COOPERATIVE;
-        THROWS;
-        GC_TRIGGERS;
-        INJECT_FAULT(COMPlusThrowOM(););
-    }
-    CONTRACTL_END;
-
-    ADID adid=GetAppDomain()->GetId();
-
-    OBJECTREF retval=NULL;
-    GCPROTECT_BEGIN(retval);    
-
-    ENTER_DOMAIN_PTR(this,ADV_CREATING);
-
-    MethodDescCallSite setup(METHOD__APP_DOMAIN__SETUP);
-
-    ARG_SLOT args[1];
-
-    args[0]=ObjToArgSlot(*setupInfo);
-
-    OBJECTREF activator;
-    activator=setup.Call_RetOBJECTREF(args);
-    _ASSERTE(activator==NULL);
-    
-#if defined(FEATURE_MULTICOREJIT)
-    // Disable AutoStartProfile in default domain from this code path.
-    // It's called from SystemDomain::ExecuteMainMethod for normal program, not needed for SL and Asp.Net
-    if (! IsDefaultDomain())
-    {
-        GCX_PREEMP();
-
-        GetMulticoreJitManager().AutoStartProfile(this);
-    }
-#endif
-
-    END_DOMAIN_TRANSITION;
-    GCPROTECT_END();
-    return retval;
-}
-
 #endif // !CROSSGEN_COMPILE
 
 #ifdef FEATURE_COMINTEROP
-#ifndef CROSSGEN_COMPILE
-HRESULT AppDomain::GetComIPForExposedObject(IUnknown **pComIP)
-{
-    // Assumption: This function is called for AppDomain's that the current
-    //             thread is in or has entered, or the AppDomain is kept alive.
-    //
-    // Assumption: This function can now throw.  The caller is responsible for any
-    //             BEGIN_EXTERNAL_ENTRYPOINT, EX_TRY, or other
-    //             techniques to convert to a COM HRESULT protocol.
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_ANY;
-    }
-    CONTRACTL_END;
-
-    HRESULT hr = S_OK;
-    Thread *pThread = GetThread();
-    if (m_pComIPForExposedObject)
-    {
-        GCX_PREEMP_THREAD_EXISTS(pThread);
-        m_pComIPForExposedObject->AddRef();
-        *pComIP = m_pComIPForExposedObject;
-        return S_OK;
-    }
-
-    IUnknown* punk = NULL;
-
-    OBJECTREF ref = NULL;
-    GCPROTECT_BEGIN(ref);
-
-    EnsureComStarted();
-
-    ENTER_DOMAIN_PTR(this,ADV_DEFAULTAD)
-    {
-        ref = GetExposedObject();
-        punk = GetComIPFromObjectRef(&ref);
-        if (FastInterlockCompareExchangePointer(&m_pComIPForExposedObject, punk, NULL) == NULL)
-        {
-            GCX_PREEMP_THREAD_EXISTS(pThread);
-            m_pComIPForExposedObject->AddRef();
-        }
-    }
-    END_DOMAIN_TRANSITION;
-
-    GCPROTECT_END();
-
-    if(SUCCEEDED(hr))
-    {
-        *pComIP = m_pComIPForExposedObject;
-    }
-
-    return hr;
-}
-#endif //#ifndef CROSSGEN_COMPILE
-
 MethodTable *AppDomain::GetRedirectedType(WinMDAdapter::RedirectedTypeIndex index)
 {
     CONTRACTL
@@ -4937,44 +3105,6 @@ MethodTable* AppDomain::LoadRedirectedType(WinMDAdapter::RedirectedTypeIndex ind
 
 #ifndef DACCESS_COMPILE
 
-void AppDomain::CreateSecurityDescriptor()
-{
-    STANDARD_VM_CONTRACT;
-
-    _ASSERTE(m_pSecDesc == NULL);
-
-    m_pSecDesc = Security::CreateApplicationSecurityDescriptor(this);
-}
-
-bool IsPlatformAssembly(LPCSTR szName, DomainAssembly *pDomainAssembly)
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_ANY;
-        PRECONDITION(CheckPointer(szName));
-        PRECONDITION(CheckPointer(pDomainAssembly));
-    }
-    CONTRACTL_END;
-
-    PEAssembly *pPEAssembly = pDomainAssembly->GetFile();
-
-    if (strcmp(szName, pPEAssembly->GetSimpleName()) != 0)
-    {
-        return false;
-    }
-    
-    DWORD cbPublicKey;
-    const BYTE *pbPublicKey = static_cast<const BYTE *>(pPEAssembly->GetPublicKey(&cbPublicKey));
-    if (pbPublicKey == nullptr)
-    {
-        return false;
-    }
-
-    return StrongNameIsSilverlightPlatformKey(pbPublicKey, cbPublicKey);
-}
-
 void AppDomain::AddAssembly(DomainAssembly * assem)
 {
     CONTRACTL
@@ -5005,7 +3135,7 @@ void AppDomain::AddAssembly(DomainAssembly * assem)
     }
 }
 
-void AppDomain::RemoveAssembly_Unlocked(DomainAssembly * pAsm)
+void AppDomain::RemoveAssembly(DomainAssembly * pAsm)
 {
     CONTRACTL
     {
@@ -5014,8 +3144,7 @@ void AppDomain::RemoveAssembly_Unlocked(DomainAssembly * pAsm)
     }
     CONTRACTL_END;
     
-    _ASSERTE(GetAssemblyListLock()->OwnedByCurrentThread());
-    
+    CrstHolder ch(GetAssemblyListLock());
     DWORD asmCount = m_Assemblies.GetCount_Unlocked();
     for (DWORD i = 0; i < asmCount; ++i)
     {
@@ -5033,8 +3162,7 @@ BOOL AppDomain::ContainsAssembly(Assembly * assem)
 {
     WRAPPER_NO_CONTRACT;
     AssemblyIterator i = IterateAssembliesEx((AssemblyIterationFlags)(
-        kIncludeLoaded | 
-        (assem->IsIntrospectionOnly() ? kIncludeIntrospection : kIncludeExecution)));
+        kIncludeLoaded | kIncludeExecution));
     CollectibleAssemblyHolder<DomainAssembly *> pDomainAssembly;
 
     while (i.Next(pDomainAssembly.This()))
@@ -5046,26 +3174,6 @@ BOOL AppDomain::ContainsAssembly(Assembly * assem)
 
     return FALSE;
 }
-
-BOOL AppDomain::HasSetSecurityPolicy()
-{
-    CONTRACT(BOOL)
-    {
-        THROWS;
-        GC_TRIGGERS;
-        INJECT_FAULT(COMPlusThrowOM(););
-    }
-    CONTRACT_END;
-
-    GCX_COOP();
-
-    if (NingenEnabled())
-    {
-        return FALSE;
-    }
-    RETURN ((APPDOMAINREF)GetExposedObject())->HasSetPolicy();
-}
-
 
 EEClassFactoryInfoHashTable* AppDomain::SetupClassFactHash()
 {
@@ -5154,7 +3262,7 @@ FileLoadLock::~FileLoadLock()
         MODE_ANY;
     }
     CONTRACTL_END;
-    ((PEFile *) m_pData)->Release();
+    ((PEFile *) m_data)->Release();
 }
 
 DomainFile *FileLoadLock::GetDomainFile()
@@ -5167,12 +3275,6 @@ FileLoadLevel FileLoadLock::GetLoadLevel()
 {
     LIMITED_METHOD_CONTRACT;
     return m_level;
-}
-
-ADID FileLoadLock::GetAppDomainId()
-{
-    LIMITED_METHOD_CONTRACT;
-    return m_AppDomainId;
 }
 
 // Acquire will return FALSE and not take the lock if the file
@@ -5226,10 +3328,9 @@ static const char *fileLoadLevelName[] =
     "LOADLIBRARY",                        // FILE_LOAD_LOADLIBRARY
     "POST_LOADLIBRARY",                   // FILE_LOAD_POST_LOADLIBRARY                
     "EAGER_FIXUPS",                       // FILE_LOAD_EAGER_FIXUPS
-    "VTABLE FIXUPS",                      // FILE_LOAD_VTABLE_FIXUPS
     "DELIVER_EVENTS",                     // FILE_LOAD_DELIVER_EVENTS
+    "VTABLE FIXUPS",                      // FILE_LOAD_VTABLE_FIXUPS
     "LOADED",                             // FILE_LOADED
-    "VERIFY_EXECUTION",                   // FILE_LOAD_VERIFY_EXECUTION
     "ACTIVE",                             // FILE_ACTIVE
 };
 #endif // !DACCESS_COMPILE && (LOGGING || STRESS_LOG)
@@ -5297,7 +3398,7 @@ BOOL FileLoadLock::CompleteLoadLevel(FileLoadLevel level, BOOL success)
             case FILE_LOAD_DELIVER_EVENTS:
             case FILE_LOADED:
             case FILE_ACTIVE: // The timing of stress logs is not critical, so even for the FILE_ACTIVE stage we need not do it while the m_pList lock is held.
-                STRESS_LOG4(LF_CLASSLOADER, LL_INFO100, "Completed Load Level %s for DomainFile %p in AD %i - success = %i\n", fileLoadLevelName[level], m_pDomainFile, m_AppDomainId.m_dwId, success);
+                STRESS_LOG3(LF_CLASSLOADER, LL_INFO100, "Completed Load Level %s for DomainFile %p - success = %i\n", fileLoadLevelName[level], m_pDomainFile, success);
                 break;
             default:
                 break;
@@ -5360,8 +3461,7 @@ FileLoadLock::FileLoadLock(PEFileListLock *pLock, PEFile *pFile, DomainFile *pDo
   : ListLockEntry(pLock, pFile, "File load lock"),
     m_level((FileLoadLevel) (FILE_LOAD_CREATE)),
     m_pDomainFile(pDomainFile),
-    m_cachedHR(S_OK),
-    m_AppDomainId(pDomainFile->GetAppDomain()->GetId())
+    m_cachedHR(S_OK)
 {
     WRAPPER_NO_CONTRACT;
     pFile->AddRef();
@@ -5542,12 +3642,9 @@ CHECK AppDomain::CheckCanExecuteManagedCode(MethodDesc* pMD)
     if (!pMD->IsInterface() || pMD->IsStatic()) //interfaces require no activation for instance methods
     {
         //cctor could have been interupted by ADU
-        CHECK_MSG(HasUnloadStarted() || pModule->CheckActivated(),
+        CHECK_MSG(pModule->CheckActivated(),
               "Managed code can only run when its module has been activated in the current app domain");
     }
-
-    CHECK_MSG(!IsPassiveDomain() || pModule->CanExecuteCode(),
-              "Executing managed code from an unsafe assembly in a Passive AppDomain");
 
     CHECK_OK;
 }
@@ -5616,8 +3713,7 @@ FileLoadLevel AppDomain::GetThreadFileLoadLevel()
 
 Assembly *AppDomain::LoadAssembly(AssemblySpec* pIdentity,
                                   PEAssembly *pFile,
-                                  FileLoadLevel targetLevel,
-                                  AssemblyLoadSecurity *pLoadSecurity /* = NULL */)
+                                  FileLoadLevel targetLevel)
 {
     CONTRACT(Assembly *)
     {
@@ -5630,7 +3726,7 @@ Assembly *AppDomain::LoadAssembly(AssemblySpec* pIdentity,
     }
     CONTRACT_END;
 
-    DomainAssembly *pAssembly = LoadDomainAssembly(pIdentity, pFile, targetLevel, pLoadSecurity);
+    DomainAssembly *pAssembly = LoadDomainAssembly(pIdentity, pFile, targetLevel);
     PREFIX_ASSUME(pAssembly != NULL);
 
     RETURN pAssembly->GetAssembly();
@@ -5644,45 +3740,42 @@ public:
     AppDomain *pThis;
     AssemblySpec* pSpec;
     PEAssembly *pFile;
-    AssemblyLoadSecurity *pLoadSecurity;
     FileLoadLevel targetLevel;
 
-    LoadDomainAssemblyStress(AppDomain *pThis, AssemblySpec* pSpec, PEAssembly *pFile, FileLoadLevel targetLevel, AssemblyLoadSecurity *pLoadSecurity)
-        : pThis(pThis), pSpec(pSpec), pFile(pFile), pLoadSecurity(pLoadSecurity), targetLevel(targetLevel) {LIMITED_METHOD_CONTRACT;}
+    LoadDomainAssemblyStress(AppDomain *pThis, AssemblySpec* pSpec, PEAssembly *pFile, FileLoadLevel targetLevel)
+        : pThis(pThis), pSpec(pSpec), pFile(pFile), targetLevel(targetLevel) {LIMITED_METHOD_CONTRACT;}
 
     void Invoke()
     {
         WRAPPER_NO_CONTRACT;
-        STATIC_CONTRACT_SO_INTOLERANT;
         SetupThread();
-        pThis->LoadDomainAssembly(pSpec, pFile, targetLevel, pLoadSecurity);
+        pThis->LoadDomainAssembly(pSpec, pFile, targetLevel);
     }
 };
 #endif // CROSSGEN_COMPILE
 
 extern BOOL AreSameBinderInstance(ICLRPrivBinder *pBinderA, ICLRPrivBinder *pBinderB);
 
-DomainAssembly* AppDomain::LoadDomainAssembly( AssemblySpec* pSpec,
-                                                PEAssembly *pFile, 
-                                                FileLoadLevel targetLevel,
-                                                AssemblyLoadSecurity *pLoadSecurity /* = NULL */)
+DomainAssembly* AppDomain::LoadDomainAssembly(AssemblySpec* pSpec,
+                                              PEAssembly *pFile, 
+                                              FileLoadLevel targetLevel)
 {
     STATIC_CONTRACT_THROWS;
 
     if (pSpec == nullptr)
     {
         // skip caching, since we don't have anything to base it on
-        return LoadDomainAssemblyInternal(pSpec, pFile, targetLevel, pLoadSecurity);
+        return LoadDomainAssemblyInternal(pSpec, pFile, targetLevel);
     }
 
     DomainAssembly* pRetVal = NULL;
     EX_TRY
     {
-        pRetVal = LoadDomainAssemblyInternal(pSpec, pFile, targetLevel, pLoadSecurity);
+        pRetVal = LoadDomainAssemblyInternal(pSpec, pFile, targetLevel);
     }
     EX_HOOK
     {
-        Exception* pEx=GET_EXCEPTION();
+        Exception* pEx = GET_EXCEPTION();
         if (!pEx->IsTransient())
         {
             // Setup the binder reference in AssemblySpec from the PEAssembly if one is not already set.
@@ -5724,8 +3817,7 @@ DomainAssembly* AppDomain::LoadDomainAssembly( AssemblySpec* pSpec,
 
 DomainAssembly *AppDomain::LoadDomainAssemblyInternal(AssemblySpec* pIdentity,
                                               PEAssembly *pFile,
-                                              FileLoadLevel targetLevel,
-                                              AssemblyLoadSecurity *pLoadSecurity /* = NULL */)
+                                              FileLoadLevel targetLevel)
 {
     CONTRACT(DomainAssembly *)
     {
@@ -5733,7 +3825,6 @@ DomainAssembly *AppDomain::LoadDomainAssemblyInternal(AssemblySpec* pIdentity,
         THROWS;
         MODE_ANY;
         PRECONDITION(CheckPointer(pFile));
-        PRECONDITION(CheckPointer(pLoadSecurity, NULL_OK));
         PRECONDITION(pFile->IsSystem() || ::GetAppDomain()==this);
         POSTCONDITION(CheckPointer(RETVAL));
         POSTCONDITION(RETVAL->GetLoadLevel() >= GetThreadFileLoadLevel()
@@ -5747,7 +3838,7 @@ DomainAssembly *AppDomain::LoadDomainAssemblyInternal(AssemblySpec* pIdentity,
     DomainAssembly * result;
 
 #ifndef CROSSGEN_COMPILE
-    LoadDomainAssemblyStress ts (this, pIdentity, pFile, targetLevel, pLoadSecurity);
+    LoadDomainAssemblyStress ts (this, pIdentity, pFile, targetLevel);
 #endif
 
     // Go into preemptive mode since this may take a while.
@@ -5758,11 +3849,26 @@ DomainAssembly *AppDomain::LoadDomainAssemblyInternal(AssemblySpec* pIdentity,
     
     if (result == NULL)
     {
+        LoaderAllocator *pLoaderAllocator = NULL;
+
+#ifndef CROSSGEN_COMPILE
+        ICLRPrivBinder *pFileBinder = pFile->GetBindingContext();
+        if (pFileBinder != NULL)
+        {
+            // Assemblies loaded with AssemblyLoadContext need to use a different LoaderAllocator if
+            // marked as collectible
+            pFileBinder->GetLoaderAllocator((LPVOID*)&pLoaderAllocator);
+        }
+#endif // !CROSSGEN_COMPILE
+
+        if (pLoaderAllocator == NULL)
+        {
+            pLoaderAllocator = this->GetLoaderAllocator();
+        }
+
         // Allocate the DomainAssembly a bit early to avoid GC mode problems. We could potentially avoid
         // a rare redundant allocation by moving this closer to FileLoadLock::Create, but it's not worth it.
-
-        NewHolder<DomainAssembly> pDomainAssembly;
-        pDomainAssembly = new DomainAssembly(this, pFile, pLoadSecurity, this->GetLoaderAllocator());
+        NewHolder<DomainAssembly> pDomainAssembly = new DomainAssembly(this, pFile, pLoaderAllocator);
 
         LoadLockHolder lock(this);
 
@@ -5777,6 +3883,14 @@ DomainAssembly *AppDomain::LoadDomainAssemblyInternal(AssemblySpec* pIdentity,
                 // We are the first one in - create the DomainAssembly
                 fileLock = FileLoadLock::Create(lock, pFile, pDomainAssembly);
                 pDomainAssembly.SuppressRelease();
+#ifndef CROSSGEN_COMPILE
+                if (pDomainAssembly->IsCollectible())
+                {
+                    // We add the assembly to the LoaderAllocator only when we are sure that it can be added
+                    // and won't be deleted in case of a concurrent load from the same ALC
+                    ((AssemblyLoaderAllocator *)pLoaderAllocator)->AddDomainAssembly(pDomainAssembly);
+                }
+#endif // !CROSSGEN_COMPILE
             }
         }
         else
@@ -5813,8 +3927,17 @@ DomainAssembly *AppDomain::LoadDomainAssemblyInternal(AssemblySpec* pIdentity,
 
     // Cache result in all cases, since found pFile could be from a different AssemblyRef than pIdentity
     // Do not cache WindowsRuntime assemblies, they are cached in code:CLRPrivTypeCacheWinRT
-    if ((pIdentity != NULL) && (pIdentity->CanUseWithBindingCache()) && (result->CanUseWithBindingCache()))
+    if (pIdentity == NULL)
+    {
+        AssemblySpec spec;
+        spec.InitializeSpec(result->GetFile());
+        if (spec.CanUseWithBindingCache() && result->CanUseWithBindingCache())
+            GetAppDomain()->AddAssemblyToCache(&spec, result);
+    }
+    else if (pIdentity->CanUseWithBindingCache() && result->CanUseWithBindingCache())
+    {
         GetAppDomain()->AddAssemblyToCache(pIdentity, result);
+    }
     
     RETURN result;
 } // AppDomain::LoadDomainAssembly
@@ -5826,17 +3949,6 @@ struct LoadFileArgs
     FileLoadLevel targetLevel;
     DomainFile *result;
 };
-
-#ifndef CROSSGEN_COMPILE
-static void LoadDomainFile_Wrapper(void *ptr)
-{
-    WRAPPER_NO_CONTRACT;
-    STATIC_CONTRACT_SO_INTOLERANT;
-    GCX_PREEMP();
-    LoadFileArgs *args = (LoadFileArgs *) ptr;
-    args->result = GetAppDomain()->LoadDomainFile(args->pLock, args->targetLevel);
-}
-#endif // !CROSSGEN_COMPILE
 
 DomainFile *AppDomain::LoadDomainFile(FileLoadLock *pLock, FileLoadLevel targetLevel)
 {
@@ -5850,10 +3962,6 @@ DomainFile *AppDomain::LoadDomainFile(FileLoadLock *pLock, FileLoadLevel targetL
         POSTCONDITION(RETVAL->CheckNoError(targetLevel));
     }
     CONTRACT_END;
-
-
-    if(!CanLoadCode())
-        COMPlusThrow(kAppDomainUnloadedException);
 
     // Thread stress
     APIThreadStress::SyncThreadStress();
@@ -5890,28 +3998,6 @@ DomainFile *AppDomain::LoadDomainFile(FileLoadLock *pLock, FileLoadLevel targetL
 
         RETURN pFile;
     }
-
-#ifndef CROSSGEN_COMPILE
-    // Make sure we are in the right domain.  Many of the load operations require the target domain
-    // to be the current app domain, most notably anything involving managed code or managed object
-    // creation.
-    if (this != GetAppDomain()
-        && (!pFile->GetFile()->IsSystem() || targetLevel > FILE_LOAD_ALLOCATE))
-    {
-        // Transition to the correct app domain and perform the load there.
-        GCX_COOP();
-
-        // we will release the lock in the other app domain
-        lockRef.SuppressRelease();
-
-        if(!CanLoadCode() || GetDefaultContext() ==NULL)
-            COMPlusThrow(kAppDomainUnloadedException);
-        LoadFileArgs args = {pLock, targetLevel, NULL};
-        GetThread()->DoADCallBack(this, LoadDomainFile_Wrapper, (void *) &args, ADV_CREATING);
-
-        RETURN args.result;
-    }
-#endif // CROSSGEN_COMPILE
 
     // Initialize a loading queue.  This will hold any loads which are triggered recursively but
     // which cannot be immediately satisfied due to anti-deadlock constraints.
@@ -5965,7 +4051,6 @@ DomainFile *AppDomain::LoadDomainFile(FileLoadLock *pLock, FileLoadLevel targetL
 
                     TryIncrementalLoad(pFile, workLevel, fileLock);
                 }
-                TESTHOOKCALL(CompletedFileLoadLevel(GetId().m_dwId,pFile,workLevel));
             }
 
             if (pLock->GetLoadLevel() == immediateTargetLevel-1)
@@ -6030,9 +4115,7 @@ void AppDomain::TryIncrementalLoad(DomainFile *pFile, FileLoadLevel workLevel, F
         }
 
         // Do the work
-        TESTHOOKCALL(NextFileLoadLevel(GetId().m_dwId,pFile,workLevel));
         BOOL success = pFile->DoIncrementalLoad(workLevel);
-        TESTHOOKCALL(CompletingFileLoadLevel(GetId().m_dwId,pFile,workLevel));
         if (released)
         {
             // Reobtain lock to increment level. (Note that another thread may
@@ -6107,173 +4190,21 @@ CHECK AppDomain::CheckValidModule(Module * pModule)
     }
     CONTRACTL_END;
 
-    if (pModule->FindDomainFile(this) != NULL)
+    if (pModule->GetDomainFile() != NULL)
         CHECK_OK;
-
-    CCHECK_START
-    {
-        Assembly * pAssembly = pModule->GetAssembly();
-
-        CCHECK(pAssembly->IsDomainNeutral());
-#ifdef FEATURE_LOADER_OPTIMIZATION        
-        Assembly * pSharedAssembly = NULL;
-        _ASSERTE(this == ::GetAppDomain());
-        {
-            SharedAssemblyLocator locator(pAssembly->GetManifestFile());
-            pSharedAssembly = SharedDomain::GetDomain()->FindShareableAssembly(&locator);
-        }
-
-        CCHECK(pAssembly == pSharedAssembly);
-#endif         
-    }
-    CCHECK_END;
 
     CHECK_OK;
 }
 
-#ifdef FEATURE_LOADER_OPTIMIZATION
-// Loads an existing Module into an AppDomain
-// WARNING: this can only be done in a very limited scenario - the Module must be an unloaded domain neutral
-// dependency in the app domain in question.  Normal code should not call this!
-DomainFile *AppDomain::LoadDomainNeutralModuleDependency(Module *pModule, FileLoadLevel targetLevel)
-{
-    CONTRACT(DomainFile *)
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_ANY;
-        PRECONDITION(::GetAppDomain()==this);
-        PRECONDITION(CheckPointer(pModule));
-        POSTCONDITION(CheckValidModule(pModule));
-        POSTCONDITION(CheckPointer(RETVAL));
-        POSTCONDITION(RETVAL->GetModule() == pModule);
-    }
-    CONTRACT_END;
-
-    DomainFile *pDomainFile = pModule->FindDomainFile(this);
-
-    STRESS_LOG3(LF_CLASSLOADER, LL_INFO100,"LDNMD: DomainFile %p for module %p in AppDomain %i\n",pDomainFile,pModule,GetId().m_dwId);
-
-    if (pDomainFile == NULL)
-    {
-        GCX_PREEMP();
-
-        Assembly *pAssembly = pModule->GetAssembly();
-
-        DomainAssembly *pDomainAssembly = pAssembly->FindDomainAssembly(this);
-        if (pDomainAssembly == NULL)
-        {
-            AssemblySpec spec(this);
-            spec.InitializeSpec(pAssembly->GetManifestFile());
-
-            pDomainAssembly = spec.LoadDomainAssembly(targetLevel);
-        }
-        else
-        {
-            //if the domain assembly already exists, we need to load it to the target level
-            pDomainAssembly->EnsureLoadLevel (targetLevel);
-        }
-
-        if(pAssembly != pDomainAssembly->GetAssembly())
-        {
-            ThrowHR(SECURITY_E_INCOMPATIBLE_SHARE);
-        }
-
-        _ASSERTE (pModule == pAssembly->GetManifestModule());
-        pDomainFile = pDomainAssembly;
-    }
-    else
-    {
-        // If the DomainFile already exists, we need to load it to the target level.
-        pDomainFile->EnsureLoadLevel (targetLevel);
-    }
-
-    RETURN pDomainFile;
-}
-
-void AppDomain::SetSharePolicy(SharePolicy policy)
+static void NormalizeAssemblySpecForNativeDependencies(AssemblySpec * pSpec)
 {
     CONTRACTL
     {
         THROWS;
-        GC_TRIGGERS;
+        GC_NOTRIGGER;
         MODE_ANY;
-        INJECT_FAULT(COMPlusThrowOM(););
     }
     CONTRACTL_END;
-
-    if ((int)policy > SHARE_POLICY_COUNT)
-        COMPlusThrow(kArgumentException,W("Argument_InvalidValue"));
-
-    // We cannot make all code domain neutral and still provide complete compatibility with regard
-    // to using custom security policy and assembly evidence.
-    //
-    // In particular, if you try to do either of the above AFTER loading a domain neutral assembly
-    // out of the GAC, we will now throw an exception.  The remedy would be to either not use SHARE_POLICY_ALWAYS
-    // (change LoaderOptimizationMultiDomain to LoaderOptimizationMultiDomainHost), or change the loading order
-    // in the app domain to do the policy set or evidence load earlier (which BTW will have the effect of
-    // automatically using MDH rather than MD, for the same result.)
-    //
-    // We include a compatibility flag here to preserve old functionality if necessary - this has the effect
-    // of never using SHARE_POLICY_ALWAYS.
-    if (policy == SHARE_POLICY_ALWAYS &&
-        (HasSetSecurityPolicy()
-         || GetCompatibilityFlag(compatOnlyGACDomainNeutral)))
-    {
-        // Never share assemblies not in the GAC
-        policy = SHARE_POLICY_GAC;
-    }
-
-    if (policy != m_SharePolicy)
-    {
-
-#ifdef FEATURE_PREJIT
-
-
-#endif // FEATURE_PREJIT
-
-        m_SharePolicy = policy;
-    }
-
-    return;
-}
-
-
-AppDomain::SharePolicy AppDomain::GetSharePolicy()
-{
-    LIMITED_METHOD_CONTRACT;
-    // If the policy has been explicitly set for
-    // the domain, use that.
-    SharePolicy policy = m_SharePolicy;
-
-    // Pick up the a specified config policy
-    if (policy == SHARE_POLICY_UNSPECIFIED)
-        policy = (SharePolicy) g_pConfig->DefaultSharePolicy();
-
-    // Next, honor a host's request for global policy.
-    if (policy == SHARE_POLICY_UNSPECIFIED)
-        policy = (SharePolicy) g_dwGlobalSharePolicy;
-
-    // If all else fails, use the hardwired default policy.
-    if (policy == SHARE_POLICY_UNSPECIFIED)
-        policy = SHARE_POLICY_DEFAULT;
-
-    return policy;
-}
-#endif // FEATURE_LOADER_OPTIMIZATION
-
-
-void AppDomain::CheckForMismatchedNativeImages(AssemblySpec * pSpec, const GUID * pGuid)
-{
-    STANDARD_VM_CONTRACT;
-
-    //
-    // The native images are ever used only for trusted images in CoreCLR.
-    // We don't wish to open the IL file at runtime so we just forgo any
-    // eager consistency checking. But we still want to prevent mistmatched 
-    // NGen images from being used. We record all mappings between assembly 
-    // names and MVID, and fail once we detect mismatch.
-    //
 
     if (pSpec->IsStrongNamed() && pSpec->HasPublicKey())
     {
@@ -6291,7 +4222,21 @@ void AppDomain::CheckForMismatchedNativeImages(AssemblySpec * pSpec, const GUID 
     pContext->usRevisionNumber = (USHORT)-1;
 
     // Ignore the WinRT type while considering if two assemblies have the same identity.
-    pSpec->SetWindowsRuntimeType(NULL, NULL);
+    pSpec->SetWindowsRuntimeType(NULL, NULL);    
+}
+
+void AppDomain::CheckForMismatchedNativeImages(AssemblySpec * pSpec, const GUID * pGuid)
+{
+    STANDARD_VM_CONTRACT;
+
+    //
+    // The native images are ever used only for trusted images in CoreCLR.
+    // We don't wish to open the IL file at runtime so we just forgo any
+    // eager consistency checking. But we still want to prevent mistmatched 
+    // NGen images from being used. We record all mappings between assembly 
+    // names and MVID, and fail once we detect mismatch.
+    //
+    NormalizeAssemblySpecForNativeDependencies(pSpec);
 
     CrstHolder ch(&m_DomainCrst);
 
@@ -6312,23 +4257,39 @@ void AppDomain::CheckForMismatchedNativeImages(AssemblySpec * pSpec, const GUID 
         //
         // No entry yet - create one
         //
-        AllocMemTracker amTracker;
-        AllocMemTracker *pamTracker = &amTracker;
-
-        NativeImageDependenciesEntry * pNewEntry = 
-            new (pamTracker->Track(GetLowFrequencyHeap()->AllocMem(S_SIZE_T(sizeof(NativeImageDependenciesEntry)))))
-                NativeImageDependenciesEntry();
-
+        NativeImageDependenciesEntry * pNewEntry = new NativeImageDependenciesEntry();
         pNewEntry->m_AssemblySpec.CopyFrom(pSpec);
-        pNewEntry->m_AssemblySpec.CloneFieldsToLoaderHeap(AssemblySpec::ALL_OWNED, GetLowFrequencyHeap(), pamTracker);
-
+        pNewEntry->m_AssemblySpec.CloneFields(AssemblySpec::ALL_OWNED);
         pNewEntry->m_guidMVID = *pGuid;
-
         m_NativeImageDependencies.Add(pNewEntry);
-        amTracker.SuppressRelease();
     }
 }
 
+BOOL AppDomain::RemoveNativeImageDependency(AssemblySpec * pSpec)
+{
+    CONTRACTL
+    {
+        GC_NOTRIGGER;
+        PRECONDITION(CheckPointer(pSpec));
+    }
+    CONTRACTL_END;
+
+    BOOL result = FALSE;
+    NormalizeAssemblySpecForNativeDependencies(pSpec);
+
+    CrstHolder ch(&m_DomainCrst);
+
+    const NativeImageDependenciesEntry * pEntry = m_NativeImageDependencies.Lookup(pSpec);
+
+    if (pEntry != NULL)
+    {
+        m_NativeImageDependencies.Remove(pSpec);
+        delete pEntry;
+        result = TRUE;
+    }
+
+    return result;
+}
 
 void AppDomain::SetupSharedStatics()
 {
@@ -6353,35 +4314,7 @@ void AppDomain::SetupSharedStatics()
     // Because we are allocating/referencing objects, need to be in cooperative mode
     GCX_COOP();
 
-    static OBJECTHANDLE hSharedStaticsHandle = NULL;
-
-    if (hSharedStaticsHandle == NULL) {
-        // Note that there is no race here since the default domain is always set up first
-        _ASSERTE(IsDefaultDomain());
-
-        MethodTable *pMT = MscorlibBinder::GetClass(CLASS__SHARED_STATICS);
-        _ASSERTE(pMT->IsClassPreInited());
-
-        hSharedStaticsHandle = CreateGlobalHandle(AllocateObject(pMT));
-    }
-
-    DomainLocalModule *pLocalModule;
-
-    if (IsSingleAppDomain())
-    {
-        pLocalModule = MscorlibBinder::GetModule()->GetDomainLocalModule();
-    }
-    else
-    {
-        pLocalModule = GetDomainLocalBlock()->GetModuleSlot(
-            MscorlibBinder::GetModule()->GetModuleIndex());
-    }
-
-    FieldDesc *pFD = MscorlibBinder::GetField(FIELD__SHARED_STATICS__SHARED_STATICS);
-
-    OBJECTREF* pHandle = (OBJECTREF*)
-        ((TADDR)pLocalModule->GetPrecomputedGCStaticsBasePointer()+pFD->GetOffset());
-    SetObjectReference( pHandle, ObjectFromHandle(hSharedStaticsHandle), this );
+    DomainLocalModule *pLocalModule = MscorlibBinder::GetModule()->GetDomainLocalModule();
 
     // This is a convenient place to initialize String.Empty.
     // It is treated as intrinsic by the JIT as so the static constructor would never run.
@@ -6393,7 +4326,7 @@ void AppDomain::SetupSharedStatics()
     FieldDesc * pEmptyStringFD = MscorlibBinder::GetField(FIELD__STRING__EMPTY);
     OBJECTREF* pEmptyStringHandle = (OBJECTREF*)
         ((TADDR)pLocalModule->GetPrecomputedGCStaticsBasePointer()+pEmptyStringFD->GetOffset());
-    SetObjectReference( pEmptyStringHandle, StringObject::GetEmptyString(), this );
+    SetObjectReference( pEmptyStringHandle, StringObject::GetEmptyString());
 #endif // CROSSGEN_COMPILE
 }
 
@@ -6423,7 +4356,7 @@ DomainAssembly * AppDomain::FindAssembly(PEAssembly * pFile, FindAssemblyOptions
     AssemblyIterator i = IterateAssembliesEx((AssemblyIterationFlags)(
         kIncludeLoaded | 
         (includeFailedToLoad ? kIncludeFailedToLoad : 0) |
-        (pFile->IsIntrospectionOnly() ? kIncludeIntrospection : kIncludeExecution)));
+        kIncludeExecution));
     CollectibleAssemblyHolder<DomainAssembly *> pDomainAssembly;
 
     while (i.Next(pDomainAssembly.This()))
@@ -6476,18 +4409,8 @@ void AppDomain::SetFriendlyName(LPCWSTR pwzFriendlyName, BOOL fDebuggerCares/*=T
         }
         else
         {
-            if (IsDefaultDomain())
-                tmpFriendlyName.Set(DEFAULT_DOMAIN_FRIENDLY_NAME);
-
-            // This is for the profiler - if they call GetFriendlyName on an AppdomainCreateStarted
-            // event, then we want to give them a temporary name they can use.
-            else if (GetId().m_dwId != 0)
-            {
-                tmpFriendlyName.Clear();
-                tmpFriendlyName.Printf(W("%s %d"), OTHER_DOMAIN_FRIENDLY_NAME_PREFIX, GetId().m_dwId);
-            }
+            tmpFriendlyName.Set(DEFAULT_DOMAIN_FRIENDLY_NAME);
         }
-
     }
 
     tmpFriendlyName.Normalize();
@@ -6506,12 +4429,6 @@ void AppDomain::SetFriendlyName(LPCWSTR pwzFriendlyName, BOOL fDebuggerCares/*=T
                 g_pDebugInterface->NameChangeEvent(this, NULL);
         }
     }
-}
-
-void AppDomain::ResetFriendlyName(BOOL fDebuggerCares/*=TRUE*/)
-{
-    WRAPPER_NO_CONTRACT;
-    SetFriendlyName(NULL, fDebuggerCares);
 }
 
 LPCWSTR AppDomain::GetFriendlyName(BOOL fDebuggerCares/*=TRUE*/)
@@ -6541,7 +4458,7 @@ LPCWSTR AppDomain::GetFriendlyName(BOOL fDebuggerCares/*=TRUE*/)
 
 LPCWSTR AppDomain::GetFriendlyNameForLogging()
 {
-    CONTRACT(LPWSTR)
+    CONTRACT(LPCWSTR)
     {
         NOTHROW;
         GC_NOTRIGGER;
@@ -6628,22 +4545,6 @@ PVOID AppDomain::GetFriendlyNameNoSet(bool* isUtf8)
 
 #endif // DACCESS_COMPILE
 
-void AppDomain::CacheStringsForDAC()
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_ANY;
-    }
-    CONTRACTL_END;
-
-    //
-    // If the application base, private bin paths, and configuration file are
-    // available, cache them so DAC can read them out of memory
-    //
-}
-
 #ifndef DACCESS_COMPILE
 
 BOOL AppDomain::AddFileToCache(AssemblySpec* pSpec, PEAssembly *pFile, BOOL fAllowFailure)
@@ -6720,7 +4621,7 @@ BOOL AppDomain::AddExceptionToCache(AssemblySpec* pSpec, Exception *ex)
     return m_AssemblyCache.StoreException(pSpec, ex);
 }
 
-void AppDomain::AddUnmanagedImageToCache(LPCWSTR libraryName, HMODULE hMod)
+void AppDomain::AddUnmanagedImageToCache(LPCWSTR libraryName, NATIVE_LIBRARY_HANDLE hMod)
 {
     CONTRACTL
     {
@@ -6741,9 +4642,9 @@ void AppDomain::AddUnmanagedImageToCache(LPCWSTR libraryName, HMODULE hMod)
 }
 
 
-HMODULE AppDomain::FindUnmanagedImageInCache(LPCWSTR libraryName)
+NATIVE_LIBRARY_HANDLE AppDomain::FindUnmanagedImageInCache(LPCWSTR libraryName)
 {
-    CONTRACT(HMODULE)
+    CONTRACT(NATIVE_LIBRARY_HANDLE)
     {
         THROWS;
         GC_TRIGGERS;
@@ -6757,9 +4658,47 @@ HMODULE AppDomain::FindUnmanagedImageInCache(LPCWSTR libraryName)
 
     AssemblySpec spec;
     spec.SetCodeBase(libraryName);
-    RETURN (HMODULE) m_UnmanagedCache.LookupEntry(&spec, 0);
+    RETURN (NATIVE_LIBRARY_HANDLE) m_UnmanagedCache.LookupEntry(&spec, 0);
 }
 
+BOOL AppDomain::RemoveFileFromCache(PEAssembly *pFile)
+{
+    CONTRACTL
+    {
+        GC_TRIGGERS;
+        PRECONDITION(CheckPointer(pFile));
+    }
+    CONTRACTL_END;
+
+    LoadLockHolder lock(this);
+    FileLoadLock *fileLock = (FileLoadLock *)lock->FindFileLock(pFile);
+
+    if (fileLock == NULL)
+        return FALSE;
+
+    VERIFY(lock->Unlink(fileLock));
+
+    fileLock->Release();
+
+    return TRUE;
+}
+
+BOOL AppDomain::RemoveAssemblyFromCache(DomainAssembly* pAssembly)
+{
+    CONTRACTL
+    {
+        THROWS;
+        GC_TRIGGERS;
+        MODE_ANY;
+        PRECONDITION(CheckPointer(pAssembly));
+        INJECT_FAULT(COMPlusThrowOM(););
+    }
+    CONTRACTL_END;
+    
+    CrstHolder holder(&m_DomainCacheCrst);
+
+    return m_AssemblyCache.RemoveAssembly(pAssembly);
+}
 
 BOOL AppDomain::IsCached(AssemblySpec *pSpec)
 {
@@ -6830,7 +4769,7 @@ BOOL AppDomain::PostBindResolveAssembly(AssemblySpec  *pPrePolicySpec,
         (hrBindResult == FUSION_E_REF_DEF_MISMATCH) ||
         (hrBindResult == FUSION_E_INVALID_NAME))
     {
-        result = TryResolveAssembly(*ppFailedSpec, FALSE /* fPreBind */);
+        result = TryResolveAssembly(*ppFailedSpec);
 
         if (result != NULL && pPrePolicySpec->CanUseWithBindingCache() && result->CanUseWithBindingCache())
         {
@@ -6841,7 +4780,7 @@ BOOL AppDomain::PostBindResolveAssembly(AssemblySpec  *pPrePolicySpec,
             // the adding of the result to fail. Checking for already chached specs
             // is not an option as it would introduce another race window.
             // The binder does a re-fetch of the
-            // orignal binding spec and therefore will not cause inconsistency here.
+            // original binding spec and therefore will not cause inconsistency here.
             // For the purposes of the resolve event, failure to add to the cache still is a success.
             AddFileToCache(pPrePolicySpec, result, TRUE /* fAllowFailure */);
             if (*ppFailedSpec != pPrePolicySpec && pPostPolicySpec->CanUseWithBindingCache())
@@ -6981,28 +4920,6 @@ private:
 };
 
 //-----------------------------------------------------------------------------------------------------------------
-static HRESULT VerifyBindHelper(
-    ICLRPrivAssembly *pPrivAssembly,
-    IAssemblyName *pAssemblyName,
-    PEAssembly *pPEAssembly)
-{
-    STATIC_CONTRACT_THROWS;
-    STATIC_CONTRACT_GC_TRIGGERS;
-
-    HRESULT hr = S_OK;
-    // Create an ICLRPrivAssemblyInfo to call to ICLRPrivAssembly::VerifyBind
-    NewHolder<PEAssemblyAsPrivAssemblyInfo> pPrivAssemblyInfoImpl = new PEAssemblyAsPrivAssemblyInfo(pPEAssembly);
-    ReleaseHolder<ICLRPrivAssemblyInfo> pPrivAssemblyInfo;
-    IfFailRet(pPrivAssemblyInfoImpl->QueryInterface(__uuidof(ICLRPrivAssemblyInfo), (LPVOID *)&pPrivAssemblyInfo));
-    pPrivAssemblyInfoImpl.SuppressRelease();
-
-    // Call VerifyBind to give the host a chance to reject the bind based on assembly image contents.
-    IfFailRet(pPrivAssembly->VerifyBind(pAssemblyName, pPrivAssembly, pPrivAssemblyInfo));
-
-    return hr;
-}
-
-//-----------------------------------------------------------------------------------------------------------------
 HRESULT AppDomain::BindAssemblySpecForHostedBinder(
     AssemblySpec *   pSpec, 
     IAssemblyName *  pAssemblyName, 
@@ -7041,8 +4958,7 @@ AppDomain::BindHostedPrivAssembly(
     PEAssembly *       pParentAssembly,
     ICLRPrivAssembly * pPrivAssembly, 
     IAssemblyName *    pAssemblyName, 
-    PEAssembly **      ppAssembly, 
-    BOOL               fIsIntrospectionOnly) // = FALSE
+    PEAssembly **      ppAssembly)
 {
     STANDARD_VM_CONTRACT;
 
@@ -7063,8 +4979,8 @@ AppDomain::BindHostedPrivAssembly(
     }
 
     if (*ppAssembly != nullptr)
-    {   // Already exists: ask the binder to verify and return the assembly.
-        return VerifyBindHelper(pPrivAssembly, pAssemblyName, *ppAssembly);
+    {   // Already exists: return the assembly.
+        return S_OK;
     }
 
     // Get the IL PEFile.
@@ -7087,6 +5003,7 @@ AppDomain::BindHostedPrivAssembly(
 
     // Get the NI PEFile if available.
     PEImageHolder pPEImageNI;
+#ifdef FEATURE_PREJIT
     if (dwAvailableImages & ASSEMBLY_IMAGE_TYPE_NATIVE)
     {
         DWORD dwImageType;
@@ -7097,14 +5014,11 @@ AppDomain::BindHostedPrivAssembly(
 
         pPEImageNI = PEImage::OpenImage(pIResourceNI, MDInternalImport_TrustedNativeImage);
     }
+#endif // FEATURE_PREJIT
     _ASSERTE(pPEImageIL != nullptr);
     
     // Create a PEAssembly using the IL and NI images.
-    PEAssemblyHolder pPEAssembly = PEAssembly::Open(pParentAssembly, pPEImageIL, pPEImageNI, pPrivAssembly, fIsIntrospectionOnly);
-
-
-    // Ask the binder to verify.
-    IfFailRet(VerifyBindHelper(pPrivAssembly, pAssemblyName, pPEAssembly));
+    PEAssemblyHolder pPEAssembly = PEAssembly::Open(pParentAssembly, pPEImageIL, pPEImageNI, pPrivAssembly);
 
     // The result.    
     *ppAssembly = pPEAssembly.Extract();
@@ -7116,9 +5030,6 @@ AppDomain::BindHostedPrivAssembly(
 PEAssembly * AppDomain::BindAssemblySpec(
     AssemblySpec *         pSpec, 
     BOOL                   fThrowOnFileNotFound, 
-    BOOL                   fRaisePrebindEvents, 
-    StackCrawlMark *       pCallerStackMark, 
-    AssemblyLoadSecurity * pLoadSecurity,
     BOOL                   fUseHostBinderIfAvailable)
 {
     STATIC_CONTRACT_THROWS;
@@ -7152,6 +5063,9 @@ PEAssembly * AppDomain::BindAssemblySpec(
             hr = BindAssemblySpecForHostedBinder(pSpec, pAssemblyName, m_pWinRtBinder, &pAssembly);
             if (FAILED(hr))
                 goto EndTry2; // Goto end of try block.
+
+            PTR_CLRPrivAssemblyWinRT assem = dac_cast<PTR_CLRPrivAssemblyWinRT>(pAssembly->GetHostAssembly());
+            assem->SetFallbackBinder(pSpec->GetHostBinder());
 EndTry2:;
         }
         // The combination of this conditional catch/ the following if statement which will throw reduces the count of exceptions 
@@ -7207,21 +5121,16 @@ EndTry2:;
         HRESULT hrBindResult = S_OK;
         PEAssemblyHolder result;
         
-
         EX_TRY
         {
             if (!IsCached(pSpec))
             {
 
                 {
-                    bool fAddFileToCache = false;
-
-                    BOOL fIsWellKnown = FALSE;
-
                     // Use CoreClr's fusion alternative
                     CoreBindResult bindResult;
 
-                    pSpec->Bind(this, fThrowOnFileNotFound, &bindResult, FALSE /* fNgenExplicitBind */, FALSE /* fExplicitBindToNativeImage */, pCallerStackMark);
+                    pSpec->Bind(this, FALSE /* fThrowOnFileNotFound */, &bindResult, FALSE /* fNgenExplicitBind */, FALSE /* fExplicitBindToNativeImage */);
                     hrBindResult = bindResult.GetHRBindResult();
 
                     if (bindResult.Found()) 
@@ -7236,20 +5145,13 @@ EndTry2:;
                         {
                             // IsSystem on the PEFile should be false, even for mscorlib satellites
                             result = PEAssembly::Open(&bindResult,
-                                                      FALSE, pSpec->IsIntrospectionOnly());
+                                                      FALSE);
                         }
-                        fAddFileToCache = true;
                         
                         // Setup the reference to the binder, which performed the bind, into the AssemblySpec
                         ICLRPrivBinder* pBinder = result->GetBindingContext();
                         _ASSERTE(pBinder != NULL);
                         pSpec->SetBindingContext(pBinder);
-                    }
-
-
-                    if (fAddFileToCache)
-                    {
-
 
                         if (pSpec->CanUseWithBindingCache() && result->CanUseWithBindingCache())
                         {
@@ -7259,20 +5161,27 @@ EndTry2:;
                             AddFileToCache(pSpec, result, TRUE /*fAllowFailure*/);
                         }
                     }
-                    else if (!fIsWellKnown)
+                    else
                     {
-                        // Trigger the resolve event also for non-throw situation.
-                        // However, this code path will behave as if the resolve handler has thrown,
-                        // that is, not trigger an MDA.
-                        _ASSERTE(fThrowOnFileNotFound == FALSE);
+                        // Don't trigger the resolve event for the CoreLib satellite assembly. A misbehaving resolve event may
+                        // return an assembly that does not match, and this can cause recursive resource lookups during error
+                        // reporting. The CoreLib satellite assembly is loaded from relative locations based on the culture, see
+                        // AssemblySpec::Bind().
+                        if (!pSpec->IsMscorlibSatellite())
+                        {
+                            // Trigger the resolve event also for non-throw situation.
+                            AssemblySpec NewSpec(this);
+                            AssemblySpec *pFailedSpec = NULL;
 
-                        AssemblySpec NewSpec(this);
-                        AssemblySpec *pFailedSpec = NULL;
+                            fForceReThrow = TRUE; // Managed resolve event handler can throw
 
-                        fForceReThrow = TRUE; // Managed resolve event handler can throw
+                            BOOL fFailure = PostBindResolveAssembly(pSpec, &NewSpec, hrBindResult, &pFailedSpec);
 
-                        // Purposly ignore return value
-                        PostBindResolveAssembly(pSpec, &NewSpec, hrBindResult, &pFailedSpec);
+                            if (fFailure && fThrowOnFileNotFound)
+                            {
+                                EEFileLoadException::Throw(pFailedSpec, COR_E_FILENOTFOUND, NULL);
+                            }
+                        }
                     }
                 }
             }
@@ -7291,10 +5200,6 @@ EndTry2:;
             }
 
             {
-                // This is not executed for SO exceptions so we need to disable the backout
-                // stack validation to prevent false violations from being reported.
-                DISABLE_BACKOUT_STACK_VALIDATION;
-
                 BOOL fFailure = PostBindResolveAssembly(pSpec, &NewSpec, ex->GetHR(), &pFailedSpec);
                 if (fFailure)
                 {
@@ -7310,28 +5215,7 @@ EndTry2:;
                     // Only throw this exception if we are the first in the cache
                     if (fFailure)
                     {
-                        //
-                        // If the BindingFailure MDA is enabled, trigger one for this failure
-                        // Note: TryResolveAssembly() can also throw if an AssemblyResolve event subscriber throws
-                        //       and the MDA isn't sent in this case (or for transient failure cases)
-                        //
-#ifdef MDA_SUPPORTED
-                        MdaBindingFailure* pProbe = MDA_GET_ASSISTANT(BindingFailure);
-                        if (pProbe)
-                        {
-                            // Transition to cooperative GC mode before using any OBJECTREFs.
-                            GCX_COOP();
-
-                            OBJECTREF exceptionObj = GET_THROWABLE();
-                            GCPROTECT_BEGIN(exceptionObj)
-                            {
-                                pProbe->BindFailed(pFailedSpec, &exceptionObj);
-                            }
-                            GCPROTECT_END();
-                        }
-#endif
-
-                        // In the same cases as for the MDA, store the failure information for DAC to read
+                        // Store the failure information for DAC to read
                         if (IsDebuggerAttached()) {
                             FailedAssembly *pFailed = new FailedAssembly();
                             pFailed->Initialize(pFailedSpec, ex);
@@ -7340,7 +5224,6 @@ EndTry2:;
 
                         if (!bFileNotFoundException || fThrowOnFileNotFound)
                         {
-
                             // V1.1 App-compatibility workaround. See VSW530166 if you want to whine about it.
                             //
                             // In Everett, if we failed to download an assembly because of a broken network cable,
@@ -7416,7 +5299,7 @@ EndTry2:;
 
 
 
-PEAssembly *AppDomain::TryResolveAssembly(AssemblySpec *pSpec, BOOL fPreBind)
+PEAssembly *AppDomain::TryResolveAssembly(AssemblySpec *pSpec)
 {
     STATIC_CONTRACT_THROWS;
     STATIC_CONTRACT_GC_TRIGGERS;
@@ -7426,7 +5309,7 @@ PEAssembly *AppDomain::TryResolveAssembly(AssemblySpec *pSpec, BOOL fPreBind)
 
     EX_TRY
     {
-        result = pSpec->ResolveAssemblyFile(this, fPreBind);
+        result = pSpec->ResolveAssemblyFile(this);
     }
     EX_HOOK
     {
@@ -7465,117 +5348,14 @@ ULONG AppDomain::Release()
     ULONG   cRef = InterlockedDecrement(&m_cRef);
     if (!cRef)
     {
-        _ASSERTE (m_Stage == STAGE_CREATING || m_Stage == STAGE_CLOSED);
-        ADID adid=GetId();
+        _ASSERTE (m_Stage == STAGE_CREATING);
         delete this;
-        TESTHOOKCALL(AppDomainDestroyed(adid.m_dwId));
     }
     return (cRef);
 }
 
 
-AppDomain* AppDomain::s_pAppDomainToRaiseUnloadEvent;
-BOOL AppDomain::s_fProcessUnloadDomainEvent = FALSE;
-
 #ifndef CROSSGEN_COMPILE
-
-void AppDomain::RaiseUnloadDomainEvent_Wrapper(LPVOID ptr)
-{
-    CONTRACTL
-    {
-        THROWS;
-        MODE_COOPERATIVE;
-        GC_TRIGGERS;
-        INJECT_FAULT(COMPlusThrowOM(););
-        SO_INTOLERANT;
-    }
-    CONTRACTL_END;
-
-    AppDomain* pDomain = (AppDomain *) ptr;
-    pDomain->RaiseUnloadDomainEvent();
-}
-
-void AppDomain::ProcessUnloadDomainEventOnFinalizeThread()
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_TRIGGERS;
-        MODE_COOPERATIVE;
-    }
-    CONTRACTL_END;
-    Thread *pThread = GetThread();
-    _ASSERTE (pThread && IsFinalizerThread());
-
-    // if we are not unloading domain now, do not process the event
-    if (SystemDomain::AppDomainBeingUnloaded() == NULL)
-    {
-        s_pAppDomainToRaiseUnloadEvent->SetStage(STAGE_UNLOAD_REQUESTED);
-        s_pAppDomainToRaiseUnloadEvent->EnableADUnloadWorker(
-            s_pAppDomainToRaiseUnloadEvent->IsRudeUnload()?EEPolicy::ADU_Rude:EEPolicy::ADU_Safe);
-        FastInterlockExchangePointer(&s_pAppDomainToRaiseUnloadEvent, NULL);
-        return;
-    }
-    FastInterlockExchange((LONG*)&s_fProcessUnloadDomainEvent, TRUE);
-    AppDomain::EnableADUnloadWorkerForFinalizer();
-    pThread->SetThreadStateNC(Thread::TSNC_RaiseUnloadEvent);
-    s_pAppDomainToRaiseUnloadEvent->RaiseUnloadDomainEvent();
-    pThread->ResetThreadStateNC(Thread::TSNC_RaiseUnloadEvent);
-    s_pAppDomainToRaiseUnloadEvent->EnableADUnloadWorker(
-        s_pAppDomainToRaiseUnloadEvent->IsRudeUnload()?EEPolicy::ADU_Rude:EEPolicy::ADU_Safe);
-    FastInterlockExchangePointer(&s_pAppDomainToRaiseUnloadEvent, NULL);
-    FastInterlockExchange((LONG*)&s_fProcessUnloadDomainEvent, FALSE);
-
-    if (pThread->IsAbortRequested())
-    {
-        pThread->UnmarkThreadForAbort(Thread::TAR_Thread);
-    }
-}
-
-void AppDomain::RaiseUnloadDomainEvent()
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        MODE_COOPERATIVE;
-        GC_TRIGGERS;
-        SO_INTOLERANT;
-    }
-    CONTRACTL_END;
-
-    EX_TRY
-    {
-        Thread *pThread = GetThread();
-        if (this != pThread->GetDomain())
-        {
-            pThread->DoADCallBack(this, AppDomain::RaiseUnloadDomainEvent_Wrapper, this,ADV_FINALIZER|ADV_COMPILATION);
-        }
-        else
-        {
-            struct _gc
-            {
-                APPDOMAINREF Domain;
-                OBJECTREF    Delegate;
-            } gc;
-            ZeroMemory(&gc, sizeof(gc));
-
-            GCPROTECT_BEGIN(gc);
-            gc.Domain = (APPDOMAINREF) GetRawExposedObject();
-            if (gc.Domain != NULL)
-            {
-                gc.Delegate = gc.Domain->m_pDomainUnloadEventHandler;
-                if (gc.Delegate != NULL)
-                    DistributeEventReliably(&gc.Delegate, (OBJECTREF *) &gc.Domain);
-            }
-            GCPROTECT_END();
-        }
-    }
-    EX_CATCH
-    {
-        //@TODO call a MDA here
-    }
-    EX_END_CATCH(SwallowAllExceptions);
-}
 
 void AppDomain::RaiseLoadingAssemblyEvent(DomainAssembly *pAssembly)
 {
@@ -7588,36 +5368,37 @@ void AppDomain::RaiseLoadingAssemblyEvent(DomainAssembly *pAssembly)
     }
     CONTRACTL_END;
 
+    if (pAssembly->GetFile()->IsSystem())
+    {
+        return;
+    }
+
     GCX_COOP();
     FAULT_NOT_FATAL();
     OVERRIDE_TYPE_LOAD_LEVEL_LIMIT(CLASS_LOADED);
 
     EX_TRY
     {
-        struct _gc {
-            APPDOMAINREF AppDomainRef;
-            OBJECTREF    orThis;
-        } gc;
-        ZeroMemory(&gc, sizeof(gc));
+        if (MscorlibBinder::GetField(FIELD__ASSEMBLYLOADCONTEXT__ASSEMBLY_LOAD)->GetStaticOBJECTREF() != NULL)
+        {
+            struct _gc {
+                OBJECTREF    orThis;
+            } gc;
+            ZeroMemory(&gc, sizeof(gc));
 
-        if ((gc.AppDomainRef = (APPDOMAINREF) GetRawExposedObject()) != NULL) {
-            if (gc.AppDomainRef->m_pAssemblyEventHandler != NULL)
-            {
-                ARG_SLOT args[2];
-                GCPROTECT_BEGIN(gc);
+            ARG_SLOT args[1];
+            GCPROTECT_BEGIN(gc);
 
-                gc.orThis = pAssembly->GetExposedAssemblyObject();
+            gc.orThis = pAssembly->GetExposedAssemblyObject();
 
-                MethodDescCallSite  onAssemblyLoad(METHOD__APP_DOMAIN__ON_ASSEMBLY_LOAD, &gc.orThis);
+            MethodDescCallSite onAssemblyLoad(METHOD__ASSEMBLYLOADCONTEXT__ON_ASSEMBLY_LOAD);
 
-                // GetExposedAssemblyObject may cause a gc, so call this before filling args[0]
-                args[1] = ObjToArgSlot(gc.orThis);
-                args[0] = ObjToArgSlot(gc.AppDomainRef);
+            // GetExposedAssemblyObject may cause a gc, so call this before filling args[0]
+            args[0] = ObjToArgSlot(gc.orThis);
 
-                onAssemblyLoad.Call(args);
+            onAssemblyLoad.Call(args);
 
-                GCPROTECT_END();
-            }
+            GCPROTECT_END();
         }
     }
     EX_CATCH
@@ -7626,114 +5407,26 @@ void AppDomain::RaiseLoadingAssemblyEvent(DomainAssembly *pAssembly)
     EX_END_CATCH(SwallowAllExceptions);
 }
 
-
 BOOL AppDomain::OnUnhandledException(OBJECTREF *pThrowable, BOOL isTerminating/*=TRUE*/) 
 {
     STATIC_CONTRACT_NOTHROW;
     STATIC_CONTRACT_GC_TRIGGERS;
     STATIC_CONTRACT_MODE_ANY;
 
-    BOOL retVal= FALSE;
+    BOOL retVal = FALSE;
 
     GCX_COOP();
 
-    // The Everett behavior was to send the unhandled exception event only to the Default
-    // AppDomain (since that's the only place that exceptions actually went unhandled).
-    //
-    // During Whidbey development, we broadcast the event to all AppDomains in the process.
-    //
-    // But the official shipping Whidbey behavior is that the unhandled exception event is
-    // sent to the Default AppDomain and to whatever AppDomain the exception went unhandled
-    // in.  To achieve this, we declare the exception to be unhandled *BEFORE* we marshal
-    // it back to the Default AppDomain at the base of the Finalizer, threadpool and managed
-    // threads.
-    //
-    // The rationale for sending the event to the Default AppDomain as well as the one the
-    // exception went unhandled in is:
-    //
-    // 1)  This is compatible with the pre-Whidbey behavior, where only the Default AppDomain
-    //     received the notification.
-    //
-    // 2)  This is convenient for hosts, which don't want to bother injecting listeners into
-    //     every single AppDomain.
-
-    AppDomain *pAppDomain = GetAppDomain();
-    OBJECTREF orSender = 0;
-
-    GCPROTECT_BEGIN(orSender);
-
-    orSender = pAppDomain->GetRawExposedObject();
-
-    retVal = pAppDomain->RaiseUnhandledExceptionEventNoThrow(&orSender, pThrowable, isTerminating);
-
-    GCPROTECT_END();
+    EX_TRY
+    {
+        retVal = GetAppDomain()->RaiseUnhandledExceptionEvent(pThrowable, isTerminating);
+    }
+    EX_CATCH
+    {
+    }
+    EX_END_CATCH(SwallowAllExceptions)  // Swallow any errors.
 
     return retVal;
-}
-
-
-// Move outside of the AppDomain iteration, to avoid issues with the GC Frames being outside
-// the domain transition.  This is a chronic issue that causes us to report roots for an AppDomain
-// after we have left it.  This causes problems with AppDomain unloading that we only find
-// with stress coverage..
-void AppDomain::RaiseOneExitProcessEvent()
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_COOPERATIVE;
-    }
-    CONTRACTL_END;
-
-    struct _gc
-    {
-        APPDOMAINREF Domain;
-        OBJECTREF    Delegate;
-    } gc;
-    ZeroMemory(&gc, sizeof(gc));
-
-    EX_TRY {
-
-        GCPROTECT_BEGIN(gc);
-        gc.Domain = (APPDOMAINREF) SystemDomain::GetCurrentDomain()->GetRawExposedObject();
-        if (gc.Domain != NULL)
-        {
-            gc.Delegate = gc.Domain->m_pProcessExitEventHandler;
-            if (gc.Delegate != NULL)
-                DistributeEventReliably(&gc.Delegate, (OBJECTREF *) &gc.Domain);
-        }
-        GCPROTECT_END();
-
-    } EX_CATCH {
-    } EX_END_CATCH(SwallowAllExceptions);
-}
-
-// Local wrapper used in AppDomain::RaiseExitProcessEvent,
-// introduced solely to avoid stack overflow because of _alloca in the loop.
-// It's just factored out body of the loop, but it has to be a member method of AppDomain,
-// because it calls private RaiseOneExitProcessEvent
-/*static*/ void AppDomain::RaiseOneExitProcessEvent_Wrapper(AppDomainIterator* pi)
-{
-
-    STATIC_CONTRACT_MODE_COOPERATIVE;
-    STATIC_CONTRACT_NOTHROW;
-    STATIC_CONTRACT_GC_TRIGGERS;
-
-    EX_TRY {
-        ENTER_DOMAIN_PTR(pi->GetDomain(),ADV_ITERATOR)
-        AppDomain::RaiseOneExitProcessEvent();
-        END_DOMAIN_TRANSITION;
-    } EX_CATCH {
-    } EX_END_CATCH(SwallowAllExceptions);
-}
-
-static LONG s_ProcessedExitProcessEventCount = 0;
-
-LONG GetProcessedExitProcessEventCount()
-{
-    LIMITED_METHOD_CONTRACT;
-    return s_ProcessedExitProcessEventCount;
 }
 
 void AppDomain::RaiseExitProcessEvent()
@@ -7742,7 +5435,7 @@ void AppDomain::RaiseExitProcessEvent()
         return;
 
     STATIC_CONTRACT_MODE_COOPERATIVE;
-    STATIC_CONTRACT_NOTHROW;
+    STATIC_CONTRACT_THROWS;
     STATIC_CONTRACT_GC_TRIGGERS;
 
     // Only finalizer thread during shutdown can call this function.
@@ -7750,60 +5443,12 @@ void AppDomain::RaiseExitProcessEvent()
 
     _ASSERTE (GetThread()->PreemptiveGCDisabled());
 
-    _ASSERTE (GetThread()->GetDomain()->IsDefaultDomain());
-
-    AppDomainIterator i(TRUE);
-    while (i.Next())
-    {
-        RaiseOneExitProcessEvent_Wrapper(&i);
-        FastInterlockIncrement(&s_ProcessedExitProcessEventCount);
-    }
-}
-
-
-BOOL
-AppDomain::RaiseUnhandledExceptionEventNoThrow(OBJECTREF *pSender, OBJECTREF *pThrowable, BOOL isTerminating)
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_TRIGGERS;
-        MODE_COOPERATIVE;
-    }
-    CONTRACTL_END;
-    BOOL bRetVal=FALSE;
-
-    EX_TRY
-    {
-        bRetVal = RaiseUnhandledExceptionEvent(pSender, pThrowable, isTerminating);
-    }
-    EX_CATCH
-    {
-    }
-    EX_END_CATCH(SwallowAllExceptions)  // Swallow any errors.
-    return bRetVal;
-
+    MethodDescCallSite onProcessExit(METHOD__APPCONTEXT__ON_PROCESS_EXIT);
+    onProcessExit.Call(NULL);
 }
 
 BOOL
-AppDomain::HasUnhandledExceptionEventHandler()
-{
-    CONTRACTL
-    {
-        MODE_COOPERATIVE;
-        GC_NOTRIGGER; //essential
-        NOTHROW;
-    }
-    CONTRACTL_END;
-    if (!CanThreadEnter(GetThread()))
-        return FALSE;
-    if (GetRawExposedObject()==NULL)
-        return FALSE;
-    return (((APPDOMAINREF)GetRawExposedObject())->m_pUnhandledExceptionEventHandler!=NULL);
-}
-
-BOOL
-AppDomain::RaiseUnhandledExceptionEvent(OBJECTREF *pSender, OBJECTREF *pThrowable, BOOL isTerminating)
+AppDomain::RaiseUnhandledExceptionEvent(OBJECTREF *pThrowable, BOOL isTerminating)
 {
     CONTRACTL
     {
@@ -7814,107 +5459,31 @@ AppDomain::RaiseUnhandledExceptionEvent(OBJECTREF *pSender, OBJECTREF *pThrowabl
     }
     CONTRACTL_END;
 
-    if (!HasUnhandledExceptionEventHandler())
-        return FALSE;
-
-    BOOL result = FALSE;
-
     _ASSERTE(pThrowable != NULL && IsProtectedByGCFrame(pThrowable));
-    _ASSERTE(pSender    != NULL && IsProtectedByGCFrame(pSender));
 
     _ASSERTE(this == GetThread()->GetDomain());
 
+    OBJECTREF orDelegate = MscorlibBinder::GetField(FIELD__APPCONTEXT__UNHANDLED_EXCEPTION)->GetStaticOBJECTREF();
+    if (orDelegate == NULL)
+        return FALSE;
 
-    OBJECTREF orDelegate = NULL;
-
-    GCPROTECT_BEGIN(orDelegate);
-
-    APPDOMAINREF orAD = (APPDOMAINREF) GetAppDomain()->GetRawExposedObject();
-
-    if (orAD != NULL)
-    {
-        orDelegate = orAD->m_pUnhandledExceptionEventHandler;
-        if (orDelegate != NULL)
-        {
-            result = TRUE;
-            DistributeUnhandledExceptionReliably(&orDelegate, pSender, pThrowable, isTerminating);
-        }
-    }
-    GCPROTECT_END();
-    return result;
-}
-
-
-
-#endif // CROSSGEN_COMPILE
-
-// You must be in the correct context before calling this
-// routine. Therefore, it is only good for initializing the
-// default domain.
-void AppDomain::InitializeDomainContext(BOOL allowRedirects,
-                                        LPCWSTR pwszPath,
-                                        LPCWSTR pwszConfig)
-{
-    CONTRACTL
-    {
-        MODE_COOPERATIVE;
-        GC_TRIGGERS;
-        THROWS;
-        INJECT_FAULT(COMPlusThrowOM(););
-    }
-    CONTRACTL_END;
-
-    if (NingenEnabled())
-    {
-
-        CreateFusionContext();
-
-        return;
-    }
-
-#ifndef CROSSGEN_COMPILE
     struct _gc {
-        STRINGREF pFilePath;
-        STRINGREF pConfig;
-        OBJECTREF ref;
-        PTRARRAYREF propertyNames;
-        PTRARRAYREF propertyValues;
+        OBJECTREF Delegate;
+        OBJECTREF Sender;
     } gc;
     ZeroMemory(&gc, sizeof(gc));
 
     GCPROTECT_BEGIN(gc);
-    if(pwszPath)
+    gc.Delegate = orDelegate;
+    if (orDelegate != NULL)
     {
-        gc.pFilePath = StringObject::NewString(pwszPath);
-    }
-
-    if(pwszConfig)
-    {
-        gc.pConfig = StringObject::NewString(pwszConfig);
-    }
-
-
-    if ((gc.ref = GetExposedObject()) != NULL)
-    {
-        MethodDescCallSite setupDomain(METHOD__APP_DOMAIN__SETUP_DOMAIN);
-
-        ARG_SLOT args[] =
-        {
-            ObjToArgSlot(gc.ref),
-            BoolToArgSlot(allowRedirects),
-            ObjToArgSlot(gc.pFilePath),
-            ObjToArgSlot(gc.pConfig),
-            ObjToArgSlot(gc.propertyNames),
-            ObjToArgSlot(gc.propertyValues)
-        };
-        setupDomain.Call(args);
+        DistributeUnhandledExceptionReliably(&gc.Delegate, &gc.Sender, pThrowable, isTerminating);
     }
     GCPROTECT_END();
-
-    CacheStringsForDAC();
-#endif // CROSSGEN_COMPILE
+    return TRUE;
 }
 
+#endif // CROSSGEN_COMPILE
 
 IUnknown *AppDomain::CreateFusionContext()
 {
@@ -7936,7 +5505,7 @@ IUnknown *AppDomain::CreateFusionContext()
         GCX_PREEMP();
 
         // Initialize the assembly binder for the default context loads for CoreCLR.
-        IfFailThrow(CCoreCLRBinderHelper::DefaultBinderSetupContext(GetId().m_dwId, &pTPABinder));
+        IfFailThrow(CCoreCLRBinderHelper::DefaultBinderSetupContext(DefaultADID, &pTPABinder));
         m_pFusionContext = reinterpret_cast<IUnknown *>(pTPABinder);
         
         // By default, initial binding context setup for CoreCLR is also the TPABinding context
@@ -8011,8 +5580,8 @@ void AppDomain::NotifyDebuggerUnload()
     if (!IsDebuggerAttached())
         return;
 
-    LOG((LF_CORDB, LL_INFO10, "AD::NDD domain [%d] %#08x %ls\n",
-         GetId().m_dwId, this, GetFriendlyNameForLogging()));
+    LOG((LF_CORDB, LL_INFO10, "AD::NDD domain %#08x %ls\n",
+         this, GetFriendlyNameForLogging()));
 
     LOG((LF_CORDB, LL_INFO100, "AD::NDD: Interating domain bound assemblies\n"));
     AssemblyIterator i = IterateAssembliesEx((AssemblyIterationFlags)(kIncludeLoaded |  kIncludeLoading  | kIncludeExecution));
@@ -8043,55 +5612,8 @@ BOOL AppDomain::WasSystemAssemblyLoadEventSent(void)
 }
 
 #ifndef CROSSGEN_COMPILE
-// U->M thunks created in this domain and not associated with a delegate.
-UMEntryThunkCache *AppDomain::GetUMEntryThunkCache()
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_ANY;
-        INJECT_FAULT(COMPlusThrowOM(););
-    }
-    CONTRACTL_END;
-
-    if (!m_pUMEntryThunkCache)
-    {
-        UMEntryThunkCache *pUMEntryThunkCache = new UMEntryThunkCache(this);
-
-        if (FastInterlockCompareExchangePointer(&m_pUMEntryThunkCache, pUMEntryThunkCache, NULL) != NULL)
-        {
-            // some thread swooped in and set the field
-            delete pUMEntryThunkCache;
-        }
-    }
-    _ASSERTE(m_pUMEntryThunkCache);
-    return m_pUMEntryThunkCache;
-}
 
 #ifdef FEATURE_COMINTEROP
-
-ComCallWrapperCache *AppDomain::GetComCallWrapperCache()
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_ANY;
-        INJECT_FAULT(COMPlusThrowOM(););
-    }
-    CONTRACTL_END;
-
-    if (! m_pComCallWrapperCache)
-    {
-        BaseDomain::LockHolder lh(this);
-
-        if (! m_pComCallWrapperCache)
-            m_pComCallWrapperCache = ComCallWrapperCache::Create(this);
-    }
-    _ASSERTE(m_pComCallWrapperCache);
-    return m_pComCallWrapperCache;
-}
 
 RCWRefCache *AppDomain::GetRCWRefCache()
 {
@@ -8166,702 +5688,6 @@ void AppDomain::DetachRCWs()
 
 #endif // FEATURE_COMINTEROP
 
-BOOL AppDomain::CanThreadEnter(Thread *pThread)
-{
-    WRAPPER_NO_CONTRACT;
-
-    if (m_Stage < STAGE_EXITED)
-        return TRUE;
-
-    if (pThread == SystemDomain::System()->GetUnloadingThread())
-        return m_Stage < STAGE_FINALIZING;
-    if (pThread == FinalizerThread::GetFinalizerThread())
-        return m_Stage < STAGE_FINALIZED;
-
-    return FALSE;
-}
-
-void AppDomain::AllowThreadEntrance(AppDomain * pApp)
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_TRIGGERS;
-        MODE_ANY;
-        FORBID_FAULT;
-        PRECONDITION(CheckPointer(pApp));
-    }
-    CONTRACTL_END;
-
-    if (pApp->GetUnloadRequestThread() == NULL)
-    {
-        // This is asynchonous unload, either by a host, or by AppDomain.Unload from AD unload event.
-        if (!pApp->IsUnloadingFromUnloadEvent())
-        {
-            pApp->SetStage(STAGE_UNLOAD_REQUESTED);
-            pApp->EnableADUnloadWorker(
-                 pApp->IsRudeUnload()?EEPolicy::ADU_Rude:EEPolicy::ADU_Safe);
-            return;
-        }
-    }
-
-    SystemDomain::LockHolder lh; // we don't want to reopen appdomain if other thread can be preparing to unload it
-
-#ifdef FEATURE_COMINTEROP
-    if (pApp->m_pComCallWrapperCache)
-        pApp->m_pComCallWrapperCache->ResetDomainIsUnloading();
-#endif // FEATURE_COMINTEROP
-
-    pApp->SetStage(STAGE_OPEN);
-}
-
-void AppDomain::RestrictThreadEntrance(AppDomain * pApp)
-{
-    CONTRACTL
-    {
-        DISABLED(NOTHROW);
-        DISABLED(GC_TRIGGERS);
-        MODE_ANY;
-        DISABLED(FORBID_FAULT);
-        PRECONDITION(CheckPointer(pApp));
-    }
-    CONTRACTL_END;
-
-#ifdef FEATURE_COMINTEROP
-    // Set the flag on our CCW cache so stubs won't enter
-    if (pApp->m_pComCallWrapperCache)
-        pApp->m_pComCallWrapperCache->SetDomainIsUnloading();
-#endif // FEATURE_COMINTEROP
-
-    SystemDomain::LockHolder lh; // we don't want to reopen appdomain if other thread can be preparing to unload it
-    // Release our ID so remoting and thread pool won't enter
-    pApp->SetStage(STAGE_EXITED);
-};
-
-void AppDomain::Exit(BOOL fRunFinalizers, BOOL fAsyncExit)
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_COOPERATIVE;
-    }
-    CONTRACTL_END;
-
-    LOG((LF_APPDOMAIN | LF_CORDB, LL_INFO10, "AppDomain::Exiting domain [%d] %#08x %ls\n",
-         GetId().m_dwId, this, GetFriendlyNameForLogging()));
-
-    RestrictEnterHolder RestrictEnter(this);
-
-    {
-        SystemDomain::LockHolder lh; // we don't want to close appdomain if other thread can be preparing to unload it
-        SetStage(STAGE_EXITING);  // Note that we're trying to exit
-    }
-
-    // Raise the event indicating the domain is being unloaded.
-    if (GetDefaultContext())
-    {
-        FastInterlockExchangePointer(&s_pAppDomainToRaiseUnloadEvent, this);
-
-        DWORD timeout = GetEEPolicy()->GetTimeout(m_fRudeUnload?OPR_AppDomainRudeUnload : OPR_AppDomainUnload);
-        //if (timeout == INFINITE)
-        //{
-        //    timeout = 20000; // 20 seconds
-        //}
-        DWORD timeoutForFinalizer = GetEEPolicy()->GetTimeout(OPR_FinalizerRun);
-        ULONGLONG curTime = CLRGetTickCount64();
-        ULONGLONG endTime = 0;
-        if (timeout != INFINITE)
-        {
-            endTime = curTime + timeout;
-            // We will try to kill AD unload event if it takes too long, and then we move on to the next registered caller.
-            timeout /= 5;
-        }
-
-        while (s_pAppDomainToRaiseUnloadEvent != NULL)
-        {
-            FinalizerThread::FinalizerThreadWait(s_fProcessUnloadDomainEvent?timeout:timeoutForFinalizer);
-            if (endTime != 0 && s_pAppDomainToRaiseUnloadEvent != NULL)
-            {
-                if (CLRGetTickCount64() >= endTime)
-                {
-                    SString sThreadId;
-                    sThreadId.Printf(W("%x"), FinalizerThread::GetFinalizerThread()->GetThreadId());
-                    COMPlusThrow(kCannotUnloadAppDomainException,
-                                 IDS_EE_ADUNLOAD_CANT_UNWIND_THREAD,
-                                 sThreadId);
-                }
-            }
-        }
-    }
-
-    //
-    // Set up blocks so no threads can enter except for the finalizer and the thread
-    // doing the unload.
-    //
-
-    RestrictThreadEntrance(this);
-
-    // Cause existing threads to abort out of this domain.  This should ensure all
-    // normal threads are outside the domain, and we've already ensured that no new threads
-    // can enter.
-
-    PerAppDomainTPCountList::AppDomainUnloadingHolder tpAdUnloadHolder(GetTPIndex());
-
-
-    if (!NingenEnabled())
-    {
-        UnwindThreads();
-    }
-    
-    TESTHOOKCALL(UnwoundThreads(GetId().m_dwId)) ;    
-    ProcessEventForHost(Event_DomainUnload, (PVOID)(UINT_PTR)GetId().m_dwId);
-
-    RestrictEnter.SuppressRelease(); //after this point we don't guarantee appdomain consistency
-#ifdef PROFILING_SUPPORTED
-    // Signal profile if present.
-    {
-        BEGIN_PIN_PROFILER(CORProfilerTrackAppDomainLoads());
-        GCX_PREEMP();
-        g_profControlBlock.pProfInterface->AppDomainShutdownStarted((AppDomainID) this);
-        END_PIN_PROFILER();
-    }
-#endif // PROFILING_SUPPORTED
-    COUNTER_ONLY(GetPerfCounters().m_Loading.cAppDomains--);
-    COUNTER_ONLY(GetPerfCounters().m_Loading.cAppDomainsUnloaded++);
-
-    LOG((LF_APPDOMAIN | LF_CORDB, LL_INFO10, "AppDomain::Domain [%d] %#08x %ls is exited.\n",
-         GetId().m_dwId, this, GetFriendlyNameForLogging()));
-
-    ReJitManager::OnAppDomainExit(this);
-
-    // Send ETW events for this domain's unload and potentially iterate through this
-    // domain's modules & assemblies to send events for their unloads as well.  This
-    // needs to occur before STAGE_FINALIZED (to ensure everything is there), so we do
-    // this before any finalization occurs at all.
-    ETW::LoaderLog::DomainUnload(this);
-
-    //
-    // Spin running finalizers until we flush them all.  We need to make multiple passes
-    // in case the finalizers create more finalizable objects.  This is important to clear
-    // the finalizable objects as roots, as well as to actually execute the finalizers. This
-    // will only finalize instances instances of types that aren't potentially agile becuase we can't
-    // risk finalizing agile objects. So we will be left with instances of potentially agile types
-    // in handles or statics.
-    //
-    // <TODO>@todo: Need to ensure this will terminate in a reasonable amount of time.  Eventually
-    // we should probably start passing FALSE for fRunFinalizers. Also I'm not sure we
-    // guarantee that FinalizerThreadWait will ever terminate in general.</TODO>
-    //
-
-    SetStage(STAGE_FINALIZING);
-
-    // Flush finalizers now.
-    FinalizerThread::UnloadAppDomain(this, fRunFinalizers);
-    
-    DWORD timeout = GetEEPolicy()->GetTimeout(m_fRudeUnload?OPR_AppDomainRudeUnload : OPR_AppDomainUnload);
-    ULONGLONG startTime = CLRGetTickCount64();
-    ULONGLONG elapsedTime = 0;
-    DWORD finalizerWait = 0;
-
-    while (FinalizerThread::GetUnloadingAppDomain() != NULL)
-    {
-
-        if (timeout != INFINITE)
-        {
-            elapsedTime = CLRGetTickCount64() - startTime;
-        }
-        if (timeout > elapsedTime)
-        {
-            finalizerWait = timeout - static_cast<DWORD>(elapsedTime);
-        }
-        FinalizerThread::FinalizerThreadWait(finalizerWait); //will set stage to finalized
-        if (timeout != INFINITE && FinalizerThread::GetUnloadingAppDomain() != NULL)
-        {
-            elapsedTime = CLRGetTickCount64() - startTime;
-            if (timeout <= elapsedTime)
-            {
-                SetRudeUnload();
-                // TODO: Consider escalation from RudeAppDomain
-                timeout = INFINITE;
-            }
-        }
-    }
-
-    tpAdUnloadHolder.SuppressRelease();
-    PerAppDomainTPCountList::ResetAppDomainTPCounts(GetTPIndex());
-
-    LOG((LF_APPDOMAIN | LF_CORDB, LL_INFO10, "AppDomain::Domain [%d] %#08x %ls is finalized.\n",
-         GetId().m_dwId, this, GetFriendlyNameForLogging()));
-
-
-    AppDomainRefHolder This(this);
-    AddRef();           // Hold a reference so CloseDomain won't delete us yet
-    CloseDomain();      // Remove ourself from the list of app domains
-
-    // This needs to be done prior to destroying the handle tables below.
-    ReleaseDomainBoundInfo();
-
-    //
-    // It should be impossible to run non-mscorlib code in this domain now.
-    // Cleanup all of our roots except the handles. We do this to allow as many
-    // finalizers as possible to run correctly. If we delete the handles, they
-    // can't run.
-    //
-    if (!NingenEnabled())
-    {
-    }
-
-    ClearGCRoots();
-    ClearGCHandles();
-
-    LOG((LF_APPDOMAIN | LF_CORDB, LL_INFO10, "AppDomain::Domain [%d] %#08x %ls is cleared.\n",
-         GetId().m_dwId, this, GetFriendlyNameForLogging()));
-
-    if (fAsyncExit && fRunFinalizers)
-    {
-        GCX_PREEMP();
-        m_AssemblyCache.Clear();
-        ClearFusionContext();
-        ReleaseFiles();
-        if (!NingenEnabled())
-        {
-            AddMemoryPressure();
-        }
-    }
-    SystemDomain::System()->AddToDelayedUnloadList(this, fAsyncExit);
-    SystemDomain::SetUnloadDomainCleared();
-    if (m_dwId.m_dwId!=0)
-        SystemDomain::ReleaseAppDomainId(m_dwId);
-#ifdef PROFILING_SUPPORTED
-    // Always signal profile if present, even when failed.
-    {
-        BEGIN_PIN_PROFILER(CORProfilerTrackAppDomainLoads());
-        GCX_PREEMP();
-        g_profControlBlock.pProfInterface->AppDomainShutdownFinished((AppDomainID) this, S_OK);
-        END_PIN_PROFILER();
-    }
-#endif // PROFILING_SUPPORTED
-
-}
-
-void AppDomain::Close()
-{
-    CONTRACTL
-    {
-        GC_TRIGGERS;
-        NOTHROW;
-    }
-    CONTRACTL_END;
-
-    LOG((LF_APPDOMAIN | LF_CORDB, LL_INFO10, "AppDomain::Domain [%d] %#08x %ls is collected.\n",
-         GetId().m_dwId, this, GetFriendlyNameForLogging()));
-
-
-#if CHECK_APP_DOMAIN_LEAKS
-    if (g_pConfig->AppDomainLeaks())
-        // at this point shouldn't have any non-agile objects in the heap because we finalized all the non-agile ones.
-        SyncBlockCache::GetSyncBlockCache()->CheckForUnloadedInstances(GetIndex());
-#endif // CHECK_APP_DOMAIN_LEAKS
-    {
-        GCX_PREEMP();
-        RemoveMemoryPressure();
-    }
-    _ASSERTE(m_cRef>0); //should be alive at this point otherwise iterator can revive us and crash
-    {
-        SystemDomain::LockHolder lh;    // Avoid races with AppDomainIterator
-        SetStage(STAGE_CLOSED);
-    }
-
-    // CONSIDER: move releasing remoting cache from managed code to here.
-}
-
-
-void AppDomain::ResetUnloadRequestThread(ADID Id)
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        MODE_ANY;
-        PRECONDITION(!IsADUnloadHelperThread());
-    }
-    CONTRACTL_END;
-
-    GCX_COOP();
-    AppDomainFromIDHolder ad(Id, TRUE);
-    if(!ad.IsUnloaded() && ad->m_Stage < STAGE_UNLOAD_REQUESTED)
-    {
-        Thread *pThread = ad->GetUnloadRequestThread();
-        if(pThread==GetThread())
-        {
-            ad->m_dwThreadsStillInAppDomain=(ULONG)-1;
-
-            if(pThread)
-            {
-                if (pThread->GetUnloadBoundaryFrame() && pThread->IsBeingAbortedForADUnload())
-                {
-                    pThread->UnmarkThreadForAbort(Thread::TAR_ADUnload);
-                }
-                ad->GetUnloadRequestThread()->ResetUnloadBoundaryFrame();
-                pThread->ResetBeginAbortedForADUnload();
-            }
-            
-            ad->SetUnloadRequestThread(NULL);
-        }
-    }
-}
-
-
-int g_fADUnloadWorkerOK = -1;
-
-HRESULT AppDomain::UnloadById(ADID dwId, BOOL fSync,BOOL fExceptionsPassThrough)
-{
-    CONTRACTL
-    {
-        if(fExceptionsPassThrough) {THROWS;} else {NOTHROW;}
-        MODE_ANY;
-        if (GetThread()) {GC_TRIGGERS;} else {DISABLED(GC_TRIGGERS);}
-        FORBID_FAULT;
-    }
-    CONTRACTL_END;
-
-    if (dwId==(ADID)DefaultADID)
-        return COR_E_CANNOTUNLOADAPPDOMAIN;
-
-    Thread *pThread = GetThread();
-
-    // Finalizer thread can not wait until AD unload is done,
-    // because AD unload is going to wait for Finalizer Thread.
-    if (fSync && pThread == FinalizerThread::GetFinalizerThread() && 
-        !pThread->HasThreadStateNC(Thread::TSNC_RaiseUnloadEvent))
-        return COR_E_CANNOTUNLOADAPPDOMAIN;
-
-
-    // AD unload helper thread should have been created.
-    _ASSERTE (g_fADUnloadWorkerOK == 1);
-
-    _ASSERTE (!IsADUnloadHelperThread());
-
-    BOOL fIsRaisingUnloadEvent = (pThread != NULL && pThread->HasThreadStateNC(Thread::TSNC_RaiseUnloadEvent));
-
-    if (fIsRaisingUnloadEvent)
-    {
-        AppDomainFromIDHolder pApp(dwId, TRUE, AppDomainFromIDHolder::SyncType_GC);
-
-        if (pApp.IsUnloaded() || ! pApp->CanLoadCode() || pApp->GetId().m_dwId == 0)
-            return COR_E_APPDOMAINUNLOADED;
-
-        pApp->EnableADUnloadWorker();
-
-        return S_FALSE;
-    }
-
-
-    ADUnloadSinkHolder pSink;
-
-    {
-        SystemDomain::LockHolder ulh;
-
-        AppDomainFromIDHolder pApp(dwId, TRUE, AppDomainFromIDHolder::SyncType_ADLock);
-
-        if (pApp.IsUnloaded() || ! pApp->CanLoadCode() || pApp->GetId().m_dwId == 0)
-            return COR_E_APPDOMAINUNLOADED;
-
-        if (g_fADUnloadWorkerOK != 1)
-        {
-            _ASSERTE(FALSE);
-            return E_UNEXPECTED;
-        }
-
-        if (!fSync)
-        {
-            pApp->EnableADUnloadWorker();
-            return S_OK;
-        }
-
-        pSink = pApp->PrepareForWaitUnloadCompletion();
-
-        pApp->EnableADUnloadWorker();
-
-        // release the holders - we don't care anymore if the appdomain is gone
-    }
-
-#ifdef FEATURE_TESTHOOKS        
-    if (fExceptionsPassThrough)
-    {
-        CONTRACT_VIOLATION(FaultViolation);
-        return UnloadWaitNoCatch(dwId,pSink);
-    }
-#endif            
-
-    return UnloadWait(dwId,pSink);
-}
-
-HRESULT AppDomain::UnloadWait(ADID Id, ADUnloadSink * pSink)
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        MODE_ANY;
-        if (GetThread()) {GC_TRIGGERS;} else {DISABLED(GC_TRIGGERS);}
-    }
-    CONTRACTL_END;
-    
-    HRESULT hr=S_OK;
-    EX_TRY
-    {
-        // IF you ever try to change this to something not using events, please address the fact that
-        // AppDomain::StopEEAndUnwindThreads relies on that events are used.
-
-        pSink->WaitUnloadCompletion();
-    }
-    EX_CATCH_HRESULT(hr);
-
-    if (SUCCEEDED(hr))
-        hr=pSink->GetUnloadResult();
-
-    if (FAILED(hr))
-    {
-        ResetUnloadRequestThread(Id);
-    }
-    return hr;
-}
-
-#ifdef FEATURE_TESTHOOKS        
-HRESULT AppDomain::UnloadWaitNoCatch(ADID Id, ADUnloadSink * pSink)
-{
-    STATIC_CONTRACT_THROWS;
-    STATIC_CONTRACT_MODE_ANY;    
-
-    Holder<ADID, DoNothing<ADID>, AppDomain::ResetUnloadRequestThread> resetUnloadHolder(Id);
-
-    // IF you ever try to change this to something not using events, please address the fact that
-    // AppDomain::StopEEAndUnwindThreads relies on that events are used.
-    pSink->WaitUnloadCompletion();
-
-    HRESULT hr = pSink->GetUnloadResult();
-
-    if (SUCCEEDED(hr))
-        resetUnloadHolder.SuppressRelease();
-
-    return hr;
-}
-#endif
-
-void AppDomain::Unload(BOOL fForceUnload)
-{
-    CONTRACTL
-    {
-        THROWS;
-        MODE_COOPERATIVE;
-        GC_TRIGGERS;
-        INJECT_FAULT(COMPlusThrowOM(););
-    }
-    CONTRACTL_END;
-
-#ifdef FEATURE_MULTICOREJIT
-
-    // Avoid profiling file is partially written in ASP.net scenarios, call it earlier
-    GetMulticoreJitManager().StopProfile(true);
-
-#endif
-
-    Thread *pThread = GetThread();
-
-
-    if (! fForceUnload && !g_pConfig->AppDomainUnload())
-        return;
-
-    EPolicyAction action;
-    EClrOperation operation;
-    if (!IsRudeUnload())
-    {
-        operation = OPR_AppDomainUnload;
-    }
-    else
-    {
-        operation = OPR_AppDomainRudeUnload;
-    }
-    action = GetEEPolicy()->GetDefaultAction(operation,NULL);
-    GetEEPolicy()->NotifyHostOnDefaultAction(operation,action);
-
-    switch (action)
-    {
-    case eUnloadAppDomain:
-        break;
-    case eRudeUnloadAppDomain:
-        SetRudeUnload();
-        break;
-    case eExitProcess:
-    case eFastExitProcess:
-    case eRudeExitProcess:
-    case eDisableRuntime:
-        EEPolicy::HandleExitProcessFromEscalation(action, HOST_E_EXITPROCESS_ADUNLOAD);
-        _ASSERTE (!"Should not get here");
-        break;
-    default:
-        break;
-    }
-
-#if (defined(_DEBUG) || defined(BREAK_ON_UNLOAD) || defined(AD_LOG_MEMORY) || defined(AD_SNAPSHOT))
-    static int unloadCount = 0;
-#endif
-
-#ifdef AD_LOG_MEMORY
-    {
-        GCX_PREEMP();
-        static int logMemory = CLRConfig::GetConfigValue(CLRConfig::INTERNAL_ADLogMemory);
-        typedef void (__cdecl *LogItFcn) ( int );
-        static LogItFcn pLogIt = NULL;
-
-        if (logMemory && ! pLogIt)
-        {
-            HMODULE hMod = CLRLoadLibrary(W("mpdh.dll"));
-            if (hMod)
-            {
-                pLogIt = (LogItFcn)GetProcAddress(hMod, "logIt");
-                if (pLogIt)
-                {
-                    pLogIt(9999);
-                    pLogIt(9999);
-                }
-            }
-        }
-    }
-#endif // AD_LOG_MEMORY
-
-    if (IsDefaultDomain() && !IsSingleAppDomain())
-        COMPlusThrow(kCannotUnloadAppDomainException, IDS_EE_ADUNLOAD_DEFAULT);
-
-    _ASSERTE(CanUnload());
-
-    if (pThread == FinalizerThread::GetFinalizerThread() || GetUnloadRequestThread() == FinalizerThread::GetFinalizerThread())
-        COMPlusThrow(kCannotUnloadAppDomainException, IDS_EE_ADUNLOAD_IN_FINALIZER);
-
-    _ASSERTE(! SystemDomain::AppDomainBeingUnloaded());
-
-    // should not be running in this AD because unload spawned thread in default domain
-    if (!NingenEnabled())
-    {
-        _ASSERTE(!pThread->IsRunningIn(this, NULL));
-    }
-
-
-#ifdef APPDOMAIN_STATE
-    _ASSERTE_ALL_BUILDS("clr/src/VM/AppDomain.cpp", pThread->GetDomain()->IsDefaultDomain());
-#endif
-
-    LOG((LF_APPDOMAIN | LF_CORDB, LL_INFO10, "AppDomain::Unloading domain [%d] %#08x %ls\n", GetId().m_dwId, this, GetFriendlyName()));
-
-    STRESS_LOG3 (LF_APPDOMAIN, LL_INFO100, "Unload domain [%d, %d] %p\n", GetId().m_dwId, GetIndex().m_dwIndex, this);
-
-    UnloadHolder hold(this);
-
-    SystemDomain::System()->SetUnloadRequestingThread(GetUnloadRequestThread());
-    SystemDomain::System()->SetUnloadingThread(pThread);
-
-
-#ifdef _DEBUG
-    static int dumpSB = -1;
-
-    if (dumpSB == -1)
-        dumpSB = CLRConfig::GetConfigValue(CLRConfig::INTERNAL_ADDumpSB);
-
-    if (dumpSB > 1)
-    {
-        LogSpewAlways("Starting unload %3.3d\n", unloadCount);
-        DumpSyncBlockCache();
-    }
-#endif // _DEBUG
-
-    BOOL bForceGC=m_bForceGCOnUnload;
-
-#ifdef AD_LOG_MEMORY
-    if (pLogIt)
-        bForceGC=TRUE;
-#endif // AD_LOG_MEMORY
-
-#ifdef AD_SNAPSHOT
-    static int takeSnapShot = -1;
-
-    if (takeSnapShot == -1)
-        takeSnapShot = CLRConfig::GetConfigValue(CLRConfig::INTERNAL_ADTakeSnapShot);
-
-    if (takeSnapShot)
-        bForceGC=TRUE;
-#endif // AD_SNAPSHOT
-
-#ifdef _DEBUG
-    if (dumpSB > 0)
-        bForceGC=TRUE;
-#endif // _DEBUG
-    static int cfgForceGC = -1;
-
-    if (cfgForceGC == -1)
-        cfgForceGC =!CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_ADULazyMemoryRelease);
-
-    bForceGC=bForceGC||cfgForceGC;
-    AppDomainRefHolder This(this);
-    AddRef();
-
-    // Do the actual unloading
-    {
-        // We do not want other threads to abort the current one.
-        ThreadPreventAsyncHolder preventAsync;
-        Exit(TRUE, !bForceGC);
-    }
-    if(bForceGC)
-    {
-        GCHeapUtilities::GetGCHeap()->GarbageCollect();
-        FinalizerThread::FinalizerThreadWait();
-        SetStage(STAGE_COLLECTED);
-        Close(); //NOTHROW!
-    }
-
-#ifdef AD_LOG_MEMORY
-    if (pLogIt)
-    {
-        GCX_PREEMP();
-        pLogIt(unloadCount);
-    }
-#endif // AD_LOG_MEMORY
-
-#ifdef AD_SNAPSHOT
-    if (takeSnapShot)
-    {
-        char buffer[1024];
-        sprintf_s(buffer, _countof(buffer), "vadump -p %d -o > vadump.%d", GetCurrentProcessId(), unloadCount);
-        system(buffer);
-        sprintf_s(buffer, _countof(buffer), "umdh -p:%d -d -i:1 -f:umdh.%d", GetCurrentProcessId(), unloadCount);
-        system(buffer);
-        int takeDHSnapShot = CLRConfig::GetConfigValue(CLRConfig::INTERNAL_ADTakeDHSnapShot);
-        if (takeDHSnapShot)
-        {
-            sprintf_s(buffer, _countof(buffer), "dh -p %d -s -g -h -b -f dh.%d", GetCurrentProcessId(), unloadCount);
-            system(buffer);
-        }
-    }
-#endif // AD_SNAPSHOT
-
-#ifdef _DEBUG
-    if (dumpSB > 0)
-    {
-        // do extra finalizer wait to remove any leftover sb entries
-        FinalizerThread::FinalizerThreadWait();
-        GCHeapUtilities::GetGCHeap()->GarbageCollect();
-        FinalizerThread::FinalizerThreadWait();
-        LogSpewAlways("Done unload %3.3d\n", unloadCount);
-        DumpSyncBlockCache();
-        ShutdownLogging();
-        WCHAR buffer[128];
-        swprintf_s(buffer, NumItems(buffer), W("DumpSB.%d"), unloadCount);
-        _ASSERTE(WszMoveFileEx(W("COMPLUS.LOG"), buffer, MOVEFILE_REPLACE_EXISTING));
-        // this will open a new file
-        InitLogging();
-    }
-#endif // _DEBUG
-}
-
 void AppDomain::ExceptionUnwind(Frame *pFrame)
 {
     CONTRACTL
@@ -8873,852 +5699,14 @@ void AppDomain::ExceptionUnwind(Frame *pFrame)
     CONTRACTL_END;
 
     LOG((LF_APPDOMAIN, LL_INFO10, "AppDomain::ExceptionUnwind for %8.8x\n", pFrame));
-#if _DEBUG_ADUNLOAD
-    printf("%x AppDomain::ExceptionUnwind for %8.8p\n", GetThread()->GetThreadId(), pFrame);
-#endif
     Thread *pThread = GetThread();
     _ASSERTE(pThread);
 
-    if (! pThread->ShouldChangeAbortToUnload(pFrame))
-    {
-        LOG((LF_APPDOMAIN, LL_INFO10, "AppDomain::ExceptionUnwind: not first transition or abort\n"));
-        return;
-    }
-
-    LOG((LF_APPDOMAIN, LL_INFO10, "AppDomain::ExceptionUnwind: changing to unload\n"));
-
-    GCX_COOP();
-    OBJECTREF throwable = NULL;
-    EEResourceException e(kAppDomainUnloadedException, W("Remoting_AppDomainUnloaded_ThreadUnwound"));
-    throwable = e.GetThrowable();
-
-    // reset the exception to an AppDomainUnloadedException
-    if (throwable != NULL)
-    {
-        GetThread()->SafeSetThrowables(throwable);
-    }
+    LOG((LF_APPDOMAIN, LL_INFO10, "AppDomain::ExceptionUnwind: not first transition or abort\n"));
 }
-
-BOOL AppDomain::StopEEAndUnwindThreads(unsigned int retryCount, BOOL *pFMarkUnloadRequestThread)
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_ANY;
-        SO_INTOLERANT;
-    }
-    CONTRACTL_END;
-
-    Thread *pThread = NULL;
-    DWORD nThreadsNeedMoreWork=0;
-    if (retryCount != (unsigned int)-1 && retryCount < g_pConfig->AppDomainUnloadRetryCount())
-    {
-        Thread *pCurThread = GetThread();
-        if (pCurThread->CatchAtSafePoint())
-            pCurThread->PulseGCMode();
-
-        {
-            // We know which thread is not in the domain now.  We just need to
-            // work on those threads.  We do not need to suspend the runtime.
-            ThreadStoreLockHolder tsl;
-
-            while ((pThread = ThreadStore::GetThreadList(pThread)) != NULL)
-            {
-                if (pThread == pCurThread)
-                {
-                    continue;
-                }
-
-                if (pThread == FinalizerThread::GetFinalizerThread())
-                {
-                    continue;
-                }
-
-                if (pThread->GetUnloadBoundaryFrame() == NULL)
-                {
-                    continue;
-                }
-
-                // A thread may have UnloadBoundaryFrame set if
-                // 1. Being unloaded by AD unload helper thread
-                // 2. Escalation from OOM or SO triggers AD unload
-                // Here we only need to work on threads that are in the domain.  If we work on other threads,
-                // those threads may be stucked in a finally, and we will not be able to escalate for them,
-                // therefore AD unload is blocked.
-                if (pThread->IsBeingAbortedForADUnload() ||
-                    pThread == SystemDomain::System()->GetUnloadRequestingThread())
-                {
-                    nThreadsNeedMoreWork++;
-                }
-
-                if (!(IsRudeUnload() ||
-                      (pThread != SystemDomain::System()->GetUnloadRequestingThread() || OnlyOneThreadLeft())))
-                {
-                    continue;
-                }
-
-                if ((pThread == SystemDomain::System()->GetUnloadRequestingThread()) && *pFMarkUnloadRequestThread)
-                {
-                    // Mark thread for abortion only once; later on interrupt only
-                    *pFMarkUnloadRequestThread = FALSE;
-                    pThread->SetAbortRequest(m_fRudeUnload? EEPolicy::TA_Rude : EEPolicy::TA_V1Compatible);
-                }
-                else
-                {
-                    if (pThread->m_State & Thread::TS_Interruptible)
-                    {
-                        pThread->UserInterrupt(Thread::TI_Abort);
-                    }
-                }
-
-                if (pThread->PreemptiveGCDisabledOther())
-                {
-        #if defined(FEATURE_HIJACK) && !defined(PLATFORM_UNIX)
-                    Thread::SuspendThreadResult str = pThread->SuspendThread();
-                    if (str == Thread::STR_Success)
-                    {
-                        if (pThread->PreemptiveGCDisabledOther() &&
-                            (!pThread->IsAbortInitiated() || pThread->IsRudeAbort()))
-                        {
-                            pThread->HandleJITCaseForAbort();
-                        }
-                        pThread->ResumeThread();
-                    }
-        #endif
-                }
-            }
-        } // ThreadStoreLockHolder
-
-        if (nThreadsNeedMoreWork && CLRTaskHosted())
-        {
-            // In case a thread is the domain is blocked due to its scheduler being
-            // occupied by another thread.
-            Thread::ThreadAbortWatchDog();
-        }
-        m_dwThreadsStillInAppDomain=nThreadsNeedMoreWork;
-        return !nThreadsNeedMoreWork;
-    }
-
-    // For now piggyback on the GC's suspend EE mechanism
-    ThreadSuspend::SuspendEE(ThreadSuspend::SUSPEND_FOR_APPDOMAIN_SHUTDOWN);
-#ifdef _DEBUG
-    // <TODO>@todo: what to do with any threads that didn't stop?</TODO>
-    _ASSERTE(ThreadStore::s_pThreadStore->DbgBackgroundThreadCount() > 0);
-#endif // _DEBUG
-
-    int totalADCount = 0;
-    int finalizerADCount = 0;
-    pThread = NULL;
-
-    RuntimeExceptionKind reKind = kLastException;
-    UINT resId = 0;
-    SmallStackSString ssThreadId;
-
-    while ((pThread = ThreadStore::GetThreadList(pThread)) != NULL)
-    {
-        // we already checked that we're not running in the unload domain
-        if (pThread == GetThread())
-        {
-            continue;
-        }
-
-#ifdef _DEBUG
-        void PrintStackTraceWithADToLog(Thread *pThread);
-        if (LoggingOn(LF_APPDOMAIN, LL_INFO100)) {
-            LOG((LF_APPDOMAIN, LL_INFO100, "\nStackTrace for %x\n", pThread->GetThreadId()));
-            PrintStackTraceWithADToLog(pThread);
-        }
-#endif // _DEBUG
-        int count = 0;
-        Frame *pFrame = pThread->GetFirstTransitionInto(this, &count);
-        if (! pFrame) {
-            _ASSERTE(count == 0);
-            if (pThread->IsBeingAbortedForADUnload())
-            {
-                pThread->ResetBeginAbortedForADUnload();
-            }
-            continue;
-        }
-
-        if (pThread != FinalizerThread::GetFinalizerThread())
-        {
-            totalADCount += count;
-            nThreadsNeedMoreWork++;
-            pThread->SetUnloadBoundaryFrame(pFrame);
-        }
-        else
-        {
-            finalizerADCount = count;
-        }
-
-        // don't setup the exception info for the unloading thread unless it's the last one in
-        if (retryCount != ((unsigned int) -1) && retryCount > g_pConfig->AppDomainUnloadRetryCount() && reKind == kLastException &&
-            (pThread != SystemDomain::System()->GetUnloadRequestingThread() || OnlyOneThreadLeft()))
-        {
-#ifdef AD_BREAK_ON_CANNOT_UNLOAD
-            static int breakOnCannotUnload = CLRConfig::GetConfigValue(CLRConfig::INTERNAL_ADBreakOnCannotUnload);
-            if (breakOnCannotUnload)
-                _ASSERTE(!"Cannot unload AD");
-#endif // AD_BREAK_ON_CANNOT_UNLOAD
-            reKind = kCannotUnloadAppDomainException;
-            resId = IDS_EE_ADUNLOAD_CANT_UNWIND_THREAD;
-            ssThreadId.Printf(W("%x"), pThread->GetThreadId());
-            STRESS_LOG2(LF_APPDOMAIN, LL_INFO10, "AppDomain::UnwindThreads cannot stop thread %x with %d transitions\n", pThread->GetThreadId(), count);
-            // don't break out of this early or the assert totalADCount == (int)m_dwThreadEnterCount below will fire
-            // it's better to chew a little extra time here and make sure our counts are consistent
-        }
-        // only abort the thread requesting the unload if it's the last one in, that way it will get
-        // notification that the unload failed for some other thread not being aborted. And don't abort
-        // the finalizer thread - let it finish it's work as it's allowed to be in there. If it won't finish,
-        // then we will eventually get a CannotUnloadException on it.
-
-        if (pThread != FinalizerThread::GetFinalizerThread() &&
-            // If the domain is rudely unloaded, we will unwind the requesting thread out
-            // Rude unload is going to succeed, or escalated to disable runtime or higher.
-            (IsRudeUnload() ||
-             (pThread != SystemDomain::System()->GetUnloadRequestingThread() || OnlyOneThreadLeft())
-            )
-           )
-        {
-
-            STRESS_LOG2(LF_APPDOMAIN, LL_INFO100, "AppDomain::UnwindThreads stopping %x with %d transitions\n", pThread->GetThreadId(), count);
-            LOG((LF_APPDOMAIN, LL_INFO100, "AppDomain::UnwindThreads stopping %x with %d transitions\n", pThread->GetThreadId(), count));
-#if _DEBUG_ADUNLOAD
-            printf("AppDomain::UnwindThreads %x stopping %x with first frame %8.8p\n", GetThread()->GetThreadId(), pThread->GetThreadId(), pFrame);
-#endif
-            if (pThread == SystemDomain::System()->GetUnloadRequestingThread())
-            {
-                // Mark thread for abortion only once; later on interrupt only
-                *pFMarkUnloadRequestThread = FALSE;
-            }
-            pThread->SetAbortRequest(m_fRudeUnload? EEPolicy::TA_Rude : EEPolicy::TA_V1Compatible);
-        }
-        TESTHOOKCALL(UnwindingThreads(GetId().m_dwId)) ;
-    }
-    _ASSERTE(totalADCount + finalizerADCount == (int)m_dwThreadEnterCount);
-
-    //@TODO: This is intended to catch a stress bug. Remove when no longer needed.
-    if (totalADCount + finalizerADCount != (int)m_dwThreadEnterCount)
-        FreeBuildDebugBreak();
-
-    // if our count did get messed up, set it to whatever count we actually found in the domain to avoid looping
-    // or other problems related to incorrect count. This is very much a bug if this happens - a thread should always
-    // exit the domain gracefully.
-    // m_dwThreadEnterCount = totalADCount;
-
-    if (reKind != kLastException)
-    {
-        pThread = NULL;
-        while ((pThread = ThreadStore::GetThreadList(pThread)) != NULL)
-        {
-            if (pThread->IsBeingAbortedForADUnload())
-            {
-                pThread->ResetBeginAbortedForADUnload();
-            }
-        }
-    }
-
-    // CommonTripThread will handle the abort for any threads that we've marked
-    ThreadSuspend::RestartEE(FALSE, TRUE);
-    if (reKind != kLastException)
-        COMPlusThrow(reKind, resId, ssThreadId.GetUnicode());
-
-    _ASSERTE((totalADCount==0 && nThreadsNeedMoreWork==0) ||(totalADCount!=0 && nThreadsNeedMoreWork!=0));
-    
-    m_dwThreadsStillInAppDomain=nThreadsNeedMoreWork;
-    return (totalADCount == 0);
-}
-
-void AppDomain::UnwindThreads()
-{
-    // This function should guarantee appdomain
-    // consistency even if it fails. Everything that is going
-    // to make the appdomain impossible to reenter
-    // should be factored out
-
-    // <TODO>@todo: need real synchronization here!!!</TODO>
-    CONTRACTL
-    {
-        MODE_COOPERATIVE;
-        THROWS;
-        GC_TRIGGERS;
-    }
-    CONTRACTL_END;
-
-    int retryCount = -1;
-    m_dwThreadsStillInAppDomain=(ULONG)-1;
-    ULONGLONG startTime = CLRGetTickCount64();
-
-    if (GetEEPolicy()->GetDefaultAction(OPR_AppDomainUnload, NULL) == eRudeUnloadAppDomain &&
-        !IsRudeUnload())
-    {
-        GetEEPolicy()->NotifyHostOnDefaultAction(OPR_AppDomainUnload, eRudeUnloadAppDomain);
-        SetRudeUnload();
-    }
-
-    // Force threads to go through slow path during AD unload.
-    TSSuspendHolder shTrap;
-
-    BOOL fCurrentUnloadMode = IsRudeUnload();
-    BOOL fMarkUnloadRequestThread = TRUE;
-
-    // now wait for all the threads running in our AD to get out
-    do
-    {
-        DWORD timeout = GetEEPolicy()->GetTimeout(m_fRudeUnload?OPR_AppDomainRudeUnload : OPR_AppDomainUnload);
-        EPolicyAction action = GetEEPolicy()->GetActionOnTimeout(m_fRudeUnload?OPR_AppDomainRudeUnload : OPR_AppDomainUnload, NULL);
-        if (timeout != INFINITE && action > eUnloadAppDomain) {
-            // Escalation policy specified.
-            ULONGLONG curTime = CLRGetTickCount64();
-            ULONGLONG elapseTime = curTime - startTime;
-            if (elapseTime > timeout)
-            {
-                // Escalate
-                switch (action)
-                {
-                case eRudeUnloadAppDomain:
-                    GetEEPolicy()->NotifyHostOnTimeout(m_fRudeUnload?OPR_AppDomainRudeUnload : OPR_AppDomainUnload, action);
-                    SetRudeUnload();
-                    STRESS_LOG1(LF_APPDOMAIN, LL_INFO100,"Escalating to RADU, adid=%d",GetId().m_dwId);
-                    break;
-                case eExitProcess:
-                case eFastExitProcess:
-                case eRudeExitProcess:
-                case eDisableRuntime:
-                    GetEEPolicy()->NotifyHostOnTimeout(m_fRudeUnload?OPR_AppDomainRudeUnload : OPR_AppDomainUnload, action);
-                    EEPolicy::HandleExitProcessFromEscalation(action, HOST_E_EXITPROCESS_TIMEOUT);
-                    _ASSERTE (!"Should not reach here");
-                    break;
-                default:
-                    break;
-                }
-            }
-        }
-#ifdef _DEBUG
-        if (LoggingOn(LF_APPDOMAIN, LL_INFO100))
-            DumpADThreadTrack();
-#endif // _DEBUG
-        BOOL fNextUnloadMode = IsRudeUnload();
-        if (fCurrentUnloadMode != fNextUnloadMode)
-        {
-            // We have changed from normal unload to rude unload.  We need to mark the thread
-            // with RudeAbort, but we can only do this safely if the runtime is suspended.
-            fCurrentUnloadMode = fNextUnloadMode;
-            retryCount = -1;
-        }
-        if (StopEEAndUnwindThreads(retryCount, &fMarkUnloadRequestThread))
-            break;
-        if (timeout != INFINITE)
-        {
-            // Turn off the timeout used by AD.
-            retryCount = 1;
-        }
-        else
-        {
-            // GCStress takes a long time to unwind, due to expensive creation of
-            // a threadabort exception.
-            if (!GCStress<cfg_any>::IsEnabled())
-                ++retryCount;
-            LOG((LF_APPDOMAIN, LL_INFO10, "AppDomain::UnwindThreads iteration %d waiting on thread count %d\n", retryCount, m_dwThreadEnterCount));
-#if _DEBUG_ADUNLOAD
-            printf("AppDomain::UnwindThreads iteration %d waiting on thread count %d\n", retryCount, m_dwThreadEnterCount);
-#endif
-        }
-
-        if (m_dwThreadEnterCount != 0)
-        {
-#ifdef _DEBUG
-            GetThread()->UserSleep(20);
-#else // !_DEBUG
-            GetThread()->UserSleep(10);
-#endif // !_DEBUG
-        }
-    }
-    while (TRUE) ;
-}
-
-void AppDomain::ClearGCHandles()
-{
-    CONTRACTL
-    {
-        GC_TRIGGERS;
-        MODE_COOPERATIVE;
-        NOTHROW;
-    }
-    CONTRACTL_END;
-
-    SetStage(STAGE_HANDLETABLE_NOACCESS);
-
-    GCHeapUtilities::GetGCHeap()->WaitUntilConcurrentGCComplete();
-
-    // Keep async pin handles alive by moving them to default domain
-    HandleAsyncPinHandles();
-
-    // Remove our handle table as a source of GC roots
-    HandleTableBucket *pBucket = m_hHandleTableBucket;
-
-#ifdef _DEBUG
-    if (((HandleTable *)(pBucket->pTable[0]))->uADIndex != m_dwIndex)
-        _ASSERTE (!"AD index mismatch");
-#endif // _DEBUG
-
-    Ref_RemoveHandleTableBucket(pBucket);
-}
-
-// When an AD is unloaded, we will release all objects in this AD.
-// If a future asynchronous operation, like io completion port function,
-// we need to keep the memory space fixed so that the gc heap is not corrupted.
-void AppDomain::HandleAsyncPinHandles()
-{
-    CONTRACTL
-    {
-        GC_TRIGGERS;
-        MODE_COOPERATIVE;
-        NOTHROW;
-    }
-    CONTRACTL_END;
-
-    HandleTableBucket *pBucket = m_hHandleTableBucket;
-    // IO completion port picks IO job using FIFO.  Here is how we know which AsyncPinHandle can be freed.
-    // 1. We mark all non-pending AsyncPinHandle with READYTOCLEAN.
-    // 2. We queue a dump Overlapped to the IO completion as a marker.
-    // 3. When the Overlapped is picked up by completion port, we wait until all previous IO jobs are processed.
-    // 4. Then we can delete all AsyncPinHandle marked with READYTOCLEAN.
-    HandleTableBucket *pBucketInDefault = SystemDomain::System()->DefaultDomain()->m_hHandleTableBucket;
-    Ref_RelocateAsyncPinHandles(pBucket, pBucketInDefault);
-
-    OverlappedDataObject::RequestCleanup();
-}
-
-void AppDomain::ClearGCRoots()
-{
-    CONTRACTL
-    {
-        GC_TRIGGERS;
-        MODE_COOPERATIVE;
-        NOTHROW;
-    }
-    CONTRACTL_END;
-
-    Thread *pThread = NULL;
-    ThreadSuspend::SuspendEE(ThreadSuspend::SUSPEND_FOR_APPDOMAIN_SHUTDOWN);
-
-    // Tell the JIT managers to delete any entries in their structures. All the cooperative mode threads are stopped at
-    // this point, so only need to synchronize the preemptive mode threads.
-    ExecutionManager::Unload(GetLoaderAllocator());
-
-    while ((pThread = ThreadStore::GetAllThreadList(pThread, 0, 0)) != NULL)
-    {
-        // Delete the thread local static store
-        pThread->DeleteThreadStaticData(this);
-
-
-        // <TODO>@TODO: A pre-allocated AppDomainUnloaded exception might be better.</TODO>
-        if (m_hHandleTableBucket->Contains(pThread->m_LastThrownObjectHandle))
-        {
-            // Never delete a handle to a preallocated exception object.
-            if (!CLRException::IsPreallocatedExceptionHandle(pThread->m_LastThrownObjectHandle))
-            {
-                DestroyHandle(pThread->m_LastThrownObjectHandle);
-            }
-
-            pThread->m_LastThrownObjectHandle = NULL;
-        }
-
-        // Clear out the exceptions objects held by a thread.
-        pThread->GetExceptionState()->ClearThrowablesForUnload(m_hHandleTableBucket);
-    }
-
-    //delete them while we still have the runtime suspended
-    // This must be deleted before the loader heaps are deleted.
-    if (m_pMarshalingData != NULL)
-    {
-        delete m_pMarshalingData;
-        m_pMarshalingData = NULL;
-    }
-
-    if (m_pLargeHeapHandleTable != NULL)
-    {
-        delete m_pLargeHeapHandleTable;
-        m_pLargeHeapHandleTable = NULL;
-    }
-
-    ThreadSuspend::RestartEE(FALSE, TRUE);
-}
-
-#ifdef _DEBUG
-
-void AppDomain::TrackADThreadEnter(Thread *pThread, Frame *pFrame)
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        // REENTRANT
-        PRECONDITION(CheckPointer(pThread));
-        PRECONDITION(pFrame != (Frame*)(size_t) INVALID_POINTER_CD);
-    }
-    CONTRACTL_END;
-
-    while (FastInterlockCompareExchange((LONG*)&m_TrackSpinLock, 1, 0) != 0)
-        ;
-    if (m_pThreadTrackInfoList == NULL)
-        m_pThreadTrackInfoList = new (nothrow) ThreadTrackInfoList;
-    // If we don't assert here, we will AV in the for loop below
-    _ASSERTE(m_pThreadTrackInfoList);
-
-    ThreadTrackInfoList *pTrackList= m_pThreadTrackInfoList;
-
-    ThreadTrackInfo *pTrack = NULL;
-    int i;
-    for (i=0; i < pTrackList->Count(); i++) {
-        if ((*(pTrackList->Get(i)))->pThread == pThread) {
-            pTrack = *(pTrackList->Get(i));
-            break;
-        }
-    }
-    if (! pTrack) {
-        pTrack = new (nothrow) ThreadTrackInfo;
-        // If we don't assert here, we will AV in the for loop below.
-        _ASSERTE(pTrack);
-        pTrack->pThread = pThread;
-        ThreadTrackInfo **pSlot = pTrackList->Append();
-        *pSlot = pTrack;
-    }
-
-    InterlockedIncrement((LONG*)&m_dwThreadEnterCount);
-    Frame **pSlot;
-    if (pTrack)
-    {
-        pSlot = pTrack->frameStack.Insert(0);
-        *pSlot = pFrame;
-    }
-    int totThreads = 0;
-    for (i=0; i < pTrackList->Count(); i++)
-        totThreads += (*(pTrackList->Get(i)))->frameStack.Count();
-    _ASSERTE(totThreads == (int)m_dwThreadEnterCount);
-
-    InterlockedExchange((LONG*)&m_TrackSpinLock, 0);
-}
-
-
-void AppDomain::TrackADThreadExit(Thread *pThread, Frame *pFrame)
-{
-    CONTRACTL
-    {
-        if (GetThread()) {MODE_COOPERATIVE;}
-        NOTHROW;
-        GC_NOTRIGGER;
-    }
-    CONTRACTL_END;
-
-    while (FastInterlockCompareExchange((LONG*)&m_TrackSpinLock, 1, 0) != 0)
-        ;
-    ThreadTrackInfoList *pTrackList= m_pThreadTrackInfoList;
-    _ASSERTE(pTrackList);
-    ThreadTrackInfo *pTrack = NULL;
-    int i;
-    for (i=0; i < pTrackList->Count(); i++)
-    {
-        if ((*(pTrackList->Get(i)))->pThread == pThread)
-        {
-            pTrack = *(pTrackList->Get(i));
-            break;
-        }
-    }
-    _ASSERTE(pTrack);
-    _ASSERTE(*(pTrack->frameStack.Get(0)) == pFrame);
-    pTrack->frameStack.Delete(0);
-    InterlockedDecrement((LONG*)&m_dwThreadEnterCount);
-
-    int totThreads = 0;
-    for (i=0; i < pTrackList->Count(); i++)
-        totThreads += (*(pTrackList->Get(i)))->frameStack.Count();
-    _ASSERTE(totThreads == (int)m_dwThreadEnterCount);
-
-    InterlockedExchange((LONG*)&m_TrackSpinLock, 0);
-}
-
-void AppDomain::DumpADThreadTrack()
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_COOPERATIVE;
-    }
-    CONTRACTL_END;
-
-    while (FastInterlockCompareExchange((LONG*)&m_TrackSpinLock, 1, 0) != 0)
-        ;
-    ThreadTrackInfoList *pTrackList= m_pThreadTrackInfoList;
-    if (!pTrackList)
-        goto end;
-
-    {
-        LOG((LF_APPDOMAIN, LL_INFO10000, "\nThread dump of %d threads for [%d] %#08x %S\n",
-             m_dwThreadEnterCount, GetId().m_dwId, this, GetFriendlyNameForLogging()));
-        int totThreads = 0;
-        for (int i=0; i < pTrackList->Count(); i++)
-        {
-            ThreadTrackInfo *pTrack = *(pTrackList->Get(i));
-            if (pTrack->frameStack.Count()==0)
-                continue;
-            LOG((LF_APPDOMAIN, LL_INFO100, "  ADEnterCount for %x is %d\n", pTrack->pThread->GetThreadId(), pTrack->frameStack.Count()));
-            totThreads += pTrack->frameStack.Count();
-            for (int j=0; j < pTrack->frameStack.Count(); j++)
-                LOG((LF_APPDOMAIN, LL_INFO100, "      frame %8.8x\n", *(pTrack->frameStack.Get(j))));
-        }
-        _ASSERTE(totThreads == (int)m_dwThreadEnterCount);
-    }
-end:
-    InterlockedExchange((LONG*)&m_TrackSpinLock, 0);
-}
-#endif // _DEBUG
-
 
 #endif // CROSSGEN_COMPILE
 
-void *SharedDomain::operator new(size_t size, void *pInPlace)
-{
-    LIMITED_METHOD_CONTRACT;
-    return pInPlace;
-}
-
-void SharedDomain::operator delete(void *pMem)
-{
-    LIMITED_METHOD_CONTRACT;
-    // Do nothing - new() was in-place
-}
-
-
-void SharedDomain::Attach()
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_ANY;
-        INJECT_FAULT(COMPlusThrowOM(););
-    }
-    CONTRACTL_END;
-
-    // Create the global SharedDomain and initialize it.
-    m_pSharedDomain = new (&g_pSharedDomainMemory[0]) SharedDomain();
-    SystemDomain::GetGlobalLoaderAllocator()->m_pDomain = m_pSharedDomain;
-    // This cannot fail since g_pSharedDomainMemory is a static array.
-    CONSISTENCY_CHECK(CheckPointer(m_pSharedDomain));
-
-    LOG((LF_CLASSLOADER,
-         LL_INFO10,
-         "Created shared domain at %p\n",
-         m_pSharedDomain));
-
-    // We need to initialize the memory pools etc. for the system domain.
-    m_pSharedDomain->Init(); // Setup the memory heaps
-
-    // allocate a Virtual Call Stub Manager for the shared domain
-    m_pSharedDomain->InitVSD();
-}
-
-#ifndef CROSSGEN_COMPILE
-void SharedDomain::Detach()
-{
-    if (m_pSharedDomain)
-    {
-        m_pSharedDomain->Terminate();
-        delete m_pSharedDomain;
-        m_pSharedDomain = NULL;
-    }
-}
-#endif // CROSSGEN_COMPILE
-
-#endif // !DACCESS_COMPILE
-
-SharedDomain *SharedDomain::GetDomain()
-{
-    LIMITED_METHOD_DAC_CONTRACT;
-
-    return m_pSharedDomain;
-}
-
-#ifndef DACCESS_COMPILE
-
-#define INITIAL_ASSEMBLY_MAP_SIZE 17
-void SharedDomain::Init()
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_ANY;
-        INJECT_FAULT(COMPlusThrowOM(););
-    }
-    CONTRACTL_END;
-
-    BaseDomain::Init();
-
-#ifdef FEATURE_LOADER_OPTIMIZATION
-    m_FileCreateLock.Init(CrstSharedAssemblyCreate, CRST_DEFAULT,TRUE);
-
-    LockOwner lock = { &m_DomainCrst, IsOwnerOfCrst };
-    m_assemblyMap.Init(INITIAL_ASSEMBLY_MAP_SIZE, CompareSharedAssembly, TRUE, &lock);
-#endif // FEATURE_LOADER_OPTIMIZATION 
-
-    ETW::LoaderLog::DomainLoad(this);
-}
-
-#ifndef CROSSGEN_COMPILE
-void SharedDomain::Terminate()
-{
-    // make sure we delete the StringLiteralMap before unloading
-    // the asemblies since the string literal map entries can
-    // point to metadata string literals.
-    GetLoaderAllocator()->CleanupStringLiteralMap();
-
-#ifdef FEATURE_LOADER_OPTIMIZATION    
-    PtrHashMap::PtrIterator i = m_assemblyMap.begin();
-
-    while (!i.end())
-    {
-        Assembly *pAssembly = (Assembly*) i.GetValue();
-        delete pAssembly;
-        ++i;
-    }
-
-    ListLockEntry* pElement;
-    pElement = m_FileCreateLock.Pop(TRUE);
-    while (pElement)
-    {
-#ifdef STRICT_CLSINITLOCK_ENTRY_LEAK_DETECTION
-        _ASSERTE (dbg_fDrasticShutdown || g_fInControlC);
-#endif
-        delete(pElement);
-        pElement = (FileLoadLock*) m_FileCreateLock.Pop(TRUE);
-    }
-    m_FileCreateLock.Destroy();
-#endif // FEATURE_LOADER_OPTIMIZATION    
-    BaseDomain::Terminate();
-}
-#endif // CROSSGEN_COMPILE
-
-
-
-#ifdef FEATURE_LOADER_OPTIMIZATION
-
-BOOL SharedDomain::CompareSharedAssembly(UPTR u1, UPTR u2)
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_ANY;
-    }
-    CONTRACTL_END;
-
-    // This is the input to the lookup
-    SharedAssemblyLocator *pLocator = (SharedAssemblyLocator *) (u1<<1);
-
-    // This is the value stored in the table
-    Assembly *pAssembly = (Assembly *) u2;
-    if (pLocator->GetType()==SharedAssemblyLocator::DOMAINASSEMBLY)
-    {
-        if (!pAssembly->GetManifestFile()->Equals(pLocator->GetDomainAssembly()->GetFile()))
-            return FALSE;
-
-        return pAssembly->CanBeShared(pLocator->GetDomainAssembly());
-    }
-    else
-    if (pLocator->GetType()==SharedAssemblyLocator::PEASSEMBLY)
-        return pAssembly->GetManifestFile()->Equals(pLocator->GetPEAssembly());
-    else
-    if (pLocator->GetType()==SharedAssemblyLocator::PEASSEMBLYEXACT)
-        return pAssembly->GetManifestFile() == pLocator->GetPEAssembly();
-     _ASSERTE(!"Unexpected type of assembly locator");
-    return FALSE;
-}
-
-DWORD SharedAssemblyLocator::Hash()
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_ANY;
-        INJECT_FAULT(COMPlusThrowOM(););
-    }
-    CONTRACTL_END;
-    if (m_type==DOMAINASSEMBLY)
-        return GetDomainAssembly()->HashIdentity();
-    if (m_type==PEASSEMBLY||m_type==PEASSEMBLYEXACT)
-        return GetPEAssembly()->HashIdentity();
-     _ASSERTE(!"Unexpected type of assembly locator");
-     return 0;
-}
-
-Assembly * SharedDomain::FindShareableAssembly(SharedAssemblyLocator * pLocator)
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_ANY;
-        INJECT_FAULT(COMPlusThrowOM(););
-    }
-    CONTRACTL_END;
-
-    Assembly * match= (Assembly *) m_assemblyMap.LookupValue(pLocator->Hash(), pLocator);
-    if (match != (Assembly *) INVALIDENTRY)
-        return match;
-    else
-        return NULL;
-}
-
-SIZE_T SharedDomain::GetShareableAssemblyCount()
-{
-    LIMITED_METHOD_CONTRACT;
-
-    return m_assemblyMap.GetCount();
-}
-
-void SharedDomain::AddShareableAssembly(Assembly * pAssembly)
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_ANY;
-        INJECT_FAULT(COMPlusThrowOM(););
-    }
-    CONTRACTL_END;
-
-    // We have a lock on the file. There should be no races to add the same assembly.
-
-    {
-        LockHolder holder(this);
-
-        EX_TRY
-        {
-            pAssembly->SetIsTenured();
-            m_assemblyMap.InsertValue(pAssembly->HashIdentity(), pAssembly);
-        }
-        EX_HOOK
-        {
-            // There was an error adding the assembly to the assembly hash (probably an OOM),
-            // so we need to unset the tenured bit so that correct cleanup can happen.
-            pAssembly->UnsetIsTenured();
-        }
-        EX_END_HOOK
-    }
-
-    LOG((LF_CODESHARING,
-         LL_INFO100,
-         "Successfully added shareable assembly \"%s\".\n",
-         pAssembly->GetManifestFile()->GetSimpleName()));
-}
-
-#endif // FEATURE_LOADER_OPTIMIZATION
 #endif // !DACCESS_COMPILE
 
 DWORD DomainLocalModule::GetClassFlags(MethodTable* pMT, DWORD iClassIndex /*=(DWORD)-1*/)
@@ -9726,11 +5714,9 @@ DWORD DomainLocalModule::GetClassFlags(MethodTable* pMT, DWORD iClassIndex /*=(D
     CONTRACTL {
         NOTHROW;
         GC_NOTRIGGER;
-        SO_TOLERANT;
     } CONTRACTL_END;
 
-    {   // SO tolerance exception for debug-only assertion.
-        CONTRACT_VIOLATION(SOToleranceViolation);
+    {
         CONSISTENCY_CHECK(GetDomainFile()->GetModule() == pMT->GetModuleForStatics());
     }
 
@@ -9997,64 +5983,6 @@ void DomainLocalModule::PopulateClass(MethodTable *pMT)
 }
 #endif // CROSSGEN_COMPILE
 
-void DomainLocalBlock::EnsureModuleIndex(ModuleIndex index)
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_ANY;
-        INJECT_FAULT(COMPlusThrowOM(););
-        // Assumes BaseDomain::DomainLocalBlockLockHolder is taken
-        PRECONDITION(m_pDomain->OwnDomainLocalBlockLock());
-    }
-    CONTRACTL_END;
-
-    if (m_aModuleIndices > index.m_dwIndex)
-    {
-        _ASSERTE(m_pModuleSlots != NULL);
-        return;
-    }
-
-    SIZE_T aModuleIndices = max(16, m_aModuleIndices);
-    while (aModuleIndices <= index.m_dwIndex)
-    {
-        aModuleIndices *= 2;
-    }
-
-    PTR_DomainLocalModule* pNewModuleSlots = (PTR_DomainLocalModule*) (void*)m_pDomain->GetHighFrequencyHeap()->AllocMem(S_SIZE_T(sizeof(PTR_DomainLocalModule)) * S_SIZE_T(aModuleIndices));
-
-    memcpy(pNewModuleSlots, m_pModuleSlots, sizeof(SIZE_T)*m_aModuleIndices);
-
-    // Note: Memory allocated on loader heap is zero filled
-    // memset(pNewModuleSlots + m_aModuleIndices, 0 , (aModuleIndices - m_aModuleIndices)*sizeof(PTR_DomainLocalModule) );
-
-    // Commit new table. The lock-free helpers depend on the order.
-    MemoryBarrier();
-    m_pModuleSlots = pNewModuleSlots;
-    MemoryBarrier();
-    m_aModuleIndices = aModuleIndices;
-
-}
-
-void DomainLocalBlock::SetModuleSlot(ModuleIndex index, PTR_DomainLocalModule pLocalModule)
-{
-    // Need to synchronize with table growth in this domain
-    BaseDomain::DomainLocalBlockLockHolder lh(m_pDomain);
-
-    EnsureModuleIndex(index);
-
-    _ASSERTE(index.m_dwIndex < m_aModuleIndices);
-
-    // We would like this assert here, unfortunately, loading a module in this appdomain can fail
-    // after here  and we will keep the module around and reuse the slot when we retry (if
-    // the failure happened due to a transient error, such as OOM). In that case the slot wont
-    // be null.
-    //_ASSERTE(m_pModuleSlots[index.m_dwIndex] == 0);
-
-    m_pModuleSlots[index.m_dwIndex] = pLocalModule;
-}
-
 #ifndef CROSSGEN_COMPILE
 
 DomainAssembly* AppDomain::RaiseTypeResolveEventThrowing(DomainAssembly* pAssembly, LPCSTR szName, ASSEMBLYREF *pResultingAssemblyRef)
@@ -10070,48 +5998,43 @@ DomainAssembly* AppDomain::RaiseTypeResolveEventThrowing(DomainAssembly* pAssemb
 
     OVERRIDE_TYPE_LOAD_LEVEL_LIMIT(CLASS_LOADED);
 
-
     DomainAssembly* pResolvedAssembly = NULL;
     _ASSERTE(strcmp(szName, g_AppDomainClassName));
 
     GCX_COOP();
 
     struct _gc {
-        OBJECTREF AppDomainRef;
         OBJECTREF AssemblyRef;
         STRINGREF str;
     } gc;
     ZeroMemory(&gc, sizeof(gc));
 
     GCPROTECT_BEGIN(gc);
-    if ((gc.AppDomainRef = GetRawExposedObject()) != NULL)
+
+    if (pAssembly != NULL)
+        gc.AssemblyRef = pAssembly->GetExposedAssemblyObject();
+
+    MethodDescCallSite onTypeResolve(METHOD__ASSEMBLYLOADCONTEXT__ON_TYPE_RESOLVE);
+
+    gc.str = StringObject::NewString(szName);
+    ARG_SLOT args[2] =
     {
-        if (pAssembly != NULL)
-            gc.AssemblyRef = pAssembly->GetExposedAssemblyObject();
+        ObjToArgSlot(gc.AssemblyRef),
+        ObjToArgSlot(gc.str)
+    };
+    ASSEMBLYREF ResultingAssemblyRef = (ASSEMBLYREF) onTypeResolve.Call_RetOBJECTREF(args);
 
-        MethodDescCallSite onTypeResolve(METHOD__APP_DOMAIN__ON_TYPE_RESOLVE, &gc.AppDomainRef);
+    if (ResultingAssemblyRef != NULL)
+    {
+        pResolvedAssembly = ResultingAssemblyRef->GetDomainAssembly();
 
-        gc.str = StringObject::NewString(szName);
-        ARG_SLOT args[3] =
+        if (pResultingAssemblyRef)
+            *pResultingAssemblyRef = ResultingAssemblyRef;
+        else
         {
-            ObjToArgSlot(gc.AppDomainRef),
-            ObjToArgSlot(gc.AssemblyRef),
-            ObjToArgSlot(gc.str)
-        };
-        ASSEMBLYREF ResultingAssemblyRef = (ASSEMBLYREF) onTypeResolve.Call_RetOBJECTREF(args);
-
-        if (ResultingAssemblyRef != NULL)
-        {
-            pResolvedAssembly = ResultingAssemblyRef->GetDomainAssembly();
-
-            if (pResultingAssemblyRef)
-                *pResultingAssemblyRef = ResultingAssemblyRef;
-            else
+            if (pResolvedAssembly->IsCollectible())
             {
-                if (pResolvedAssembly->IsCollectible())
-                {
-                    COMPlusThrow(kNotSupportedException, W("NotSupported_CollectibleBoundNonCollectible"));
-                }
+                COMPlusThrow(kNotSupportedException, W("NotSupported_CollectibleBoundNonCollectible"));
             }
         }
     }
@@ -10138,34 +6061,30 @@ Assembly* AppDomain::RaiseResourceResolveEvent(DomainAssembly* pAssembly, LPCSTR
     GCX_COOP();
 
     struct _gc {
-        OBJECTREF AppDomainRef;
         OBJECTREF AssemblyRef;
         STRINGREF str;
     } gc;
     ZeroMemory(&gc, sizeof(gc));
 
     GCPROTECT_BEGIN(gc);
-    if ((gc.AppDomainRef = GetRawExposedObject()) != NULL)
-    {
-        if (pAssembly != NULL)
-            gc.AssemblyRef=pAssembly->GetExposedAssemblyObject();
 
-        MethodDescCallSite onResourceResolve(METHOD__APP_DOMAIN__ON_RESOURCE_RESOLVE, &gc.AppDomainRef);
-        gc.str = StringObject::NewString(szName);
-        ARG_SLOT args[3] =
+    if (pAssembly != NULL)
+        gc.AssemblyRef=pAssembly->GetExposedAssemblyObject();
+
+    MethodDescCallSite onResourceResolve(METHOD__ASSEMBLYLOADCONTEXT__ON_RESOURCE_RESOLVE);
+    gc.str = StringObject::NewString(szName);
+    ARG_SLOT args[2] =
+    {
+        ObjToArgSlot(gc.AssemblyRef),
+        ObjToArgSlot(gc.str)
+    };
+    ASSEMBLYREF ResultingAssemblyRef = (ASSEMBLYREF) onResourceResolve.Call_RetOBJECTREF(args);
+    if (ResultingAssemblyRef != NULL)
+    {
+        pResolvedAssembly = ResultingAssemblyRef->GetAssembly();
+        if (pResolvedAssembly->IsCollectible())
         {
-            ObjToArgSlot(gc.AppDomainRef),
-            ObjToArgSlot(gc.AssemblyRef),
-            ObjToArgSlot(gc.str)
-        };
-        ASSEMBLYREF ResultingAssemblyRef = (ASSEMBLYREF) onResourceResolve.Call_RetOBJECTREF(args);
-        if (ResultingAssemblyRef != NULL)
-        {
-            pResolvedAssembly = ResultingAssemblyRef->GetAssembly();
-            if (pResolvedAssembly->IsCollectible())
-            {
-                COMPlusThrow(kNotSupportedException, W("NotSupported_CollectibleAssemblyResolve"));
-            }
+            COMPlusThrow(kNotSupportedException, W("NotSupported_CollectibleAssemblyResolve"));
         }
     }
     GCPROTECT_END();
@@ -10176,9 +6095,7 @@ Assembly* AppDomain::RaiseResourceResolveEvent(DomainAssembly* pAssembly, LPCSTR
 
 Assembly * 
 AppDomain::RaiseAssemblyResolveEvent(
-    AssemblySpec * pSpec, 
-    BOOL           fIntrospection, 
-    BOOL           fPreBind)
+    AssemblySpec * pSpec)
 {
     CONTRACT(Assembly*)
     {
@@ -10190,19 +6107,8 @@ AppDomain::RaiseAssemblyResolveEvent(
     }
     CONTRACT_END;
 
-    BinderMethodID methodId;
     StackSString ssName;
     pSpec->GetFileOrDisplayName(0, ssName);
-    
-    if (!fPreBind) 
-    {
-        methodId = METHOD__APP_DOMAIN__ON_ASSEMBLY_RESOLVE;  // post-bind execution event (the classic V1.0 event)
-    }
-    else
-    {
-        RETURN NULL;
-    }
-        
 
     // Elevate threads allowed loading level.  This allows the host to load an assembly even in a restricted
     // condition.  Note, however, that this exposes us to possible recursion failures, if the host tries to
@@ -10216,26 +6122,22 @@ AppDomain::RaiseAssemblyResolveEvent(
     Assembly* pAssembly = NULL;
 
     struct _gc {
-        OBJECTREF AppDomainRef;
         OBJECTREF AssemblyRef;
         STRINGREF str;
     } gc;
     ZeroMemory(&gc, sizeof(gc));
 
     GCPROTECT_BEGIN(gc);
-    if ((gc.AppDomainRef = GetRawExposedObject()) != NULL)
     {
         if (pSpec->GetParentAssembly() != NULL)
         {
-            {
-                gc.AssemblyRef=pSpec->GetParentAssembly()->GetExposedAssemblyObject();
-            }
+            gc.AssemblyRef=pSpec->GetParentAssembly()->GetExposedAssemblyObject();
         }
-        MethodDescCallSite onAssemblyResolve(methodId, &gc.AppDomainRef);
+
+        MethodDescCallSite onAssemblyResolve(METHOD__ASSEMBLYLOADCONTEXT__ON_ASSEMBLY_RESOLVE);
 
         gc.str = StringObject::NewString(ssName);
-        ARG_SLOT args[3] = {
-            ObjToArgSlot(gc.AppDomainRef),
+        ARG_SLOT args[2] = {
             ObjToArgSlot(gc.AssemblyRef),
             ObjToArgSlot(gc.str)
         };
@@ -10255,12 +6157,6 @@ AppDomain::RaiseAssemblyResolveEvent(
 
     if (pAssembly != NULL)
     {
-        if  ((!(pAssembly->IsIntrospectionOnly())) != (!fIntrospection))
-        {
-            // Cannot return an introspection assembly from an execution callback or vice-versa
-            COMPlusThrow(kFileLoadException, pAssembly->IsIntrospectionOnly() ? IDS_CLASSLOAD_ASSEMBLY_RESOLVE_RETURNED_INTROSPECTION : IDS_CLASSLOAD_ASSEMBLY_RESOLVE_RETURNED_EXECUTION);
-        }
-
         // Check that the public key token matches the one specified in the spec
         // MatchPublicKeys throws as appropriate
         pSpec->MatchPublicKeys(pAssembly);
@@ -10269,700 +6165,16 @@ AppDomain::RaiseAssemblyResolveEvent(
     RETURN pAssembly;
 } // AppDomain::RaiseAssemblyResolveEvent
 
-
-//---------------------------------------------------------------------------------------
-//
-// Determine the type of AppDomainManager to use for the default AppDomain
-//
-// Notes:
-//   v2.0 of the CLR used environment variables APPDOMAIN_MANAGER_ASM and APPDOMAIN_MANAGER_TYPE to set the
-//   domain manager. For compatibility these are still supported, along with appDomainManagerAsm and
-//   appDomainManagerType config file switches. If the config switches are supplied, the entry point must be
-//   fully trusted.  
-//
-
-void AppDomain::InitializeDefaultDomainManager()
-{
-    CONTRACTL
-    {
-        MODE_COOPERATIVE;
-        GC_TRIGGERS;
-        THROWS;
-        INJECT_FAULT(COMPlusThrowOM(););
-        PRECONDITION(GetId().m_dwId == DefaultADID);
-        PRECONDITION(!HasAppDomainManagerInfo());
-    }
-    CONTRACTL_END;
-
-    //
-    // The AppDomainManager for the default domain can be specified by:
-    //  1. Native hosting API
-    //  2. Application config file if the application is fully trusted
-    //  3. Environment variables
-    //
-
-
-    if (CorHost2::HasAppDomainManagerInfo())
-    {
-        SetAppDomainManagerInfo(CorHost2::GetAppDomainManagerAsm(),
-                                CorHost2::GetAppDomainManagerType(),
-                                CorHost2::GetAppDomainManagerInitializeNewDomainFlags());
-        m_fAppDomainManagerSetInConfig = FALSE;
-
-        LOG((LF_APPDOMAIN, LL_INFO10, "Setting default AppDomainManager '%S', '%S' from hosting API.\n", GetAppDomainManagerAsm(), GetAppDomainManagerType()));
-    }
-
-    // If we found an AppDomain manager to use, create and initialize it
-    // Otherwise, initialize the config flags.
-    if (HasAppDomainManagerInfo())
-    {
-        // If the initialization flags promise that the domain manager isn't going to modify security, then do a
-        // pre-resolution of the domain now so that we can do some basic verification of the state later.  We
-        // don't care about the actual result now, just that the resolution took place to compare against later.
-        if (GetAppDomainManagerInitializeNewDomainFlags() & eInitializeNewDomainFlags_NoSecurityChanges)
-        {
-            BOOL fIsFullyTrusted;
-            BOOL fIsHomogeneous;
-            GetSecurityDescriptor()->PreResolve(&fIsFullyTrusted, &fIsHomogeneous);
-        }
-
-        OBJECTREF orThis = GetExposedObject();
-        GCPROTECT_BEGIN(orThis);
-
-        MethodDescCallSite createDomainManager(METHOD__APP_DOMAIN__CREATE_APP_DOMAIN_MANAGER);
-        ARG_SLOT args[] =
-        {
-            ObjToArgSlot(orThis)
-        };
-
-        createDomainManager.Call(args);
-
-        GCPROTECT_END();
-    }
-    else
-    {
-        OBJECTREF orThis = GetExposedObject();
-        GCPROTECT_BEGIN(orThis);
-
-        MethodDescCallSite initCompatFlags(METHOD__APP_DOMAIN__INITIALIZE_COMPATIBILITY_FLAGS);
-        ARG_SLOT args[] =
-        {
-            ObjToArgSlot(orThis)
-        };
-
-        initCompatFlags.Call(args);
-
-        GCPROTECT_END();
-    }
-}
-
-
-//---------------------------------------------------------------------------------------
-//
-// Intialize the security settings in the default AppDomain.
-//
-
-void AppDomain::InitializeDefaultDomainSecurity()
-{
-    CONTRACTL
-    {
-        MODE_COOPERATIVE;
-        GC_TRIGGERS;
-        THROWS;
-        PRECONDITION(GetId().m_dwId == DefaultADID);
-    }
-    CONTRACTL_END;
-
-    OBJECTREF orThis = GetExposedObject();
-    GCPROTECT_BEGIN(orThis);
-
-    MethodDescCallSite initializeSecurity(METHOD__APP_DOMAIN__INITIALIZE_DOMAIN_SECURITY);
-    ARG_SLOT args[] =
-    {
-        ObjToArgSlot(orThis),
-        ObjToArgSlot(NULL),
-        ObjToArgSlot(NULL),
-        static_cast<ARG_SLOT>(FALSE),
-        ObjToArgSlot(NULL),
-        static_cast<ARG_SLOT>(FALSE)
-    };
-
-    initializeSecurity.Call(args);
-
-    GCPROTECT_END();
-}
-
-CLREvent * AppDomain::g_pUnloadStartEvent;
-
-void AppDomain::CreateADUnloadWorker()
-{
-    STANDARD_VM_CONTRACT;
-
-    // Do not create adUnload thread if there is only default domain
-    if(IsSingleAppDomain())
-        return;
-
-Retry:
-    BOOL fCreator = FALSE;
-    if (FastInterlockCompareExchange((LONG *)&g_fADUnloadWorkerOK,-2,-1)==-1)  //we're first
-    {
-#ifdef _TARGET_X86_  // use the smallest possible stack on X86 
-        DWORD stackSize = 128 * 1024;
-#else
-        DWORD stackSize = 512 * 1024; // leave X64 unchanged since we have plenty of VM
-#endif
-        Thread *pThread = SetupUnstartedThread();
-        if (pThread->CreateNewThread(stackSize, ADUnloadThreadStart, pThread))
-        {
-            fCreator = TRUE;
-            DWORD dwRet;
-            dwRet = pThread->StartThread();
-
-            // When running under a user mode native debugger there is a race
-            // between the moment we've created the thread (in CreateNewThread) and 
-            // the moment we resume it (in StartThread); the debugger may receive 
-            // the "ct" (create thread) notification, and it will attempt to 
-            // suspend/resume all threads in the process.  Now imagine the debugger
-            // resumes this thread first, and only later does it try to resume the
-            // newly created thread (the ADU worker thread).  In these conditions our
-            // call to ResumeThread may come before the debugger's call to ResumeThread
-            // actually causing dwRet to equal 2.
-            // We cannot use IsDebuggerPresent() in the condition below because the 
-            // debugger may have been detached between the time it got the notification
-            // and the moment we execute the test below.
-            _ASSERTE(dwRet == 1 || dwRet == 2);
-        }
-        else
-        {
-            pThread->DecExternalCount(FALSE);
-            FastInterlockExchange((LONG *)&g_fADUnloadWorkerOK, -1);
-            ThrowOutOfMemory();
-        }
-    }
-
-    YIELD_WHILE (g_fADUnloadWorkerOK == -2);
-
-    if (g_fADUnloadWorkerOK == -1) {
-        if (fCreator)
-        {
-            ThrowOutOfMemory();
-        }
-        else
-        {
-            goto Retry;
-        }
-    }
-}
-
-/*static*/ void AppDomain::ADUnloadWorkerHelper(AppDomain *pDomain)
-{
-    STATIC_CONTRACT_NOTHROW;
-    STATIC_CONTRACT_GC_TRIGGERS;
-    STATIC_CONTRACT_MODE_COOPERATIVE;
-    ADUnloadSink* pADUnloadSink=pDomain->GetADUnloadSinkForUnload();
-    HRESULT hr=S_OK;
-
-    EX_TRY
-    {
-        pDomain->Unload(FALSE);
-    }
-    EX_CATCH_HRESULT(hr);
-
-    if(pADUnloadSink)
-    {
-        SystemDomain::LockHolder lh;
-        pADUnloadSink->ReportUnloadResult(hr,NULL);
-        pADUnloadSink->Release();
-    }
-}
-
-void AppDomain::DoADUnloadWork()
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_COOPERATIVE;
-        INJECT_FAULT(COMPlusThrowOM(););
-    }
-    CONTRACTL_END;
-
-    DWORD i = 1;
-    while (TRUE) {
-
-        AppDomain *pDomainToUnload = NULL;
-
-        {
-            // Take the lock so that no domain can be added or removed from the system domain
-            SystemDomain::LockHolder lh;
-
-            DWORD numDomain = SystemDomain::GetCurrentAppDomainMaxIndex();
-            for (; i <= numDomain; i ++) {
-                AppDomain * pDomain = SystemDomain::TestGetAppDomainAtIndex(ADIndex(i));
-                //
-                // @todo: We used to also select a domain if pDomain->IsUnload() returned true. But that causes
-                // problems when we've failed to completely unload the AD in the past. If we've reached the CLEARED
-                // stage, for instance, then there will be no default context and AppDomain::Exit() will simply crash.
-                //
-                if (pDomain && pDomain->IsUnloadRequested())
-                {
-                    pDomainToUnload = pDomain;
-                    i ++;
-                    break;
-                }
-            }
-        }
-
-        if (!pDomainToUnload) {
-            break;
-        }
-
-        // We are the only thread that can unload domains so no one else can delete the appdomain
-        ADUnloadWorkerHelper(pDomainToUnload);            
-    }
-}
-
-static void DoADUnloadWorkHelper()
-{
-    STATIC_CONTRACT_NOTHROW;
-    STATIC_CONTRACT_GC_TRIGGERS;
-    STATIC_CONTRACT_MODE_COOPERATIVE;
-
-    EX_TRY {
-        AppDomain::DoADUnloadWork();
-    }
-    EX_CATCH
-    {
-    }
-    EX_END_CATCH(SwallowAllExceptions);
-}
-
-ULONGLONG g_ObjFinalizeStartTime = 0;
-Volatile<BOOL> g_FinalizerIsRunning = FALSE;
-Volatile<ULONG> g_FinalizerLoopCount = 0;
-
-ULONGLONG GetObjFinalizeStartTime()
-{
-    LIMITED_METHOD_CONTRACT;
-    return g_ObjFinalizeStartTime;
-}
-
-void FinalizerThreadAbortOnTimeout()
-{
-    STATIC_CONTRACT_NOTHROW;
-    STATIC_CONTRACT_MODE_COOPERATIVE;
-    STATIC_CONTRACT_GC_TRIGGERS;
-
-    {
-        // If finalizer thread is blocked because scheduler is running another task,
-        // or it is waiting for another thread, we first see if we get finalizer thread
-        // running again.
-        Thread::ThreadAbortWatchDog();
-    }
-
-    EX_TRY
-    {
-        Thread *pFinalizerThread = FinalizerThread::GetFinalizerThread();
-        EPolicyAction action = GetEEPolicy()->GetActionOnTimeout(OPR_FinalizerRun, pFinalizerThread);
-        switch (action)
-        {
-        case eAbortThread:
-            GetEEPolicy()->NotifyHostOnTimeout(OPR_FinalizerRun, action);
-            pFinalizerThread->UserAbort(Thread::TAR_Thread,
-                                        EEPolicy::TA_Safe,
-                                        INFINITE,
-                                        Thread::UAC_FinalizerTimeout);
-            break;
-        case eRudeAbortThread:
-            GetEEPolicy()->NotifyHostOnTimeout(OPR_FinalizerRun, action);
-            pFinalizerThread->UserAbort(Thread::TAR_Thread,
-                                        EEPolicy::TA_Rude,
-                                        INFINITE,
-                                        Thread::UAC_FinalizerTimeout);
-            break;
-        case eUnloadAppDomain:
-            {
-                AppDomain *pDomain = pFinalizerThread->GetDomain();
-                pFinalizerThread->UserAbort(Thread::TAR_Thread,
-                                            EEPolicy::TA_Safe,
-                                            INFINITE,
-                                            Thread::UAC_FinalizerTimeout);
-                if (!pDomain->IsDefaultDomain())
-                {
-                    GetEEPolicy()->NotifyHostOnTimeout(OPR_FinalizerRun, action);
-                    pDomain->EnableADUnloadWorker(EEPolicy::ADU_Safe);
-                }
-            }
-            break;
-        case eRudeUnloadAppDomain:
-            {
-                AppDomain *pDomain = pFinalizerThread->GetDomain();
-                pFinalizerThread->UserAbort(Thread::TAR_Thread,
-                                            EEPolicy::TA_Rude,
-                                            INFINITE,
-                                            Thread::UAC_FinalizerTimeout);
-                if (!pDomain->IsDefaultDomain())
-                {
-                    GetEEPolicy()->NotifyHostOnTimeout(OPR_FinalizerRun, action);
-                    pDomain->EnableADUnloadWorker(EEPolicy::ADU_Rude);
-                }
-            }
-            break;
-        case eExitProcess:
-        case eFastExitProcess:
-        case eRudeExitProcess:
-        case eDisableRuntime:
-            GetEEPolicy()->NotifyHostOnTimeout(OPR_FinalizerRun, action);
-            EEPolicy::HandleExitProcessFromEscalation(action, HOST_E_EXITPROCESS_TIMEOUT);
-            _ASSERTE (!"Should not get here");
-            break;
-        default:
-            break;
-        }
-    }
-    EX_CATCH
-    {
-    }
-    EX_END_CATCH(SwallowAllExceptions);
-}
-
 enum WorkType
 {
     WT_UnloadDomain = 0x1,
     WT_ThreadAbort = 0x2,
-    WT_FinalizerThread = 0x4,
-    WT_ClearCollectedDomains=0x8
+    WT_FinalizerThread = 0x4
 };
 
 static Volatile<DWORD> s_WorkType = 0;
 
-
-DWORD WINAPI AppDomain::ADUnloadThreadStart(void *args)
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        DISABLED(GC_TRIGGERS);
-
-        // This function will always be at the very bottom of the stack. The only
-        // user code it calls is the AppDomainUnload notifications which we will
-        // not be hardenning for Whidbey.
-        //
-        ENTRY_POINT;
-    }
-    CONTRACTL_END;
-
-    BEGIN_ENTRYPOINT_NOTHROW;
-
-    ClrFlsSetThreadType (ThreadType_ADUnloadHelper);
-
-    Thread *pThread = (Thread*)args;
-    bool fOK = (pThread->HasStarted() != 0);
-
-    {
-        GCX_MAYBE_PREEMP(fOK);
-
-        if (fOK)
-        {
-            EX_TRY
-            {
-                if (CLRTaskHosted())
-                {
-                    // ADUnload helper thread is critical.  We do not want it to share scheduler
-                    // with other tasks.
-                    pThread->LeaveRuntime(0);
-                }
-            }
-            EX_CATCH
-            {
-                fOK = false;
-            }
-            EX_END_CATCH(SwallowAllExceptions);
-        }
-
-        _ASSERTE (g_fADUnloadWorkerOK == -2);
-
-        FastInterlockExchange((LONG *)&g_fADUnloadWorkerOK,fOK?1:-1);
-
-        if (!fOK)
-        {
-            DestroyThread(pThread);
-            goto Exit;
-        }
-
-        pThread->SetBackground(TRUE);
-
-        pThread->SetThreadStateNC(Thread::TSNC_ADUnloadHelper);
-
-        while (TRUE) {
-            DWORD TAtimeout = INFINITE;
-            ULONGLONG endTime = Thread::GetNextSelfAbortEndTime();
-            ULONGLONG curTime = CLRGetTickCount64();
-            if (endTime <= curTime) {
-                TAtimeout = 5;
-            }
-            else
-            {
-                ULONGLONG diff = endTime - curTime;
-                if (diff < MAXULONG)
-                {
-                    TAtimeout = (DWORD)diff;
-                }
-            }
-            ULONGLONG finalizeStartTime = GetObjFinalizeStartTime();
-            DWORD finalizeTimeout = INFINITE;
-            DWORD finalizeTimeoutSetting = GetEEPolicy()->GetTimeout(OPR_FinalizerRun);
-            if (finalizeTimeoutSetting != INFINITE && g_FinalizerIsRunning)
-            {
-                if (finalizeStartTime == 0)
-                {
-                    finalizeTimeout = finalizeTimeoutSetting;
-                }
-                else
-                {
-                    endTime = finalizeStartTime + finalizeTimeoutSetting;
-                    if (endTime <= curTime) {
-                        finalizeTimeout = 0;
-                    }
-                    else
-                    {
-                        ULONGLONG diff = endTime - curTime;
-                        if (diff < MAXULONG)
-                        {
-                            finalizeTimeout = (DWORD)diff;
-                        }
-                    }
-                }
-            }
-
-            if (AppDomain::HasWorkForFinalizerThread())
-            {
-                if (finalizeTimeout > finalizeTimeoutSetting)
-                {
-                    finalizeTimeout = finalizeTimeoutSetting;
-                }
-            }
-
-            DWORD timeout = INFINITE;
-            if (finalizeTimeout <= TAtimeout)
-            {
-                timeout = finalizeTimeout;
-            }
-            else
-            {
-                timeout = TAtimeout;
-            }
-
-            if (timeout != 0)
-            {
-                LOG((LF_APPDOMAIN, LL_INFO10, "Waiting to start unload\n"));
-                g_pUnloadStartEvent->Wait(timeout,FALSE);
-            }
-
-            if (finalizeTimeout != INFINITE || (s_WorkType & WT_FinalizerThread) != 0)
-            {
-                STRESS_LOG0(LF_ALWAYS, LL_ALWAYS, "ADUnloadThreadStart work for Finalizer thread\n");
-                FastInterlockAnd(&s_WorkType, ~WT_FinalizerThread);
-                // only watch finalizer thread is finalizer method or unloadevent is being processed
-                if (GetObjFinalizeStartTime() == finalizeStartTime && finalizeStartTime != 0 && g_FinalizerIsRunning)
-                {
-                    if (CLRGetTickCount64() >= finalizeStartTime+finalizeTimeoutSetting)
-                    {
-                        GCX_COOP();
-                        FinalizerThreadAbortOnTimeout();
-                    }
-                }
-                if (s_fProcessUnloadDomainEvent && g_FinalizerIsRunning)
-                {
-                    GCX_COOP();
-                    FinalizerThreadAbortOnTimeout();
-                }
-            }
-
-            if (TAtimeout != INFINITE || (s_WorkType & WT_ThreadAbort) != 0)
-            {
-                STRESS_LOG0(LF_ALWAYS, LL_ALWAYS, "ADUnloadThreadStart work for thread abort\n");
-                FastInterlockAnd(&s_WorkType, ~WT_ThreadAbort);
-                GCX_COOP();
-                Thread::ThreadAbortWatchDog();
-            }
-
-            if ((s_WorkType & WT_UnloadDomain) != 0 && !AppDomain::HasWorkForFinalizerThread())
-            {
-                STRESS_LOG0(LF_ALWAYS, LL_ALWAYS, "ADUnloadThreadStart work for AD unload\n");
-                FastInterlockAnd(&s_WorkType, ~WT_UnloadDomain);
-                GCX_COOP();
-                DoADUnloadWorkHelper();
-            }
-
-            if ((s_WorkType & WT_ClearCollectedDomains) != 0)
-            {
-                STRESS_LOG0(LF_ALWAYS, LL_ALWAYS, "ADUnloadThreadStart work for AD cleanup\n");
-                FastInterlockAnd(&s_WorkType, ~WT_ClearCollectedDomains);
-                GCX_COOP();
-                SystemDomain::System()->ClearCollectedDomains();
-            }
-
-        }
-Exit:;
-    }
-
-    END_ENTRYPOINT_NOTHROW;
-
-    return 0;
-}
-
-void AppDomain::EnableADUnloadWorker()
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        SO_TOLERANT; // Called during a SO
-    }
-    CONTRACTL_END;
-
-    EEPolicy::AppDomainUnloadTypes type = EEPolicy::ADU_Safe;
-
-#ifdef _DEBUG
-    DWORD hostTestADUnload = g_pConfig->GetHostTestADUnload();
-    if (hostTestADUnload == 2) {
-        type = EEPolicy::ADU_Rude;
-    }
-#endif // _DEBUG
-
-    EnableADUnloadWorker(type);
-}
-
-void AppDomain::EnableADUnloadWorker(EEPolicy::AppDomainUnloadTypes type, BOOL fHasStack)
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        SO_TOLERANT; // Called during a SO
-    }
-    CONTRACTL_END;
-
-    FastInterlockOr (&s_WorkType, WT_UnloadDomain);
-
-    LONG stage = m_Stage;
-    static_assert_no_msg(sizeof(m_Stage) == sizeof(int));
-
-    _ASSERTE(!IsDefaultDomain());
-
-    // Mark unload requested.
-    if (type == EEPolicy::ADU_Rude) {
-        SetRudeUnload();
-    }
-    while (stage < STAGE_UNLOAD_REQUESTED) {
-        stage = FastInterlockCompareExchange((LONG*)&m_Stage,STAGE_UNLOAD_REQUESTED,stage);
-    }
-
-    if (!fHasStack)
-    {
-        // Can not call Set due to limited stack.
-        return;
-    }
-    LOG((LF_APPDOMAIN, LL_INFO10, "Enabling unload worker\n"));
-    g_pUnloadStartEvent->Set();
-}
-
-void AppDomain::EnableADUnloadWorkerForThreadAbort()
-{
-    LIMITED_METHOD_CONTRACT;
-    STRESS_LOG0(LF_ALWAYS, LL_ALWAYS, "Enabling unload worker for thread abort\n");
-    LOG((LF_APPDOMAIN, LL_INFO10, "Enabling unload worker for thread abort\n"));
-    FastInterlockOr (&s_WorkType, WT_ThreadAbort);
-    g_pUnloadStartEvent->Set();
-}
-
-
-void AppDomain::EnableADUnloadWorkerForFinalizer()
-{
-    LIMITED_METHOD_CONTRACT;
-    if (GetEEPolicy()->GetTimeout(OPR_FinalizerRun) != INFINITE)
-    {
-        LOG((LF_APPDOMAIN, LL_INFO10, "Enabling unload worker for Finalizer Thread\n"));
-        FastInterlockOr (&s_WorkType, WT_FinalizerThread);
-        g_pUnloadStartEvent->Set();
-    }
-}
-
-void AppDomain::EnableADUnloadWorkerForCollectedADCleanup()
-{
-    LIMITED_METHOD_CONTRACT;
-    LOG((LF_APPDOMAIN, LL_INFO10, "Enabling unload worker for collected domains\n"));
-    FastInterlockOr (&s_WorkType, WT_ClearCollectedDomains);
-    g_pUnloadStartEvent->Set();
-}
-
-
-void SystemDomain::ClearCollectedDomains()
-{
-    CONTRACTL
-    {
-        GC_TRIGGERS;
-        NOTHROW;
-        MODE_COOPERATIVE;
-    }
-    CONTRACTL_END;
-        
-    AppDomain* pDomainsToClear=NULL;
-    {
-        CrstHolder lh(&m_DelayedUnloadCrst); 
-        for (AppDomain** ppDomain=&m_pDelayedUnloadList;(*ppDomain)!=NULL; )
-        {
-            if ((*ppDomain)->m_Stage==AppDomain::STAGE_COLLECTED)
-            {
-                AppDomain* pAppDomain=*ppDomain;
-                *ppDomain=(*ppDomain)->m_pNextInDelayedUnloadList;
-                pAppDomain->m_pNextInDelayedUnloadList=pDomainsToClear;
-                pDomainsToClear=pAppDomain;
-            }
-            else
-                ppDomain=&((*ppDomain)->m_pNextInDelayedUnloadList);
-        }
-    }
-        
-    for (AppDomain* pDomain=pDomainsToClear;pDomain!=NULL;)
-    {
-        AppDomain* pNext=pDomain->m_pNextInDelayedUnloadList;
-        pDomain->Close(); //NOTHROW!
-        pDomain->Release();
-        pDomain=pNext;
-    }
-}
- 
-void SystemDomain::ProcessClearingDomains()
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_ANY;           
-    }
-    CONTRACTL_END;
-    CrstHolder lh(&m_DelayedUnloadCrst); 
-
-    for (AppDomain** ppDomain=&m_pDelayedUnloadList;(*ppDomain)!=NULL; )
-    {
-        if ((*ppDomain)->m_Stage==AppDomain::STAGE_HANDLETABLE_NOACCESS)
-        {
-            AppDomain* pAppDomain=*ppDomain;
-            pAppDomain->SetStage(AppDomain::STAGE_CLEARED);
-        }
-        ppDomain=&((*ppDomain)->m_pNextInDelayedUnloadList);
-    }
-        
-    if (!m_UnloadIsAsync)
-    {
-        // For synchronous mode, we are now done with the list.
-        m_pDelayedUnloadList = NULL;    
-    }
-}
-
-void SystemDomain::ProcessDelayedUnloadDomains()
+void SystemDomain::ProcessDelayedUnloadLoaderAllocators()
 {
     CONTRACTL
     {
@@ -10976,24 +6188,10 @@ void SystemDomain::ProcessDelayedUnloadDomains()
     if (GCHeapUtilities::GetGCHeap()->IsConcurrentGCInProgress())
         iGCRefPoint--;
 
-    BOOL bAppDomainToCleanup = FALSE;
     LoaderAllocator * pAllocatorsToDelete = NULL;
 
     {
         CrstHolder lh(&m_DelayedUnloadCrst); 
-
-        for (AppDomain* pDomain=m_pDelayedUnloadList; pDomain!=NULL; pDomain=pDomain->m_pNextInDelayedUnloadList)
-        {
-            if (pDomain->m_Stage==AppDomain::STAGE_CLEARED)
-            {
-                // Compare with 0 to handle overflows gracefully
-                if (0 < iGCRefPoint - pDomain->GetGCRefPoint())
-                {
-                    bAppDomainToCleanup=TRUE;
-                    pDomain->SetStage(AppDomain::STAGE_COLLECTED);
-                }
-            }
-        }
 
         LoaderAllocator ** ppAllocator=&m_pDelayedUnloadListOfLoaderAllocators;
         while (*ppAllocator!= NULL)
@@ -11013,9 +6211,6 @@ void SystemDomain::ProcessDelayedUnloadDomains()
         }
     }
 
-    if (bAppDomainToCleanup)
-        AppDomain::EnableADUnloadWorkerForCollectedADCleanup();
-
     // Delete collected loader allocators on the finalizer thread. We cannot offload it to appdomain unload thread because of 
     // there is not guaranteed to be one, and it is not that expensive operation anyway.
     while (pAllocatorsToDelete != NULL)
@@ -11026,159 +6221,6 @@ void SystemDomain::ProcessDelayedUnloadDomains()
     }
 }
 
-#endif // CROSSGEN_COMPILE
-
-AppDomainFromIDHolder::AppDomainFromIDHolder(ADID adId, BOOL bUnsafePoint, SyncType synctype)
-{
-    WRAPPER_NO_CONTRACT;
-    ANNOTATION_SPECIAL_HOLDER_CALLER_NEEDS_DYNAMIC_CONTRACT;
-#ifdef _DEBUG
-    m_bAcquired=false;   
-    m_bChecked=false;
-    m_type=synctype;
-    
-#endif
-    Assign(adId, bUnsafePoint);
-}
-
-AppDomainFromIDHolder::AppDomainFromIDHolder(SyncType synctype)
-{
-    LIMITED_METHOD_CONTRACT;
-    ANNOTATION_SPECIAL_HOLDER_CALLER_NEEDS_DYNAMIC_CONTRACT;
-    m_pDomain=NULL;
-#ifdef _DEBUG
-    m_bAcquired=false;
-    m_bChecked=false;
-    m_type=synctype;
-#endif
-}
-
-#ifndef CROSSGEN_COMPILE
-void ADUnloadSink::ReportUnloadResult (HRESULT hr, OBJECTREF* pException)
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        PRECONDITION(CheckPointer(this));
-        PRECONDITION(m_UnloadCompleteEvent.IsValid());
-    }
-    CONTRACTL_END;
-
-    //pException is unused;
-    m_UnloadResult=hr;
-    m_UnloadCompleteEvent.Set();
-};
-
-void ADUnloadSink::WaitUnloadCompletion()
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-        PRECONDITION(CheckPointer(this));
-        PRECONDITION(m_UnloadCompleteEvent.IsValid());
-    }
-    CONTRACTL_END;
-
-    CONTRACT_VIOLATION(FaultViolation);
-    m_UnloadCompleteEvent.WaitEx(INFINITE, (WaitMode)(WaitMode_Alertable | WaitMode_ADUnload));
-};
-
-ADUnloadSink* AppDomain::PrepareForWaitUnloadCompletion()
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        PRECONDITION(SystemDomain::IsUnderDomainLock());
-        FORBID_FAULT;
-    }
-    CONTRACTL_END;
-
-    ADUnloadSink* pADSink=GetADUnloadSink();
-    PREFIX_ASSUME(pADSink!=NULL);
-    if (m_Stage < AppDomain::STAGE_UNLOAD_REQUESTED) //we're first
-    {
-        pADSink->Reset();
-        SetUnloadRequestThread(GetThread());
-    }
-    return pADSink;
-};
-
-ADUnloadSink::ADUnloadSink()
-{
-    CONTRACTL
-    {
-        CONSTRUCTOR_CHECK;
-        THROWS;
-        GC_NOTRIGGER;
-        MODE_ANY;
-        INJECT_FAULT(COMPlusThrowOM(););
-    }
-    CONTRACTL_END;
-
-    m_cRef=1;
-    m_UnloadCompleteEvent.CreateManualEvent(FALSE);
-    m_UnloadResult=S_OK;
-};
-
-ADUnloadSink::~ADUnloadSink()
-{
-    CONTRACTL
-    {
-        DESTRUCTOR_CHECK;
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_ANY;
-    }
-    CONTRACTL_END;
-    m_UnloadCompleteEvent.CloseEvent();
-
-};
-
-
-ULONG ADUnloadSink::AddRef()
-{
-    LIMITED_METHOD_CONTRACT;
-    return InterlockedIncrement(&m_cRef);
-};
-
-ULONG ADUnloadSink::Release()
-{
-    LIMITED_METHOD_CONTRACT;
-    ULONG ulRef = InterlockedDecrement(&m_cRef);
-    if (ulRef == 0)
-    {
-        delete this;
-    }
-    return ulRef;
-};
-
-void ADUnloadSink::Reset()
-{
-    LIMITED_METHOD_CONTRACT;
-    m_UnloadResult=S_OK;
-    m_UnloadCompleteEvent.Reset();
-}
-
-ADUnloadSink* AppDomain::GetADUnloadSink()
-{
-    LIMITED_METHOD_CONTRACT;
-    _ASSERTE(SystemDomain::IsUnderDomainLock());
-    if(m_ADUnloadSink)
-        m_ADUnloadSink->AddRef();
-    return m_ADUnloadSink;
-};
-
-ADUnloadSink* AppDomain::GetADUnloadSinkForUnload()
-{
-    // unload thread only. Doesn't need to have AD lock
-    LIMITED_METHOD_CONTRACT;
-    if(m_ADUnloadSink)
-        m_ADUnloadSink->AddRef();
-    return m_ADUnloadSink;
-}
 #endif // CROSSGEN_COMPILE
 
 void AppDomain::EnumStaticGCRefs(promote_func* fn, ScanContext* sc)
@@ -11209,6 +6251,13 @@ void AppDomain::EnumStaticGCRefs(promote_func* fn, ScanContext* sc)
 #endif // !DACCESS_COMPILE
 
 //------------------------------------------------------------------------
+PTR_LoaderAllocator BaseDomain::GetLoaderAllocator()
+{
+    WRAPPER_NO_CONTRACT;
+    return SystemDomain::GetGlobalLoaderAllocator(); // The one and only domain is not unloadable
+}
+
+//------------------------------------------------------------------------
 UINT32 BaseDomain::GetTypeID(PTR_MethodTable pMT) {
     CONTRACTL {
         THROWS;
@@ -11225,7 +6274,6 @@ UINT32 BaseDomain::LookupTypeID(PTR_MethodTable pMT)
 {
     CONTRACTL {
         NOTHROW;
-        SO_TOLERANT;
         WRAPPER(GC_TRIGGERS);
         PRECONDITION(pMT->GetDomain() == this);
     } CONTRACTL_END;
@@ -11237,15 +6285,11 @@ UINT32 BaseDomain::LookupTypeID(PTR_MethodTable pMT)
 PTR_MethodTable BaseDomain::LookupType(UINT32 id) {
     CONTRACTL {
         NOTHROW;
-        SO_TOLERANT;
         WRAPPER(GC_TRIGGERS);
         CONSISTENCY_CHECK(id != TYPE_ID_THIS_CLASS);
     } CONTRACTL_END;
 
     PTR_MethodTable pMT = m_typeIDMap.LookupType(id);
-    if (pMT == NULL && !IsSharedDomain()) {
-        pMT = SharedDomain::GetDomain()->LookupType(id);
-    }
 
     CONSISTENCY_CHECK(CheckPointer(pMT));
     CONSISTENCY_CHECK(pMT->IsInterface());
@@ -11253,20 +6297,17 @@ PTR_MethodTable BaseDomain::LookupType(UINT32 id) {
 }
 
 #ifndef DACCESS_COMPILE
-
-
-//------------------------------------------------------------------------
-BOOL GetCompatibilityFlag(CompatibilityFlag flag)
+//---------------------------------------------------------------------------------------
+void BaseDomain::RemoveTypesFromTypeIDMap(LoaderAllocator* pLoaderAllocator)
 {
     CONTRACTL {
         NOTHROW;
         GC_NOTRIGGER;
-        SO_TOLERANT;
     } CONTRACTL_END;
 
-    return FALSE;
+    m_typeIDMap.RemoveTypes(pLoaderAllocator);
 }
-#endif // !DACCESS_COMPILE
+#endif // DACCESS_COMPILE
 
 //---------------------------------------------------------------------------------------
 // 
@@ -11351,24 +6392,13 @@ AppDomain::AssemblyIterator::Next_Unlocked(
             }
         }
 
-        // Next, reject DomainAssemblies whose execution / introspection status is
+        // Next, reject DomainAssemblies whose execution status is
         // not to be included in the enumeration
         
-        if (pDomainAssembly->IsIntrospectionOnly())
+        // execution assembly
+        if (!(m_assemblyIterationFlags & kIncludeExecution))
         {
-            // introspection assembly
-            if (!(m_assemblyIterationFlags & kIncludeIntrospection))
-            {
-                continue; // reject
-            }
-        }
-        else
-        {
-            // execution assembly
-            if (!(m_assemblyIterationFlags & kIncludeExecution))
-            {
-                continue; // reject
-            }
+            continue; // reject
         }
 
         // Next, reject collectible assemblies
@@ -11419,151 +6449,7 @@ AppDomain::AssemblyIterator::Next_Unlocked(
     return FALSE;
 } // AppDomain::AssemblyIterator::Next_Unlocked
 
-#ifndef DACCESS_COMPILE
-
-//---------------------------------------------------------------------------------------
-// 
-// Can be called only from AppDomain shutdown code:AppDomain::ShutdownAssemblies.
-// Does not add-ref collectible assemblies (as the LoaderAllocator might not be reachable from the 
-// DomainAssembly anymore).
-// 
-BOOL 
-AppDomain::AssemblyIterator::Next_UnsafeNoAddRef(
-    DomainAssembly ** ppDomainAssembly)
-{
-    CONTRACTL {
-        NOTHROW;
-        GC_TRIGGERS;
-        MODE_ANY;
-    } CONTRACTL_END;
-    
-    // Make sure we are iterating all assemblies (see the only caller code:AppDomain::ShutdownAssemblies)
-    _ASSERTE(m_assemblyIterationFlags == 
-        (kIncludeLoaded | kIncludeLoading | kIncludeExecution | kIncludeIntrospection | kIncludeFailedToLoad | kIncludeCollected));
-    // It also means that we do not exclude anything
-    _ASSERTE((m_assemblyIterationFlags & kExcludeCollectible) == 0);
-    
-    // We are on shutdown path, so lock shouldn't be neccessary, but all _Unlocked methods on AssemblyList 
-    // have asserts that the lock is held, so why not to take it ...
-    CrstHolder ch(m_pAppDomain->GetAssemblyListLock());
-    
-    while (m_Iterator.Next())
-    {
-        // Get element from the list/iterator (without adding reference to the assembly)
-        *ppDomainAssembly = dac_cast<PTR_DomainAssembly>(m_Iterator.GetElement());
-        if (*ppDomainAssembly == NULL)
-        {
-            continue;
-        }
-        
-        return TRUE;
-    }
-    
-    *ppDomainAssembly = NULL;
-    return FALSE;
-} // AppDomain::AssemblyIterator::Next_UnsafeNoAddRef
-
-
-//---------------------------------------------------------------------------------------
-// 
-BOOL AppDomain::IsImageFromTrustedPath(PEImage* pPEImage)
-{
-    CONTRACTL
-    {
-        MODE_ANY;
-        GC_TRIGGERS;
-        THROWS;
-        PRECONDITION(CheckPointer(pPEImage));
-    }
-    CONTRACTL_END;
-
-    BOOL fIsInGAC = FALSE;
-    const SString &sImagePath = pPEImage->GetPath();
-
-    if (!sImagePath.IsEmpty())
-    {
-        // If we're not in a sandboxed domain, everything is full trust all the time
-        if (GetSecurityDescriptor()->IsFullyTrusted())
-        {
-            return TRUE;
-        }
-        
-        fIsInGAC = GetTPABinderContext()->IsInTpaList(sImagePath);
-    }
-
-    return fIsInGAC;
-}
-
-BOOL AppDomain::IsImageFullyTrusted(PEImage* pPEImage)
-{
-    WRAPPER_NO_CONTRACT;
-    return IsImageFromTrustedPath(pPEImage);
-}
-
-
-#endif //!DACCESS_COMPILE
-
 #if !defined(DACCESS_COMPILE) && !defined(CROSSGEN_COMPILE)
-
-// Returns a BOOL indicating if the binding model has been locked for the AppDomain
-BOOL AppDomain::IsBindingModelLocked()
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_NOTRIGGER;
-        MODE_ANY;
-    }
-    CONTRACTL_END;
-    
-    return m_fIsBindingModelLocked.Load();
-}
-
-// Marks the binding model locked for AppDomain
-BOOL AppDomain::LockBindingModel()
-{
-    LIMITED_METHOD_CONTRACT;
-    
-    BOOL fDidWeLockBindingModel = FALSE;
-    
-    if (InterlockedCompareExchangeT<BOOL>(&m_fIsBindingModelLocked, TRUE, FALSE) == FALSE)
-    {
-        fDidWeLockBindingModel = TRUE;
-    }
-    
-    return fDidWeLockBindingModel;
-}
-
-BOOL AppDomain::IsHostAssemblyResolverInUse()
-{
-    LIMITED_METHOD_CONTRACT;
-    
-    return (GetFusionContext() != GetTPABinderContext());
-}
-
-// Helper used by the assembly binder to check if the specified AppDomain can use apppath assembly resolver
-BOOL RuntimeCanUseAppPathAssemblyResolver(DWORD adid)
-{
-    CONTRACTL
-    {
-        NOTHROW; // Cannot throw since it is invoked by the Binder that expects to get a hresult
-        GC_TRIGGERS;
-        MODE_ANY;
-    }
-    CONTRACTL_END;
-
-    ADID id(adid);
-
-    // We need to be in COOP mode to get the AppDomain*
-    GCX_COOP();
-        
-    AppDomain *pTargetDomain = SystemDomain::GetAppDomainFromId(id, ADV_CURRENTAD);
-    _ASSERTE(pTargetDomain != NULL);
-
-    pTargetDomain->LockBindingModel();
-        
-    return !pTargetDomain->IsHostAssemblyResolverInUse();
-}
 
 // Returns S_OK if the assembly was successfully loaded
 HRESULT RuntimeInvokeHostAssemblyResolver(INT_PTR pManagedAssemblyLoadContextToBindWithin, IAssemblyName *pIAssemblyName, CLRPrivBinderCoreCLR *pTPABinder, BINDER_SPACE::AssemblyName *pAssemblyName, ICLRPrivAssembly **ppLoadedAssembly)
@@ -11579,151 +6465,173 @@ HRESULT RuntimeInvokeHostAssemblyResolver(INT_PTR pManagedAssemblyLoadContextToB
     
     HRESULT hr = E_FAIL;
 
-    // DevDiv #933506: Exceptions thrown during AssemblyLoadContext.Load should propagate
-    // EX_TRY
+    // Switch to COOP mode since we are going to work with managed references
+    GCX_COOP();
+        
+    struct 
     {
-        // Switch to COOP mode since we are going to work with managed references
-        GCX_COOP();
+        ASSEMBLYNAMEREF oRefAssemblyName;
+        ASSEMBLYREF oRefLoadedAssembly;
+    } _gcRefs;
         
-        struct 
-        {
-            ASSEMBLYNAMEREF oRefAssemblyName;
-            ASSEMBLYREF oRefLoadedAssembly;
-        } _gcRefs;
+    ZeroMemory(&_gcRefs, sizeof(_gcRefs));
         
-        ZeroMemory(&_gcRefs, sizeof(_gcRefs));
+    GCPROTECT_BEGIN(_gcRefs);
         
-        GCPROTECT_BEGIN(_gcRefs);
+    ICLRPrivAssembly *pResolvedAssembly = NULL;
         
-        ICLRPrivAssembly *pAssemblyBindingContext = NULL;
+    // Prepare to invoke System.Runtime.Loader.AssemblyLoadContext.Resolve method.
+    //
+    // First, initialize an assembly spec for the requested assembly
+    //
+    AssemblySpec spec;
+    hr = spec.Init(pIAssemblyName);
+    if (SUCCEEDED(hr))
+    {
+        bool fResolvedAssembly = false;
 
-        bool fInvokedForTPABinder = (pTPABinder == NULL)?true:false;
-        
-        // Prepare to invoke System.Runtime.Loader.AssemblyLoadContext.Resolve method.
-        //
-        // First, initialize an assembly spec for the requested assembly
-        //
-        AssemblySpec spec;
-        hr = spec.Init(pIAssemblyName);
-        if (SUCCEEDED(hr))
-        {
-            bool fResolvedAssembly = false;
-            bool fResolvedAssemblyViaTPALoadContext = false;
-
-            // Allocate an AssemblyName managed object
-            _gcRefs.oRefAssemblyName = (ASSEMBLYNAMEREF) AllocateObject(MscorlibBinder::GetClass(CLASS__ASSEMBLY_NAME));
+        // Allocate an AssemblyName managed object
+        _gcRefs.oRefAssemblyName = (ASSEMBLYNAMEREF) AllocateObject(MscorlibBinder::GetClass(CLASS__ASSEMBLY_NAME));
             
-            // Initialize the AssemblyName object from the AssemblySpec
-            spec.AssemblyNameInit(&_gcRefs.oRefAssemblyName, NULL);
+        // Initialize the AssemblyName object from the AssemblySpec
+        spec.AssemblyNameInit(&_gcRefs.oRefAssemblyName, NULL);
                 
-            if (!fInvokedForTPABinder)
+        bool isSatelliteAssemblyRequest = !spec.IsNeutralCulture();
+
+        if (pTPABinder != NULL)
+        {
+            // Step 2 (of CLRPrivBinderAssemblyLoadContext::BindUsingAssemblyName) - Invoke Load method
+            // This is not invoked for TPA Binder since it always returns NULL.
+
+            // Finally, setup arguments for invocation
+            MethodDescCallSite methLoadAssembly(METHOD__ASSEMBLYLOADCONTEXT__RESOLVE);
+                
+            // Setup the arguments for the call
+            ARG_SLOT args[2] =
             {
-                // Step 2 (of CLRPrivBinderAssemblyLoadContext::BindUsingAssemblyName) - Invoke Load method
-                // This is not invoked for TPA Binder since it always returns NULL.
+                PtrToArgSlot(pManagedAssemblyLoadContextToBindWithin), // IntPtr for managed assembly load context instance
+                ObjToArgSlot(_gcRefs.oRefAssemblyName), // AssemblyName instance
+            };
 
-                // Finally, setup arguments for invocation
-                BinderMethodID idHAR_Resolve = METHOD__ASSEMBLYLOADCONTEXT__RESOLVE;
-                MethodDescCallSite methLoadAssembly(idHAR_Resolve);
-                
-                // Setup the arguments for the call
-                ARG_SLOT args[2] =
-                {
-                    PtrToArgSlot(pManagedAssemblyLoadContextToBindWithin), // IntPtr for managed assembly load context instance
-                    ObjToArgSlot(_gcRefs.oRefAssemblyName), // AssemblyName instance
-                };
-
-                // Make the call
-                _gcRefs.oRefLoadedAssembly = (ASSEMBLYREF) methLoadAssembly.Call_RetOBJECTREF(args);
-                if (_gcRefs.oRefLoadedAssembly != NULL)
-                {
-                    fResolvedAssembly = true;
-                }
-            
-                // Step 3 (of CLRPrivBinderAssemblyLoadContext::BindUsingAssemblyName)
-                if (!fResolvedAssembly)
-                {
-                    // If we could not resolve the assembly using Load method, then attempt fallback with TPA Binder.
-                    // Since TPA binder cannot fallback to itself, this fallback does not happen for binds within TPA binder.
-                    //
-                    // Switch to pre-emp mode before calling into the binder
-                    GCX_PREEMP();
-                    ICLRPrivAssembly *pCoreCLRFoundAssembly = NULL;
-                    hr = pTPABinder->BindAssemblyByName(pIAssemblyName, &pCoreCLRFoundAssembly);
-                    if (SUCCEEDED(hr))
-                    {
-                        pAssemblyBindingContext = pCoreCLRFoundAssembly;
-                        fResolvedAssembly = true;
-                        fResolvedAssemblyViaTPALoadContext = true;
-                    }
-                }
+            // Make the call
+            _gcRefs.oRefLoadedAssembly = (ASSEMBLYREF) methLoadAssembly.Call_RetOBJECTREF(args);
+            if (_gcRefs.oRefLoadedAssembly != NULL)
+            {
+                fResolvedAssembly = true;
             }
-            
-            if (!fResolvedAssembly)
+
+            // Step 3 (of CLRPrivBinderAssemblyLoadContext::BindUsingAssemblyName)
+            if (!fResolvedAssembly && !isSatelliteAssemblyRequest)
             {
-                // Step 4 (of CLRPrivBinderAssemblyLoadContext::BindUsingAssemblyName)
+                // If we could not resolve the assembly using Load method, then attempt fallback with TPA Binder.
+                // Since TPA binder cannot fallback to itself, this fallback does not happen for binds within TPA binder.
                 //
-                // If we couldnt resolve the assembly using TPA LoadContext as well, then
-                // attempt to resolve it using the Resolving event.
-                // Finally, setup arguments for invocation
-                BinderMethodID idHAR_ResolveUsingEvent = METHOD__ASSEMBLYLOADCONTEXT__RESOLVEUSINGEVENT;
-                MethodDescCallSite methLoadAssembly(idHAR_ResolveUsingEvent);
-                
-                // Setup the arguments for the call
-                ARG_SLOT args[2] =
+                // Switch to pre-emp mode before calling into the binder
+                GCX_PREEMP();
+                ICLRPrivAssembly *pCoreCLRFoundAssembly = NULL;
+                hr = pTPABinder->BindAssemblyByName(pIAssemblyName, &pCoreCLRFoundAssembly);
+                if (SUCCEEDED(hr))
                 {
-                    PtrToArgSlot(pManagedAssemblyLoadContextToBindWithin), // IntPtr for managed assembly load context instance
-                    ObjToArgSlot(_gcRefs.oRefAssemblyName), // AssemblyName instance
-                };
-
-                // Make the call
-                _gcRefs.oRefLoadedAssembly = (ASSEMBLYREF) methLoadAssembly.Call_RetOBJECTREF(args);
-                if (_gcRefs.oRefLoadedAssembly != NULL)
-                {
-                    // Set the flag indicating we found the assembly
+                    _ASSERTE(pCoreCLRFoundAssembly != NULL);
+                    pResolvedAssembly = pCoreCLRFoundAssembly;
                     fResolvedAssembly = true;
                 }
             }
-            
-            if (fResolvedAssembly && !fResolvedAssemblyViaTPALoadContext)
+        }
+
+        if (!fResolvedAssembly && isSatelliteAssemblyRequest)
+        {
+            // Step 4 (of CLRPrivBinderAssemblyLoadContext::BindUsingAssemblyName)
+            //
+            // Attempt to resolve it using the ResolveSatelliteAssembly method.
+            // Finally, setup arguments for invocation
+            MethodDescCallSite methResolveSatelitteAssembly(METHOD__ASSEMBLYLOADCONTEXT__RESOLVESATELLITEASSEMBLY);
+
+            // Setup the arguments for the call
+            ARG_SLOT args[2] =
             {
-                // If we are here, assembly was successfully resolved via Load or Resolving events.
-                _ASSERTE(_gcRefs.oRefLoadedAssembly != NULL);
+                PtrToArgSlot(pManagedAssemblyLoadContextToBindWithin), // IntPtr for managed assembly load context instance
+                ObjToArgSlot(_gcRefs.oRefAssemblyName), // AssemblyName instance
+            };
+
+            // Make the call
+            _gcRefs.oRefLoadedAssembly = (ASSEMBLYREF) methResolveSatelitteAssembly.Call_RetOBJECTREF(args);
+            if (_gcRefs.oRefLoadedAssembly != NULL)
+            {
+                // Set the flag indicating we found the assembly
+                fResolvedAssembly = true;
+            }
+        }
+
+        if (!fResolvedAssembly)
+        {
+            // Step 5 (of CLRPrivBinderAssemblyLoadContext::BindUsingAssemblyName)
+            //
+            // If we couldn't resolve the assembly using TPA LoadContext as well, then
+            // attempt to resolve it using the Resolving event.
+            // Finally, setup arguments for invocation
+            MethodDescCallSite methResolveUsingEvent(METHOD__ASSEMBLYLOADCONTEXT__RESOLVEUSINGEVENT);
+                
+            // Setup the arguments for the call
+            ARG_SLOT args[2] =
+            {
+                PtrToArgSlot(pManagedAssemblyLoadContextToBindWithin), // IntPtr for managed assembly load context instance
+                ObjToArgSlot(_gcRefs.oRefAssemblyName), // AssemblyName instance
+            };
+
+            // Make the call
+            _gcRefs.oRefLoadedAssembly = (ASSEMBLYREF) methResolveUsingEvent.Call_RetOBJECTREF(args);
+            if (_gcRefs.oRefLoadedAssembly != NULL)
+            {
+                // Set the flag indicating we found the assembly
+                fResolvedAssembly = true;
+            }
+        }
+            
+        if (fResolvedAssembly && pResolvedAssembly == NULL)
+        {
+            // If we are here, assembly was successfully resolved via Load or Resolving events.
+            _ASSERTE(_gcRefs.oRefLoadedAssembly != NULL);
                     
-                // We were able to get the assembly loaded. Now, get its name since the host could have
-                // performed the resolution using an assembly with different name.
-                DomainAssembly *pDomainAssembly = _gcRefs.oRefLoadedAssembly->GetDomainAssembly();
-                PEAssembly *pLoadedPEAssembly = NULL;
-                bool fFailLoad = false;
-                if (!pDomainAssembly)
+            // We were able to get the assembly loaded. Now, get its name since the host could have
+            // performed the resolution using an assembly with different name.
+            DomainAssembly *pDomainAssembly = _gcRefs.oRefLoadedAssembly->GetDomainAssembly();
+            PEAssembly *pLoadedPEAssembly = NULL;
+            bool fFailLoad = false;
+            if (!pDomainAssembly)
+            {
+                // Reflection emitted assemblies will not have a domain assembly.
+                fFailLoad = true;
+            }
+            else
+            {
+                pLoadedPEAssembly = pDomainAssembly->GetFile();
+                if (pLoadedPEAssembly->HasHostAssembly() != true)
                 {
                     // Reflection emitted assemblies will not have a domain assembly.
                     fFailLoad = true;
                 }
-                else
-                {
-                    pLoadedPEAssembly = pDomainAssembly->GetFile();
-                    if (pLoadedPEAssembly->HasHostAssembly() != true)
-                    {
-                        // Reflection emitted assemblies will not have a domain assembly.
-                        fFailLoad = true;
-                    }
-                }
-                
-                // The loaded assembly's ICLRPrivAssembly* is saved as HostAssembly in PEAssembly
-                if (fFailLoad)
-                {
-                    SString name;
-                    spec.GetFileOrDisplayName(0, name);
-                    COMPlusThrowHR(COR_E_INVALIDOPERATION, IDS_HOST_ASSEMBLY_RESOLVER_DYNAMICALLY_EMITTED_ASSEMBLIES_UNSUPPORTED, name);
-                }
-                
-                // Is the assembly already bound using a binding context that will be incompatible?
-                // An example is attempting to consume an assembly bound to WinRT binder.
-                pAssemblyBindingContext = pLoadedPEAssembly->GetHostAssembly();
             }
+                
+            // The loaded assembly's ICLRPrivAssembly* is saved as HostAssembly in PEAssembly
+            if (fFailLoad)
+            {
+                SString name;
+                spec.GetFileOrDisplayName(0, name);
+                COMPlusThrowHR(COR_E_INVALIDOPERATION, IDS_HOST_ASSEMBLY_RESOLVER_DYNAMICALLY_EMITTED_ASSEMBLIES_UNSUPPORTED, name);
+            }
+                
+            // Is the assembly already bound using a binding context that will be incompatible?
+            // An example is attempting to consume an assembly bound to WinRT binder.
+            pResolvedAssembly = pLoadedPEAssembly->GetHostAssembly();
+        }
             
+        if (fResolvedAssembly)
+        {
+            _ASSERTE(pResolvedAssembly != NULL);
+
 #ifdef FEATURE_COMINTEROP
-            if (AreSameBinderInstance(pAssemblyBindingContext, GetAppDomain()->GetWinRtBinder()))
+            if (AreSameBinderInstance(pResolvedAssembly, GetAppDomain()->GetWinRtBinder()))
             {
                 // It is invalid to return an assembly bound to an incompatible binder
                 *ppLoadedAssembly = NULL;
@@ -11734,16 +6642,18 @@ HRESULT RuntimeInvokeHostAssemblyResolver(INT_PTR pManagedAssemblyLoadContextToB
 #endif // FEATURE_COMINTEROP
 
             // Get the ICLRPrivAssembly reference to return back to.
-            *ppLoadedAssembly = clr::SafeAddRef(pAssemblyBindingContext);
+            *ppLoadedAssembly = clr::SafeAddRef(pResolvedAssembly);
             hr = S_OK;
         }
-        
-        GCPROTECT_END();
+        else
+        {
+            hr = COR_E_FILENOTFOUND;
+        }
     }
-    // EX_CATCH_HRESULT(hr);
+        
+    GCPROTECT_END();
     
     return hr;
-    
 }
 #endif // !defined(DACCESS_COMPILE) && !defined(CROSSGEN_COMPILE)
 
@@ -11805,28 +6715,6 @@ DomainLocalModule::EnumMemoryRegions(CLRDataEnumMemoryFlags flags)
 }
 
 void
-DomainLocalBlock::EnumMemoryRegions(CLRDataEnumMemoryFlags flags)
-{
-    SUPPORTS_DAC;
-    // Block is contained in AppDomain, don't enum this.
-
-    if (m_pModuleSlots.IsValid())
-    {
-        DacEnumMemoryRegion(dac_cast<TADDR>(m_pModuleSlots),
-                            m_aModuleIndices * sizeof(TADDR));
-
-        for (SIZE_T i = 0; i < m_aModuleIndices; i++)
-        {
-            PTR_DomainLocalModule domMod = m_pModuleSlots[i];
-            if (domMod.IsValid())
-            {
-                domMod->EnumMemoryRegions(flags);
-            }
-        }
-    }
-}
-
-void
 BaseDomain::EnumMemoryRegions(CLRDataEnumMemoryFlags flags,
                               bool enumThis)
 {
@@ -11864,17 +6752,13 @@ AppDomain::EnumMemoryRegions(CLRDataEnumMemoryFlags flags,
     }
 
     m_Assemblies.EnumMemoryRegions(flags);
-    AssemblyIterator assem = IterateAssembliesEx((AssemblyIterationFlags)(kIncludeLoaded | kIncludeExecution | kIncludeIntrospection));
+    AssemblyIterator assem = IterateAssembliesEx((AssemblyIterationFlags)(kIncludeLoaded | kIncludeExecution));
     CollectibleAssemblyHolder<DomainAssembly *> pDomainAssembly;
     
     while (assem.Next(pDomainAssembly.This()))
     {
         pDomainAssembly->EnumMemoryRegions(flags);
     }
-
-    m_sDomainLocalBlock.EnumMemoryRegions(flags);
-
-    m_LoaderAllocator.EnumMemoryRegions(flags);
 }
 
 void
@@ -11896,33 +6780,10 @@ SystemDomain::EnumMemoryRegions(CLRDataEnumMemoryFlags flags,
     {
         m_pSystemAssembly->EnumMemoryRegions(flags);
     }
-    if (m_pDefaultDomain.IsValid())
+    if (AppDomain::GetCurrentDomain())
     {
-        m_pDefaultDomain->EnumMemoryRegions(flags, true);
+        AppDomain::GetCurrentDomain()->EnumMemoryRegions(flags, true);
     }
-
-    m_appDomainIndexList.EnumMem();
-    (&m_appDomainIndexList)->EnumMemoryRegions(flags);
-}
-
-void
-SharedDomain::EnumMemoryRegions(CLRDataEnumMemoryFlags flags,
-                                bool enumThis)
-{
-    SUPPORTS_DAC;
-    if (enumThis)
-    {
-        DAC_ENUM_VTHIS();
-    }
-    BaseDomain::EnumMemoryRegions(flags, false);
-#ifdef FEATURE_LOADER_OPTIMIZATION
-    m_assemblyMap.EnumMemoryRegions(flags);
-    SharedAssemblyIterator assem;
-    while (assem.Next())
-    {
-        assem.GetAssembly()->EnumMemoryRegions(flags);
-    }
-#endif    
 }
 
 #endif //DACCESS_COMPILE
@@ -11932,66 +6793,6 @@ PTR_LoaderAllocator SystemDomain::GetGlobalLoaderAllocator()
 {
     return PTR_LoaderAllocator(PTR_HOST_MEMBER_TADDR(SystemDomain,System(),m_GlobalAllocator));
 }
-
-#ifdef FEATURE_APPDOMAIN_RESOURCE_MONITORING
-
-#ifndef CROSSGEN_COMPILE
-// Return the total processor time (user and kernel) used by threads executing in this AppDomain so far. The
-// result is in 100ns units.
-ULONGLONG AppDomain::QueryProcessorUsage()
-{
-    CONTRACTL
-    {
-        NOTHROW;
-        GC_TRIGGERS;
-        MODE_ANY;
-    }
-    CONTRACTL_END;
-
-#ifndef DACCESS_COMPILE
-    Thread *pThread = NULL;
-
-    // Need to update our accumulated processor time count with current values from each thread that is
-    // currently executing in this domain.
-
-    // Take the thread store lock while we enumerate threads.
-    ThreadStoreLockHolder tsl;
-    while ((pThread = ThreadStore::GetThreadList(pThread)) != NULL)
-    {
-        // Skip unstarted and dead threads and those that are currently executing in a different AppDomain.
-        if (pThread->IsUnstarted() || pThread->IsDead() || pThread->GetDomain(INDEBUG(TRUE)) != this)
-            continue;
-
-        // Add the amount of time spent by the thread in the AppDomain since the last time we asked (calling
-        // Thread::QueryThreadProcessorUsage() will reset the thread's counter).
-        UpdateProcessorUsage(pThread->QueryThreadProcessorUsage());
-    }
-#endif // !DACCESS_COMPILE
-
-    // Return the updated total.
-    return m_ullTotalProcessorUsage;
-}
-
-// Add to the current count of processor time used by threads within this AppDomain. This API is called by
-// threads transitioning between AppDomains.
-void AppDomain::UpdateProcessorUsage(ULONGLONG ullAdditionalUsage)
-{
-    LIMITED_METHOD_CONTRACT;
-
-    // Need to be careful to synchronize here, multiple threads could be racing to update this count.
-    ULONGLONG ullOldValue;
-    ULONGLONG ullNewValue;
-    do
-    {
-        ullOldValue = m_ullTotalProcessorUsage;
-        ullNewValue = ullOldValue + ullAdditionalUsage;
-    } while (InterlockedCompareExchange64((LONGLONG*)&m_ullTotalProcessorUsage,
-                                          (LONGLONG)ullNewValue,
-                                          (LONGLONG)ullOldValue) != (LONGLONG)ullOldValue);
-}
-#endif // CROSSGEN_COMPILE
-
-#endif // FEATURE_APPDOMAIN_RESOURCE_MONITORING
 
 #if defined(FEATURE_TYPEEQUIVALENCE)
 
@@ -12020,7 +6821,7 @@ TypeEquivalenceHashTable * AppDomain::GetTypeEquivalenceCache()
 #endif
         if (m_pTypeEquivalenceTable.Load() == NULL)
         {
-            m_pTypeEquivalenceTable = TypeEquivalenceHashTable::Create(this, 12, &m_TypeEquivalenceCrst);
+            m_pTypeEquivalenceTable = TypeEquivalenceHashTable::Create(this, /* bucket count */ 12, &m_TypeEquivalenceCrst);
         }
     }
     return m_pTypeEquivalenceTable;
@@ -12177,7 +6978,7 @@ void AppDomain::UnPublishHostedAssembly(
 }
 
 #if defined(FEATURE_COMINTEROP)
-HRESULT AppDomain::SetWinrtApplicationContext(SString &appLocalWinMD)
+HRESULT AppDomain::SetWinrtApplicationContext(LPCWSTR pwzAppLocalWinMD)
 {
     STANDARD_VM_CONTRACT;
     
@@ -12188,7 +6989,7 @@ HRESULT AppDomain::SetWinrtApplicationContext(SString &appLocalWinMD)
     BINDER_SPACE::ApplicationContext *pApplicationContext = GetTPABinderContext()->GetAppContext();
     _ASSERTE(pApplicationContext != NULL);
     
-    return m_pWinRtBinder->SetApplicationContext(pApplicationContext, appLocalWinMD);
+    return m_pWinRtBinder->SetApplicationContext(pApplicationContext, pwzAppLocalWinMD);
 }
 
 #endif // FEATURE_COMINTEROP
@@ -12238,25 +7039,8 @@ void ZapperSetBindingPaths(ICorCompilationDomain *pDomain, SString &trustedPlatf
     _ASSERTE(pBinder != NULL);
     pBinder->SetupBindingPaths(trustedPlatformAssemblies, platformResourceRoots, appPaths, appNiPaths);
 #ifdef FEATURE_COMINTEROP
-    SString emptString;
-    ((CompilationDomain*)pDomain)->SetWinrtApplicationContext(emptString);
+    ((CompilationDomain*)pDomain)->SetWinrtApplicationContext(NULL);
 #endif
 }
 
-#endif
-
-#if !defined(CROSSGEN_COMPILE)
-bool IsSingleAppDomain()
-{
-    STARTUP_FLAGS flags = CorHost2::GetStartupFlags();
-    if(flags & STARTUP_SINGLE_APPDOMAIN)
-        return TRUE;
-    else
-        return FALSE;
-}
-#else
-bool IsSingleAppDomain()
-{
-    return FALSE;
-}
 #endif

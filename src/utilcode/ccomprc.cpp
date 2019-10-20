@@ -5,14 +5,13 @@
 #include "stdafx.h"                     // Standard header.
 #include <utilcode.h>                   // Utility helpers.
 #include <corerror.h>
-#include "newapis.h"
 #include "ndpversion.h"
 
 #include "../dlls/mscorrc/resource.h"
 #ifdef FEATURE_PAL
 #include "resourcestring.h"
 #define NATIVE_STRING_RESOURCE_NAME mscorrc_debug
-DECLARE_NATIVE_STRING_RESOURCE_TABLE(NATIVE_STRING_RESOURCE_NAME);
+__attribute__((visibility("default"))) DECLARE_NATIVE_STRING_RESOURCE_TABLE(NATIVE_STRING_RESOURCE_NAME);
 #endif
 #include "sstring.h"
 #include "stringarraylist.h"
@@ -50,42 +49,9 @@ int GetMUILanguageID(LocaleIDValue* pResult)
 #endif
     }
     CONTRACTL_END;
-#if FEATURE_USE_LCID
-    int langId=0;
-    static PFNGETUSERDEFAULTUILANGUAGE pfnGetUserDefaultUILanguage=NULL;
 
-    if( NULL == pfnGetUserDefaultUILanguage )
-    {
-        PFNGETUSERDEFAULTUILANGUAGE proc = NULL;
-
-        HMODULE hmod = GetModuleHandleA(WINDOWS_KERNEL32_DLLNAME_A);
-        
-        if( hmod )
-            proc = (PFNGETUSERDEFAULTUILANGUAGE)
-                GetProcAddress(hmod, "GetUserDefaultUILanguage");
-
-        if(proc == NULL)
-            proc = (PFNGETUSERDEFAULTUILANGUAGE) -1;
-        
-        PVOID value = InterlockedExchangeT(&pfnGetUserDefaultUILanguage,
-                                           proc);
-    }
-
-    // We should never get NULL here, the function is -1 or a valid address.
-    _ASSERTE(pfnGetUserDefaultUILanguage != NULL);
-
-
-    if( pfnGetUserDefaultUILanguage == (PFNGETUSERDEFAULTUILANGUAGE) -1)
-        langId = GetSystemDefaultLangID();
-    else
-        langId = pfnGetUserDefaultUILanguage();
-    
-   *pResult= langId;
-#else // FEATURE_USE_LCID
     _ASSERTE(sizeof(LocaleID)/sizeof(WCHAR) >=LOCALE_NAME_MAX_LENGTH);
-    return NewApis::GetSystemDefaultLocaleName(*pResult, LOCALE_NAME_MAX_LENGTH);
-#endif //FEATURE_USE_LCID
-   return 1;
+    return ::GetSystemDefaultLocaleName(*pResult, LOCALE_NAME_MAX_LENGTH);
 }
 
 static void BuildMUIDirectory(int langid, __out SString* pResult)
@@ -114,13 +80,7 @@ void GetMUILanguageName(__out SString* pResult)
     LocaleIDValue langid;
     GetMUILanguageID(&langid);
 
-    int lcid;
-#ifdef FEATURE_USE_LCID
-    lcid=langid;
-#else
-    lcid=NewApis::LocaleNameToLCID(langid,0);
-#endif
-
+    int lcid = ::LocaleNameToLCID(langid,0);
     return BuildMUIDirectory(lcid, pResult);
 }
  
@@ -139,7 +99,6 @@ HRESULT GetMUILanguageNames(__inout StringArrayList* pCultureNames)
         NOTHROW;
         GC_NOTRIGGER;
         PRECONDITION(CheckPointer(pCultureNames));
-        SO_INTOLERANT;
     } 
     CONTRACTL_END;
 
@@ -852,9 +811,8 @@ HRESULT CCompRC::LoadString(ResourceCategory eCategory, LocaleID langId, UINT iR
 
     return hr;
 #else // !FEATURE_PAL
-    LoadNativeStringResource(NATIVE_STRING_RESOURCE_TABLE(NATIVE_STRING_RESOURCE_NAME), iResourceID,
+    return LoadNativeStringResource(NATIVE_STRING_RESOURCE_TABLE(NATIVE_STRING_RESOURCE_NAME), iResourceID,
       szBuffer, iMax, pcwchUsed);
-    return S_OK;
 #endif // !FEATURE_PAL
 }
 
@@ -922,7 +880,6 @@ HRESULT CCompRC::LoadLibraryHelper(HRESOURCEDLL *pHInst,
     CONTRACTL_END;
     
     HRESULT     hr = E_FAIL;
-    size_t      rcPartialPathLen;
     
 
     _ASSERTE(m_pResourceFile != NULL);

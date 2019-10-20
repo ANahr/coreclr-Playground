@@ -14,9 +14,9 @@
 
 Abstract:
 
-    Rotor runtime functions.  These are functions which are ordinarily
-    implemented as part of the Win32 API set, but for Rotor, are
-    implemented as a runtime library on top of the PAL.
+    PAL runtime functions.  These are functions which are ordinarily
+    implemented as part of the Win32 API set, but when compiling CoreCLR for
+    Unix-like systems, are implemented as a runtime library on top of the PAL.
 
 Author:
 
@@ -63,7 +63,6 @@ Revision History:
 
 #define CO_E_CLASSSTRING                 _HRESULT_TYPEDEF_(0x800401F3L)
 
-#define URL_E_INVALID_SYNTAX             _HRESULT_TYPEDEF_(0x80041001L)
 #define MK_E_SYNTAX                      _HRESULT_TYPEDEF_(0x800401E4L)
 
 #define STG_E_INVALIDFUNCTION            _HRESULT_TYPEDEF_(0x80030001L)
@@ -151,63 +150,9 @@ inline void *__cdecl operator new(size_t, void *_P)
 
 #include <pal_assert.h>
 
-#if defined(_DEBUG)
-#define ROTOR_PAL_CTOR_TEST_BODY(TESTNAME)                              \
-    class TESTNAME ## _CTOR_TEST {                                      \
-    public:                                                             \
-        class HelperClass {                                             \
-        public:                                                         \
-            HelperClass(const char *String) {                           \
-                _ASSERTE (m_s == NULL);                                 \
-                m_s = String;                                           \
-            }                                                           \
-                                                                        \
-            void Validate (const char *String) {                        \
-                _ASSERTE (m_s);                                         \
-                _ASSERTE (m_s == String);                               \
-                _ASSERTE (!strncmp (                                    \
-                              m_s,                                      \
-                              String,                                   \
-                              1000));                                   \
-            }                                                           \
-                                                                        \
-        private:                                                        \
-            const char *m_s;                                            \
-        };                                                              \
-                                                                        \
-        TESTNAME ## _CTOR_TEST() {                                      \
-            _ASSERTE (m_This == NULL);                                  \
-            m_This = this;                                              \
-        }                                                               \
-                                                                        \
-        void Validate () {                                              \
-            _ASSERTE (m_This == this);                                  \
-            m_String.Validate(#TESTNAME "_CTOR_TEST");                  \
-        }                                                               \
-                                                                        \
-    private:                                                            \
-        void              *m_This;                                      \
-        static HelperClass m_String;                                    \
-    };                                                                  \
-                                                                        \
-    static TESTNAME ## _CTOR_TEST                                       \
-      g_ ## TESTNAME ## _CTOR_TEST;                                     \
-    TESTNAME ## _CTOR_TEST::HelperClass                                 \
-      TESTNAME ## _CTOR_TEST::m_String(#TESTNAME "_CTOR_TEST");
-
-#define ROTOR_PAL_CTOR_TEST_RUN(TESTNAME)                               \
-    g_ ## TESTNAME ##_CTOR_TEST.Validate()
-
-#else // DEBUG
-
-#define ROTOR_PAL_CTOR_TEST_BODY(TESTNAME) 
-#define ROTOR_PAL_CTOR_TEST_RUN(TESTNAME)  do {} while (0)
-
-#endif // DEBUG
-
-#define NTAPI       __stdcall
-#define WINAPI      __stdcall
-#define CALLBACK    __stdcall
+#define NTAPI       __cdecl
+#define WINAPI      __cdecl
+#define CALLBACK    __cdecl
 #define NTSYSAPI
 
 #define _WINNT_
@@ -235,7 +180,7 @@ inline void *__cdecl operator new(size_t, void *_P)
 #define ARGUMENT_PRESENT(ArgumentPointer)    (\
     (CHAR *)(ArgumentPointer) != (CHAR *)(NULL) )
 
-#if defined(_WIN64)
+#if defined(BIT64)
 #define MAX_NATURAL_ALIGNMENT sizeof(ULONGLONG)
 #else
 #define MAX_NATURAL_ALIGNMENT sizeof(ULONG)
@@ -249,10 +194,10 @@ inline void *__cdecl operator new(size_t, void *_P)
 
 #define interface struct
 
-#define STDMETHODCALLTYPE    __stdcall
+#define STDMETHODCALLTYPE    __cdecl
 #define STDMETHODVCALLTYPE   __cdecl
 
-#define STDAPICALLTYPE       __stdcall
+#define STDAPICALLTYPE       __cdecl
 #define STDAPIVCALLTYPE      __cdecl
 
 #define STDMETHODIMP         HRESULT STDMETHODCALLTYPE
@@ -269,6 +214,7 @@ inline void *__cdecl operator new(size_t, void *_P)
 
 #define STDAPI               EXTERN_C HRESULT STDAPICALLTYPE
 #define STDAPI_(type)        EXTERN_C type STDAPICALLTYPE
+#define STDAPI_VIS(vis,type) EXTERN_C vis type STDAPICALLTYPE
 
 #define STDAPIV              EXTERN_C HRESULT STDAPIVCALLTYPE
 #define STDAPIV_(type)       EXTERN_C type STDAPIVCALLTYPE
@@ -427,9 +373,9 @@ typedef union _ULARGE_INTEGER {
 
 /******************* OLE, BSTR, VARIANT *************************/
 
-STDAPI_(LPVOID) CoTaskMemAlloc(SIZE_T cb);
-STDAPI_(LPVOID) CoTaskMemRealloc(LPVOID pv, SIZE_T cb);
-STDAPI_(void) CoTaskMemFree(LPVOID pv);
+STDAPI_VIS(DLLEXPORT, LPVOID) CoTaskMemAlloc(SIZE_T cb);
+STDAPI_VIS(DLLEXPORT, LPVOID) CoTaskMemRealloc(LPVOID pv, SIZE_T cb);
+STDAPI_VIS(DLLEXPORT, void) CoTaskMemFree(LPVOID pv);
 
 typedef SHORT VARIANT_BOOL;
 #define VARIANT_TRUE ((VARIANT_BOOL)-1)
@@ -441,12 +387,12 @@ typedef const OLECHAR* LPCOLESTR;
 
 typedef WCHAR *BSTR;
 
-STDAPI_(BSTR) SysAllocString(const OLECHAR*);
-STDAPI_(BSTR) SysAllocStringLen(const OLECHAR*, UINT);
-STDAPI_(BSTR) SysAllocStringByteLen(const char *, UINT);
-STDAPI_(void) SysFreeString(BSTR);
-STDAPI_(UINT) SysStringLen(BSTR);
-STDAPI_(UINT) SysStringByteLen(BSTR);
+STDAPI_VIS(DLLEXPORT, BSTR) SysAllocString(const OLECHAR*);
+STDAPI_VIS(DLLEXPORT, BSTR) SysAllocStringLen(const OLECHAR*, UINT);
+STDAPI_VIS(DLLEXPORT, BSTR) SysAllocStringByteLen(const char *, UINT);
+STDAPI_VIS(DLLEXPORT, void) SysFreeString(BSTR);
+STDAPI_VIS(DLLEXPORT, UINT) SysStringLen(BSTR);
+STDAPI_VIS(DLLEXPORT, UINT) SysStringByteLen(BSTR);
 
 typedef double DATE;
 
@@ -683,7 +629,7 @@ STDAPI_(HRESULT) VariantClear(VARIANT * pvarg);
 #define V_UINTREF(X)     V_UNION(X, puintVal)
 #define V_ARRAY(X)       V_UNION(X, parray)
 
-#ifdef _WIN64
+#ifdef BIT64
 #define V_INT_PTR(X)        V_UNION(X, llVal)
 #define V_UINT_PTR(X)       V_UNION(X, ullVal)
 #define V_INT_PTRREF(X)     V_UNION(X, pllVal)
@@ -890,8 +836,6 @@ Remember to fix the errcode defintion in safecrt.h.
 #define _wfopen_s _wfopen_unsafe
 #define fopen_s _fopen_unsafe
 
-#define _strlwr_s _strlwr_unsafe
-
 #define _vscprintf _vscprintf_unsafe
 
 extern "C++" {
@@ -915,24 +859,6 @@ inline errno_t __cdecl _wcslwr_unsafe(WCHAR *str, size_t sz)
 
     _wcslwr(copy);
     wcscpy_s(str, sz, copy);
-    free(copy);
-	
-    return 0;
-}
-inline errno_t __cdecl _strlwr_unsafe(char *str, size_t sz)
-{
-    char *copy = (char *)malloc(sz);
-    if(copy == nullptr)
-        return 1;
-
-    errno_t retCode = strcpy_s(copy, sz, str);
-    if(retCode) {
-        free(copy);
-        return 1;
-    }
-
-    _strlwr(copy);
-    strcpy_s(str, sz, copy);
     free(copy);
 	
     return 0;
@@ -1003,29 +929,6 @@ STDAPI_(BOOL) PathRenameExtensionW(LPWSTR pszPath, LPCWSTR pszExt);
 STDAPI_(BOOL) PathRemoveFileSpecW(LPWSTR pFile);
 STDAPI_(void) PathStripPathW (LPWSTR pszPath);
 
-STDAPI PathCreateFromUrlW(LPCWSTR pszUrl, LPWSTR pszPath, LPDWORD pcchPath, DWORD dwFlags);
-STDAPI_(BOOL) PathIsURLW(LPCWSTR pszPath);
-
-
-#define URL_UNESCAPE                    0x10000000
-#define URL_ESCAPE_PERCENT              0x00001000
-
-typedef enum {
-    URLIS_FILEURL = 3,
-} URLIS;
-
-typedef enum {
-    URL_PART_SCHEME     = 1,
-    URL_PART_HOSTNAME   = 2,
-} URL_PART;
-
-STDAPI UrlCanonicalizeW(LPCWSTR pszUrl, LPWSTR pszCanonicalized, LPDWORD pcchCanonicalized, DWORD dwFlags);
-STDAPI UrlCombineW(LPCWSTR pszBase, LPCWSTR pszRelative, LPWSTR pszCombined, LPDWORD pcchCombined, DWORD dwFlags);
-STDAPI UrlEscapeW(LPCWSTR pszUrl, LPWSTR pszEscaped, LPDWORD pcchEscaped, DWORD dwFlags);
-STDAPI UrlUnescapeW(LPWSTR pszURL, LPWSTR pszUnescaped, LPDWORD pcchUnescaped, DWORD dwFlags);
-STDAPI_(BOOL) UrlIsW(LPCWSTR pszUrl, URLIS dwUrlIs);
-STDAPI UrlGetPartW(LPCWSTR pszIn, LPWSTR pszOut, LPDWORD pcchOut, DWORD dwPart, DWORD dwFlags);
-
 #ifdef UNICODE
 #define PathAppend          PathAppendW
 #define PathCommonPrefix    PathCommonPrefixW
@@ -1045,15 +948,6 @@ STDAPI UrlGetPartW(LPCWSTR pszIn, LPWSTR pszOut, LPDWORD pcchOut, DWORD dwPart, 
 #define PathRenameExtension PathRenameExtensionW
 #define PathStripPath       PathStripPathW
 
-#define PathCreateFromUrl   PathCreateFromUrlW
-#define PathIsURL           PathIsURLW
-
-#define UrlCanonicalize     UrlCanonicalizeW
-#define UrlCombine          UrlCombineW
-#define UrlEscape           UrlEscapeW
-#define UrlUnescape         UrlUnescapeW 
-#define UrlIs               UrlIsW
-#define UrlGetPart          UrlGetPartW
 
 #endif // UNICODE
 
@@ -1083,17 +977,6 @@ typename std::remove_reference<T>::type&& move( T&& t );
 
 typedef DWORD OLE_COLOR;
 
-typedef union __m128i {
-    __int8              m128i_i8[16];
-    __int16             m128i_i16[8];
-    __int32             m128i_i32[4];    
-    __int64             m128i_i64[2];
-    unsigned __int8     m128i_u8[16];
-    unsigned __int16    m128i_u16[8];
-    unsigned __int32    m128i_u32[4];
-    unsigned __int64    m128i_u64[2];
-} __m128i;
-
 #define PF_COMPARE_EXCHANGE_DOUBLE          2
 
 typedef VOID (NTAPI * WAITORTIMERCALLBACKFUNC) (PVOID, BOOLEAN );
@@ -1110,7 +993,7 @@ typedef struct _LIST_ENTRY {
    struct _LIST_ENTRY *Blink;
 } LIST_ENTRY, *PLIST_ENTRY;
 
-typedef VOID (__stdcall *WAITORTIMERCALLBACK)(PVOID, BOOLEAN);
+typedef VOID (NTAPI *WAITORTIMERCALLBACK)(PVOID, BOOLEAN);
 
 // PORTABILITY_ASSERT and PORTABILITY_WARNING macros are meant to be used to
 // mark places in the code that needs attention for portability. The usual
@@ -1230,8 +1113,9 @@ typedef JIT_DEBUG_INFO JIT_DEBUG_INFO32, *LPJIT_DEBUG_INFO32;
 typedef JIT_DEBUG_INFO JIT_DEBUG_INFO64, *LPJIT_DEBUG_INFO64;
 
 /******************* resources ***************************************/
-
+#define IS_INTRESOURCE(_r) ((((ULONG_PTR)(_r)) >> 16) == 0)
 #define MAKEINTRESOURCEW(i) ((LPWSTR)((ULONG_PTR)((WORD)(i))))
+#define MAKEINTRESOURCE(i) ((LPWSTR)((ULONG_PTR)((WORD)(i))))
 #define RT_RCDATA           MAKEINTRESOURCE(10)
 #define RT_VERSION          MAKEINTRESOURCE(16)
 
@@ -1284,7 +1168,7 @@ interface IMoniker;
 typedef VOID (WINAPI *LPOVERLAPPED_COMPLETION_ROUTINE)( 
     DWORD dwErrorCode,
     DWORD dwNumberOfBytesTransfered,
-    LPVOID lpOverlapped);
+    LPOVERLAPPED lpOverlapped);
 
 //
 // Debug APIs
@@ -1397,8 +1281,6 @@ typedef OUT_OF_PROCESS_FUNCTION_TABLE_CALLBACK *POUT_OF_PROCESS_FUNCTION_TABLE_C
 #define OUT_OF_PROCESS_FUNCTION_TABLE_CALLBACK_EXPORT_NAME \
     "OutOfProcessFunctionTableCallback"
 
-#if defined(FEATURE_PAL_SXS)
-
 // #if !defined(_TARGET_MAC64)
 // typedef LONG (*PEXCEPTION_ROUTINE)(
     // IN PEXCEPTION_POINTERS pExceptionPointers,
@@ -1491,17 +1373,13 @@ typedef struct _DISPATCHER_CONTEXT {
 
 #elif defined(_X86_)
 
-typedef struct _EXCEPTION_REGISTRATION_RECORD {
-    struct _EXCEPTION_REGISTRATION_RECORD *Next;
-    PEXCEPTION_ROUTINE Handler;
-} EXCEPTION_REGISTRATION_RECORD;
-
 typedef struct _DISPATCHER_CONTEXT {
     DWORD ControlPc;
     DWORD ImageBase;
     PRUNTIME_FUNCTION FunctionEntry;
     DWORD EstablisherFrame;
     DWORD TargetIp;
+    PKNONVOLATILE_CONTEXT CurrentNonVolatileContextRecord;
     PCONTEXT ContextRecord;
     PEXCEPTION_ROUTINE LanguageHandler;
     PVOID HandlerData;
@@ -1522,8 +1400,6 @@ typedef DISPATCHER_CONTEXT *PDISPATCHER_CONTEXT;
 #define ExceptionContinueSearch     EXCEPTION_CONTINUE_SEARCH
 #define ExceptionStackUnwind        EXCEPTION_EXECUTE_HANDLER
 #define ExceptionContinueExecution  EXCEPTION_CONTINUE_EXECUTION
-
-#endif // FEATURE_PAL_SXS
 
 typedef struct _EXCEPTION_REGISTRATION_RECORD EXCEPTION_REGISTRATION_RECORD;
 typedef EXCEPTION_REGISTRATION_RECORD *PEXCEPTION_REGISTRATION_RECORD;
@@ -1592,6 +1468,9 @@ EXTERN_C HRESULT PALAPI PAL_CoCreateInstance(REFCLSID   rclsid,
 // instead of spreading around of if'def FEATURE_PALs for PAL_CoCreateInstance.
 #define CoCreateInstance(rclsid, pUnkOuter, dwClsContext, riid, ppv) PAL_CoCreateInstance(rclsid, riid, ppv)
 
+STDAPI
+CoCreateGuid(OUT GUID * pguid);
+
 /************** verrsrc.h ************************************/
 
 /* ----- VS_VERSION.dwFileFlags ----- */
@@ -1627,11 +1506,6 @@ typedef struct tagVS_FIXEDFILEINFO
 /******************** external includes *************************/
 
 #include "ntimage.h"
-#ifndef PAL_STDCPP_COMPAT
-#include "cpp/ccombstr.h"
-#include "cpp/cstring.h"
-#endif // !PAL_STDCPP_COMPAT
-#include "sscli_version.h"
 
 #endif // RC_INVOKED
 

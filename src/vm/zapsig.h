@@ -18,16 +18,16 @@
 
 #include "common.h"
 
-//define function pointer type: EncodeModuleCallback
-//
+typedef DWORD(*ENCODEMODULE_CALLBACK)(LPVOID pModuleContext, CORINFO_MODULE_HANDLE moduleHandle);
 typedef DWORD (*EncodeModuleCallback)(void* pModuleContext, Module *pReferencedModule);
 enum {
     // return value when EncodeModule fails
     ENCODE_MODULE_FAILED         = 0xffffffff,
+    // no module index override is needed 
+    MODULE_INDEX_NONE            = 0xfffffffe
 };
 
-//define function pointer type: TokenDefinitionCallback
-//
+typedef void(*DEFINETOKEN_CALLBACK)(LPVOID pModuleContext, CORINFO_MODULE_HANDLE moduleHandle, DWORD index, mdTypeRef* token);
 typedef void (*TokenDefinitionCallback)(void* pModuleContext, Module *pReferencedModule, DWORD index, mdToken* refToken);
 
 class ZapSig
@@ -80,7 +80,14 @@ public:
           pfnTokenDefinition(_pfnTokenDefinition)
     {}
 
-#ifdef FEATURE_PREJIT
+    // Static methods
+
+    // Compare a type handle with a signature whose tokens are resolved with respect to pModule
+    // pZapSigContext is used to resolve ELEMENT_TYPE_MODULE_ZAPSIG encodings
+    static BOOL CompareSignatureToTypeHandle(PCCOR_SIGNATURE  pSig,
+        Module*          pModule,
+        TypeHandle       handle,
+        const ZapSig::Context *  pZapSigContext);
 
     // Instance methods
 
@@ -96,15 +103,7 @@ public:
     BOOL GetSignatureForTypeHandle(TypeHandle typeHandle,
                                    SigBuilder * pSigBuilder);
 
-    // Static methods
-
-    // Compare a type handle with a signature whose tokens are resolved with respect to pModule
-    // pZapSigContext is used to resolve ELEMENT_TYPE_MODULE_ZAPSIG encodings
-    static BOOL CompareSignatureToTypeHandle(PCCOR_SIGNATURE  pSig,   
-                                             Module*          pModule, 
-                                             TypeHandle       handle,
-                                     const ZapSig::Context *  pZapSigContext);
-
+#ifdef FEATURE_PREJIT
     // Compare a type handle with a tagged pointer. Ensure that the common path is inlined into the caller.
     static FORCEINLINE BOOL CompareTaggedPointerToTypeHandle(Module * pModule, TADDR addr, TypeHandle handle)
     {
@@ -117,6 +116,7 @@ public:
     }
 
     static BOOL CompareFixupToTypeHandle(Module * pModule, TADDR fixup, TypeHandle handle);
+#endif
 
     static BOOL CompareTypeHandleFieldToTypeHandle(TypeHandle *pTypeHnd, TypeHandle typeHnd2);
 
@@ -129,7 +129,11 @@ private:
     //
     static CorElementType TryEncodeUsingShortcut(/* in  */ MethodTable * pMT);
 
-#endif // FEATURE_PREJIT
+    // Copy single type signature, adding ELEMENT_TYPE_MODULE_ZAPSIG to types that are encoded using tokens.
+    // The source signature originates from the module with index specified by the parameter moduleIndex.
+    // Passing moduleIndex set to MODULE_INDEX_NONE results in pure copy of the signature.
+    //
+    static void CopyTypeSignature(SigParser* pSigParser, SigBuilder* pSigBuilder, DWORD moduleIndex);
 
 private:
 
@@ -142,13 +146,11 @@ public:
     //--------------------------------------------------------------------
     // Static helper encode/decode helper methods
 
-    static Module *DecodeModuleFromIndexes(Module *fromModule,
-        DWORD assemblyIndex,
-        DWORD moduleIndex);
+    static Module *DecodeModuleFromIndex(Module *fromModule,
+        DWORD index);
 
-    static Module *DecodeModuleFromIndexesIfLoaded(Module *fromModule,
-        DWORD assemblyIndex,
-        DWORD moduleIndex);
+    static Module *DecodeModuleFromIndexIfLoaded(Module *fromModule,
+        DWORD index);
 
     // referencingModule is the module that references the type.
     // fromModule is the module in which the type is defined.

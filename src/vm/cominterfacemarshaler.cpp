@@ -5,9 +5,6 @@
 // File: ComInterfaceMarshaler.cpp
 //
 
-//
-
-
 #include "common.h"
 
 #include "vars.hpp"
@@ -40,21 +37,16 @@ COMInterfaceMarshaler::COMInterfaceMarshaler()
 
     m_pWrapperCache = RCWCache::GetRCWCache();
     _ASSERTE(m_pWrapperCache);
-    
+
     m_pUnknown = NULL;
     m_pIdentity = NULL;
-    m_pIManaged = NULL;
-    
-    INDEBUG(m_fFlagsInited = false;)
-    m_fIsRemote = false;
+
     m_fIReference = false;
     m_fIReferenceArray = false;
     m_fNonRCWType = false;
     m_flags = RCW::CF_None;
     m_pCallback = NULL;
     m_pThread = NULL;
-
-    m_dwServerSyncBlockIndex = 0;
 }
 
 //--------------------------------------------------------------------------------
@@ -70,13 +62,6 @@ COMInterfaceMarshaler::~COMInterfaceMarshaler()
         MODE_ANY;
     }
     CONTRACTL_END;
-
-    if (m_pIManaged)
-    {
-        ULONG cbRef = SafeRelease(m_pIManaged);
-        LogInteropRelease(m_pIManaged, cbRef, "COMInterfaceMarshaler::~COMInterfaceMarshaler: Releasing IManaged interface");
-        m_pIManaged = NULL;
-    }
 }
 
 //--------------------------------------------------------------------------------
@@ -115,74 +100,6 @@ VOID COMInterfaceMarshaler::Init(IUnknown* pUnk, MethodTable* pClassMT, Thread *
         if (!m_typeHandle.IsNull() && m_typeHandle.IsProjectedFromWinRT())
             m_flags |= RCW::CF_SupportsIInspectable;
     }
-}
-
-//--------------------------------------------------------------------------------
-// VOID COMInterfaceMarshaler::InitializeFlags()
-//--------------------------------------------------------------------------------
-VOID COMInterfaceMarshaler::InitializeFlags()
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_ANY;
-        PRECONDITION(false == m_fFlagsInited);
-        PRECONDITION(NULL == m_pIManaged);
-    }
-    CONTRACTL_END;
-    
-    HRESULT hr = S_OK;
-
-    if (SupportsIInspectable() || GetAppDomain()->GetPreferComInsteadOfManagedRemoting())
-    {
-        // User has set flag / disable IManagedObject check or we know that the object supports IInspectable
-        // so COM remoting will be used. We have to be careful here and only use the CF_SupportsIInspectable
-        // flag that came in statically. All managed objects support IInspectable so performing the check
-        // after CF_SupportsIInspectable has been updated based on QI(IID_IInspectable) would break classic
-        // managed <-> managed COM interop scenarios.
-        hr = E_NOINTERFACE;
-    }
-
-
-    if (SUCCEEDED(hr))
-    {
-        hr = SafeQueryInterface(m_pUnknown, IID_IManagedObject, (IUnknown**)&m_pIManaged);
-        LogInteropQI(m_pUnknown, IID_IManagedObject, hr, "COMInterfaceMarshaler::InitializeFlags: QI for IManagedObject");
-    }
-
-    if (hr == S_OK)
-    {
-        _ASSERTE(m_pIManaged);
-        BSTRHolder bstrProcessGUID;
-
-        {
-            GCX_PREEMP();
-            
-            INT_PTR pCCW;
-            IfFailThrow(m_pIManaged->GetObjectIdentity(&bstrProcessGUID, (int*)&m_dwServerDomainId, (CCW_PTR)&pCCW));
-
-            // we may get back a pointer-sized value but only the lower 32-bits are guaranteed to be valid and
-            // contain syncblock index of the managed object
-            m_dwServerSyncBlockIndex = (DWORD)pCCW;
-        }
-        
-        // if hr2 != S_OK then we throw an exception
-        // coz GetProcessID shouldn't fail.. 
-        // one reason where it fails is JIT Activation of the object
-        // failed
-        _ASSERTE(bstrProcessGUID != NULL);
-
-        // compare the strings to check if this is in-proc
-        BSTR processGuid = GetProcessGUID();
-
-        if (NULL == processGuid)
-            ThrowOutOfMemory();
-
-        m_fIsRemote = (wcscmp((WCHAR *)bstrProcessGUID, processGuid) != 0);
-    }
-
-    INDEBUG(m_fFlagsInited = true;)
 }
 
 // Returns true if the type is WinRT-redirected and requires special marshaler functionality
@@ -240,7 +157,7 @@ VOID COMInterfaceMarshaler::InitializeObjectClass(IUnknown *pIncomingIP)
         // If we are not in an APPX process, and an object could have a strongly typed RCW as a COM CoClass, 
         // we prefer that to the WinRT class.This preserves compatibility for exisitng code.
         // If we are in an APPX process we do not check for IProvideClassInfo.
-        if (m_typeHandle.IsNull() && !AppX::IsAppXProcess() && !m_fIsRemote)
+        if (m_typeHandle.IsNull() && !AppX::IsAppXProcess())
         {
             EX_TRY
             {
@@ -321,76 +238,6 @@ VOID COMInterfaceMarshaler::InitializeObjectClass(IUnknown *pIncomingIP)
     if (m_typeHandle.IsNull())
         m_typeHandle = TypeHandle(g_pBaseCOMObject);
 }
-
-//--------------------------------------------------------------------
-// OBJECTREF COMInterfaceMarshaler::GetCCWObject()
-//--------------------------------------------------------------------
-OBJECTREF COMInterfaceMarshaler::GetCCWObject()
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_NOTRIGGER;
-        MODE_COOPERATIVE;
-        PRECONDITION(!m_fIsRemote);
-    }
-    CONTRACTL_END;
-
-    OBJECTREF oref = NULL;
-
-    if (m_dwServerSyncBlockIndex != 0)
-    {
-        AppDomain* pCurrDomain = m_pThread->GetDomain();
-        if (m_dwServerDomainId == pCurrDomain->GetId())
-        {
-            // if we are in the right AD, we know for sure that the object is still alive
-            // since we keep the CCW addref'ed and the AD could not have been unloaded
-            oref = ObjectToOBJECTREF(g_pSyncTable[m_dwServerSyncBlockIndex].m_Object);
-        }
-        else
-        {
-            // otherwise we have to make sure that the AD hasn't been unloaded
-            AppDomainFromIDHolder ad(m_dwServerDomainId, TRUE);
-            if (!ad.IsUnloaded())
-            {
-                oref = ObjectToOBJECTREF(g_pSyncTable[m_dwServerSyncBlockIndex].m_Object);
-            }
-        }
-    }
-
-    return oref;
-}
-
-//--------------------------------------------------------------------
-// OBJECTREF COMInterfaceMarshaler::HandleInProcManagedComponents()
-//--------------------------------------------------------------------
-OBJECTREF COMInterfaceMarshaler::HandleInProcManagedComponent()
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_COOPERATIVE;
-        PRECONDITION(!m_fIsRemote);
-    }
-    CONTRACTL_END;
-
-    AppDomain* pCurrDomain = m_pThread->GetDomain();
-
-    OBJECTREF oref = NULL;
-    if (m_dwServerDomainId == pCurrDomain->GetId())
-    {
-        oref = GetCCWObject();
-    }
-    else
-    {
-        _ASSERTE(!"NYI");
-        COMPlusThrowHR(COR_E_NOTSUPPORTED);
-    }
-    
-    return oref;
-}
-
 
 //--------------------------------------------------------------------------------
 // void COMInterfaceMarshaler::CreateObjectRef(BOOL fDuplicate, OBJECTREF *pComObj)
@@ -869,7 +716,7 @@ void COMInterfaceMarshaler::MarshalToNonRCWType(OBJECTREF *poref)
             LPCWSTR pwszRawUri = hsRawUri.GetRawBuffer(&cchRawUri);
             gc.refRawURI = StringObject::NewString(pwszRawUri, cchRawUri);
 
-            UriMarshalingInfo *pUriMarshalingInfo = GetAppDomain()->GetMarshalingData()->GetUriMarshalingInfo();
+            UriMarshalingInfo *pUriMarshalingInfo = GetAppDomain()->GetLoaderAllocator()->GetMarshalingData()->GetUriMarshalingInfo();
             MethodDesc* pSystemUriCtorMD = pUriMarshalingInfo->GetSystemUriCtorMD();
 
             MethodTable *pMTSystemUri = pUriMarshalingInfo->GetSystemUriType().AsMethodTable();
@@ -911,7 +758,7 @@ void COMInterfaceMarshaler::MarshalToNonRCWType(OBJECTREF *poref)
         case WinMDAdapter::RedirectedTypeIndex_System_ComponentModel_PropertyChangedEventArgs:
         {
             MethodDesc *pMD;
-            EventArgsMarshalingInfo *pInfo = GetAppDomain()->GetMarshalingData()->GetEventArgsMarshalingInfo();
+            EventArgsMarshalingInfo *pInfo = GetAppDomain()->GetLoaderAllocator()->GetMarshalingData()->GetEventArgsMarshalingInfo();
             
             if (index == WinMDAdapter::RedirectedTypeIndex_System_Collections_Specialized_NotifyCollectionChangedEventArgs)
                 pMD = pInfo->GetWinRTNCCEventArgsToSystemNCCEventArgsMD();
@@ -939,25 +786,6 @@ void COMInterfaceMarshaler::MarshalToNonRCWType(OBJECTREF *poref)
     *poref = gc.refMarshaled;
 
     GCPROTECT_END();
-}
-
-
-// OBJECTREF COMInterfaceMarshaler::HandleTPComponents()
-//--------------------------------------------------------------------------------
-
-OBJECTREF COMInterfaceMarshaler::HandleTPComponents()
-{
-    CONTRACTL
-    {
-        THROWS;
-        GC_TRIGGERS;
-        MODE_COOPERATIVE;
-        PRECONDITION(CheckPointer(m_pIManaged));
-    }
-    CONTRACTL_END;
-    
-
-    return NULL;
 }
 
 //--------------------------------------------------------------------------------
@@ -1046,20 +874,6 @@ OBJECTREF COMInterfaceMarshaler::FindOrCreateObjectRefInternal(IUnknown **ppInco
     }
 
     // (II)
-    // Initialize all our flags
-    // this should setup all the info we need
-    InitializeFlags();
-    
-    // (III)
-    // check for IManaged interface
-    if (m_pIManaged)
-    {
-        oref = HandleTPComponents();
-        if (oref != NULL)
-            return oref;
-    }
-    
-    // (IV)
     // okay let us create a wrapper and an instance for this IUnknown
     
     // Find a suitable class to instantiate the instance
@@ -1125,7 +939,7 @@ OBJECTREF COMInterfaceMarshaler::WrapWithComObject()
             &oref,      // pComObj
             NULL,       // ppIncomingIP
             NULL,       // pIncomingItfMT
-            false       // bIncomingIPAdddefed
+            false       // bIncomingIPAddRefed
             );
     }
     GCPROTECT_END();

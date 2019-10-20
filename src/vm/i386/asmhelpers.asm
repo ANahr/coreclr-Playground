@@ -35,8 +35,6 @@ ifdef FEATURE_COMINTEROP
 EXTERN _StubRareDisableHRWorker@4:PROC
 endif ; FEATURE_COMINTEROP
 EXTERN _StubRareDisableTHROWWorker@4:PROC
-EXTERN __imp__TlsGetValue@4:DWORD
-TlsGetValue PROTO stdcall
 ifdef FEATURE_HIJACK
 EXTERN _OnHijackWorker@4:PROC
 endif ;FEATURE_HIJACK
@@ -47,31 +45,9 @@ endif ; FEATURE_COMINTEROP
 EXTERN __alloca_probe:PROC
 EXTERN _NDirectImportWorker@4:PROC
 EXTERN _UMThunkStubRareDisableWorker@8:PROC
-ifndef FEATURE_IMPLICIT_TLS
-ifdef ENABLE_GET_THREAD_GENERIC_FULL_CHECK
-; This is defined in C (threads.cpp) and enforces EE_THREAD_NOT_REQUIRED contracts
-GetThreadGenericFullCheck EQU ?GetThreadGenericFullCheck@@YGPAVThread@@XZ
-EXTERN  GetThreadGenericFullCheck:PROC
-endif ; ENABLE_GET_THREAD_GENERIC_FULL_CHECK
-
-EXTERN _gThreadTLSIndex:DWORD
-EXTERN _gAppDomainTLSIndex:DWORD
-endif ; FEATURE_IMPLICIT_TLS
 
 EXTERN _VarargPInvokeStubWorker@12:PROC
 EXTERN _GenericPInvokeCalliStubWorker@12:PROC
-
-; To debug that LastThrownObjectException really is EXCEPTION_COMPLUS
-ifdef TRACK_CXX_EXCEPTION_CODE_HACK	
-EXTERN __imp____CxxFrameHandler:PROC
-endif
-
-EXTERN _GetThread@0:PROC
-EXTERN _GetAppDomain@0:PROC
-
-ifdef MDA_SUPPORTED
-EXTERN _PInvokeStackImbalanceWorker@8:PROC
-endif
 
 ifndef FEATURE_CORECLR
 EXTERN _CopyCtorCallStubWorker@4:PROC
@@ -83,8 +59,9 @@ ifdef FEATURE_COMINTEROP
 EXTERN _CLRToCOMWorker@8:PROC
 endif
 
-ifdef FEATURE_PREJIT
 EXTERN _ExternalMethodFixupWorker@16:PROC
+
+ifdef FEATURE_PREJIT
 EXTERN _VirtualMethodFixupWorker@8:PROC
 EXTERN _StubDispatchFixupWorker@16:PROC
 endif
@@ -270,52 +247,6 @@ _RestoreFPUContext@4 PROC public
         retn 4
 
 _RestoreFPUContext@4 ENDP
-
-ifndef FEATURE_CORECLR
-ifdef _DEBUG
-; For C++ exceptions, we desperately need to know the SEH code.  This allows us to properly
-; distinguish managed exceptions from C++ exceptions from standard SEH like hard stack overflow.
-; We do this by providing our own handler that squirrels away the exception code and then
-; defers to the C++ service.  Fortunately, two symbols exist for the C++ symbol.
-___CxxFrameHandler3 PROC public
-
-        ; We don't know what arguments are passed to us (except for the first arg on stack)
-        ; It turns out that EAX is part of the non-standard calling convention of this
-        ; function.
-
-        push            eax
-        push            edx
-
-        cmp             dword ptr [_gThreadTLSIndex], -1
-        je              Chain                   ; CLR is not initialized yet
-
-        call            _GetThread@0
-
-        test            eax, eax                ; not a managed thread
-        jz              Chain
-
-        mov             edx, [esp + 0ch]        ; grab the first argument
-        mov             edx, [edx]              ; grab the SEH exception code
-        
-        mov             dword ptr [eax + Thread_m_LastCxxSEHExceptionCode], edx
-
-Chain:        
-
-        pop             edx
-
-        ; [esp] contains the value of EAX we must restore.  We would like
-        ; [esp] to contain the address of the real imported CxxFrameHandler
-        ; so we can chain to it.
-        
-        mov             eax, [__imp____CxxFrameHandler]
-        mov             eax, [eax]
-        xchg            [esp], eax
-        
-        ret
-        
-___CxxFrameHandler3 ENDP
-endif ; _DEBUG
-endif ; FEATURE_CORECLR
 
 ; Register CLR exception handlers defined on the C++ side with SAFESEH.
 ; Note that these directives must be in a file that defines symbols that will be used during linking,
@@ -767,56 +698,6 @@ doRet:
 FASTCALL_ENDFUNC HelperMethodFrameRestoreState
 
 
-ifndef FEATURE_IMPLICIT_TLS
-;---------------------------------------------------------------------------
-; Portable GetThread() function: used if no platform-specific optimizations apply.
-; This is in assembly code because we count on edx not getting trashed on calls
-; to this function.
-;---------------------------------------------------------------------------
-; Thread* __stdcall GetThreadGeneric(void);
-GetThreadGeneric PROC stdcall public USES ecx edx
-
-ifdef _DEBUG
-    cmp         dword ptr [_gThreadTLSIndex], -1
-    jnz         @F
-    int         3
-@@:
-endif
-ifdef ENABLE_GET_THREAD_GENERIC_FULL_CHECK
-    ; non-PAL, debug-only GetThreadGeneric should defer to GetThreadGenericFullCheck
-    ; to do extra contract enforcement.  (See GetThreadGenericFullCheck for details.)
-    ; This code is intentionally not added to asmhelper.s, as this enforcement is only
-    ; implemented for non-PAL builds.
-    call        GetThreadGenericFullCheck
-else
-    push        dword ptr [_gThreadTLSIndex]
-    call        dword ptr [__imp__TlsGetValue@4]
-endif
-    ret
-GetThreadGeneric ENDP
-
-;---------------------------------------------------------------------------
-; Portable GetAppdomain() function: used if no platform-specific optimizations apply.
-; This is in assembly code because we count on edx not getting trashed on calls
-; to this function.
-;---------------------------------------------------------------------------
-; Appdomain* __stdcall GetAppDomainGeneric(void);
-GetAppDomainGeneric PROC stdcall public USES ecx edx
-
-ifdef _DEBUG
-    cmp         dword ptr [_gAppDomainTLSIndex], -1
-    jnz         @F
-    int         3
-@@:
-endif
-
-    push        dword ptr [_gAppDomainTLSIndex]
-    call        dword ptr [__imp__TlsGetValue@4]
-    ret
-GetAppDomainGeneric ENDP
-endif
-
-
 ifdef FEATURE_HIJACK
 
 ; A JITted method's return address was hijacked to return to us here.  
@@ -1039,31 +920,6 @@ getFPReturn4:
    fstp    dword ptr [eax]
    retn    8
 _getFPReturn@8 endp
-
-; void __stdcall UM2MThunk_WrapperHelper(void *pThunkArgs,
-;                                        int argLen,
-;                                        void *pAddr,
-;                                        UMEntryThunk *pEntryThunk,
-;                                        Thread *pThread)
-UM2MThunk_WrapperHelper proc stdcall public,
-                        pThunkArgs : DWORD,
-                        argLen : DWORD,
-                        pAddr : DWORD,
-                        pEntryThunk : DWORD,
-                        pThread : DWORD
-    UNREFERENCED argLen
-
-    push    ebx
-
-    mov     eax, pEntryThunk
-    mov     ecx, pThread
-    mov     ebx, pThunkArgs
-    call    pAddr
-
-    pop     ebx
-
-    ret
-UM2MThunk_WrapperHelper endp
 
 ; VOID __cdecl UMThunkStubRareDisable()
 ;<TODO>
@@ -1423,87 +1279,6 @@ GoCallCalliWorker:
 
 _GenericPInvokeCalliHelper@0 endp
 
-ifdef MDA_SUPPORTED
-
-;==========================================================================
-; Invoked from on-the-fly generated stubs when the stack imbalance MDA is
-; enabled. The common low-level work for both direct P/Invoke and unmanaged
-; delegate P/Invoke happens here. PInvokeStackImbalanceWorker is where the
-; actual imbalance check is implemented.
-; [ESP + 4] - the StackImbalanceCookie
-; [EBP + 8] - stack arguments (EBP frame pushed by the calling stub)
-; 
-_PInvokeStackImbalanceHelper@0 proc public
-    ; StackImbalanceCookie to EBX
-    push    ebx
-    lea     ebx, [esp + 8]
-    
-    push    esi
-    push    edi
-    
-    ; copy stack args
-    mov     edx, ecx
-    mov     ecx, [ebx + StackImbalanceCookie__m_dwStackArgSize]
-    sub     esp, ecx
-
-    shr     ecx, 2
-    lea     edi, [esp]
-    lea     esi, [ebp + 8]
-
-    cld
-    rep movsd
-    
-    ; record pre-call ESP
-    mov     [ebx + StackImbalanceCookie__m_dwSavedEsp], esp
-    
-    ; call the target (restore ECX in case it's a thiscall)
-    mov     ecx, edx
-    call    [ebx + StackImbalanceCookie__m_pTarget]
-
-    ; record post-call ESP and restore ESP to pre-pushed state
-    mov     ecx, esp
-    lea     esp, [ebp - SIZEOF_StackImbalanceCookie - 16] ; 4 DWORDs and the cookie have been pushed
-
-    ; save return value
-    push    eax
-    push    edx
-    sub     esp, 12
-    
-.errnz (StackImbalanceCookie__HAS_FP_RETURN_VALUE AND 00ffffffh), HAS_FP_RETURN_VALUE has changed - update asm code
-    
-    ; save top of the floating point stack if the target has FP retval
-    test    byte ptr [ebx + StackImbalanceCookie__m_callConv + 3], (StackImbalanceCookie__HAS_FP_RETURN_VALUE SHR 24)
-    jz      noFPURetVal
-    fstp    tbyte ptr [esp] ; save full 10 bytes to avoid precision loss
-noFPURetVal:
-
-    ; call PInvokeStackImbalanceWorker(StackImbalanceCookie *pSICookie, DWORD dwPostESP)
-    push    ecx
-    push    ebx
-    call    _PInvokeStackImbalanceWorker@8
-
-    ; restore return value
-    test    byte ptr [ebx + StackImbalanceCookie__m_callConv + 3], (StackImbalanceCookie__HAS_FP_RETURN_VALUE SHR 24)
-    jz      noFPURetValToRestore
-    fld     tbyte ptr [esp]
-noFPURetValToRestore:
-
-    add     esp, 12
-    pop     edx
-    pop     eax
-
-    ; restore registers
-    pop     edi
-    pop     esi
-
-    pop     ebx
-    
-    ; EBP frame and original stack arguments will be removed by the caller
-    ret
-_PInvokeStackImbalanceHelper@0 endp
-
-endif ; MDA_SUPPORTED
-
 ifdef FEATURE_COMINTEROP
 
 ;==========================================================================
@@ -1667,6 +1442,8 @@ public _StubDispatchFixupPatchLabel@0
 
 _StubDispatchFixupStub@0 endp
 
+endif ; FEATURE_PREJIT
+
 ;==========================================================================
 _ExternalMethodFixupStub@0 proc public
 
@@ -1744,6 +1521,7 @@ _DelayLoad_MethodCall@0 proc public
 _DelayLoad_MethodCall@0 endp
 endif
 
+ifdef FEATURE_PREJIT
 ;=======================================================================================
 ; The call in softbound vtable slots initially points to this function.
 ; The pupose of this function is to transfer the control to right target and
@@ -1784,8 +1562,7 @@ public _VirtualMethodFixupPatchLabel@0
         ret
 
 _VirtualMethodFixupStub@0 endp
-
-endif ; FEATURE_PREJIT
+endif
 
 ;==========================================================================
 ; The prestub

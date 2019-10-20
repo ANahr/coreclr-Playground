@@ -12,22 +12,24 @@ syntax: glob
 *.user
 *.userosscache
 *.sln.docstates
+*.swp
 
 # Build results
 [Dd]ebug/
 [Dd]ebugPublic/
 [Rr]elease/
 [Rr]eleases/
-x64/
-x86/
 build/
 bld/
 [Bb]in/
 [Oo]bj/
 msbuild.log
+msbuild.binlog
 
 # add back architecture directories ignored in 'Build results'
 !tests/x86
+!src/mscorlib/src/System/Runtime/Intrinsics/X86
+!tests/src/JIT/HardwareIntrinsics/X86
 
 # Visual Studio 2015
 .vs/
@@ -51,7 +53,6 @@ dlldata.c
 
 *_i.c
 *_p.c
-*_i.h
 *.ilk
 *.meta
 *.obj
@@ -148,8 +149,13 @@ publish/
 
 # NuGet Packages
 *.nupkg
+*.nuget.g.props
+*.nuget.g.targets
+*.nuget.cache
 **/packages/*
+*.nuget.dgspec.json
 project.lock.json
+project.assets.json
 
 # Windows Azure Build Output
 csx/
@@ -202,7 +208,8 @@ FakesAssemblies/
 browse.VC.db
 
 # Local settings folder for Visual Studio Code
-.vscode/
+**/.vscode/**
+!**/.vscode/c_cpp_properties.json
 
 ### MonoDevelop ###
 
@@ -232,6 +239,7 @@ $RECYCLE.BIN/
 
 # Common binary extensions on Windows
 *.exe
+*.exe.stackdump
 *.dll
 *.lib
 
@@ -310,3 +318,11 @@ src/jit32
 
 # performance testing sandbox
 sandbox
+
+#IL linker for testing
+linker
+
+# Arcade files
+/artifacts/toolset
+/.packages
+/.dotnet

@@ -103,7 +103,7 @@ public:
 
     void StoreMethodCode(MethodDesc * pMethod, PCODE pCode);
     
-    PCODE QueryMethodCode(MethodDesc * pMethod);
+    PCODE QueryMethodCode(MethodDesc * pMethod, BOOL shouldRemoveCode);
 
     inline unsigned GetRemainingMethodCount() const
     {
@@ -191,24 +191,14 @@ public:
         return m_ProfileSession;
     }
 
-    // Once multicore JIT is enabled in an AppDomain, do not allow Cctors to run during JITting for consistency
-    // Called from CEEInfo::initClass
-    inline bool AllowCCtorsToRunDuringJITing() const
-    {
-        LIMITED_METHOD_CONTRACT;
-
-        return m_fSetProfileRootCalled == 0;
-    }
-
-
     // Check for environment variable to automatically start multicore JIT
     void AutoStartProfile(AppDomain * pDomain);
 
     // Multicore JIT API function: SetProfileRoot
-    void SetProfileRoot(AppDomain * pDomain, const wchar_t * pProfilePath);
+    void SetProfileRoot(AppDomain * pDomain, const WCHAR * pProfilePath);
 
     // Multicore JIT API function: StartProfile
-    void StartProfile(AppDomain * pDomain, ICLRPrivBinder * pBinderContext, const wchar_t * pProfile, int suffix = -1);
+    void StartProfile(AppDomain * pDomain, ICLRPrivBinder * pBinderContext, const WCHAR * pProfile, int suffix = -1);
 
     // Multicore JIT API function (internal): AbortProfile
     void AbortProfile();

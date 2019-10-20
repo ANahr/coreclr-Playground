@@ -112,7 +112,7 @@ HRESULT CordbType::GetStaticFieldValue(mdFieldDef fieldDef,
 }
 
 // Combine E_T_s and rank together to get an id for the m_sharedtypes table
-#define CORDBTYPE_ID(elementType,rank) ((unsigned int) elementType * (rank + 1) + 1)
+#define CORDBTYPE_ID(elementType,rank) (((unsigned int) (elementType)) * ((rank) + 1) + 1)
 
 
 //-----------------------------------------------------------------------------
@@ -338,7 +338,7 @@ HRESULT CordbType::MkType(CordbAppDomain * pAppDomain,
     {
     // this one is included because we need a "seed" type to uniquely hash FNPTR types, 
     // i.e. the nullary FNPTR type is used as the type constructor for all function pointer types, 
-    // when combined with an approproiate instantiation.
+    // when combined with an appropriate instantiation.
     case ELEMENT_TYPE_FNPTR: 
         // fall through ...
 
@@ -636,7 +636,7 @@ LReallyObject:
 // Make a CordbType for a function pointer type (ELEMENT_TYPE_FNPTR).
 // 
 // Arguments:
-//   pAppDomain - the Appdomian the type lives in.
+//   pAppDomain - the Appdomain the type lives in.
 //   elementType - must be ELEMENT_TYPE_FNPTR.
 //   pInst - instantiation information.
 //   ppResultType - OUT: out-parameter to hold resulting CordbType
@@ -1382,7 +1382,7 @@ HRESULT CordbType::InstantiateFromTypeHandle(CordbAppDomain * pAppDomain,
         // means it will simply assert IsNeutered.
         DacDbiArrayList<CordbType *> typeList;
         typeList.Alloc(params.Count());
-        for (int i = 0; i < params.Count(); ++i)
+        for (unsigned int i = 0; i < params.Count(); ++i)
         {
             IfFailThrow(TypeDataToType(pAppDomain, &(params[i]), &(typeList[i])));
         }
@@ -1549,7 +1549,7 @@ HRESULT CordbType::InitInstantiationTypeHandle(BOOL fForceInit)
         {
             ThrowHR(E_INVALIDARG);
         }
-        NewHolder<DebuggerIPCE_BasicTypeData> pArgTypeData(new DebuggerIPCE_BasicTypeData[bufferSize.Value()]); 
+        NewArrayHolder<DebuggerIPCE_BasicTypeData> pArgTypeData(new DebuggerIPCE_BasicTypeData[bufferSize.Value()]);
 
         // We will have already called Init on each of the type parameters further above. Now we build a
         // list of type information for each type parameter.
@@ -1854,7 +1854,7 @@ CordbType::GetUnboxedObjectSize(ULONG32 *pObjectSize)
     }
     else
     {
-        // Caller gaurantees that we're not a class. And the check above guarantees we're not a value-type.
+        // Caller guarantees that we're not a class. And the check above guarantees we're not a value-type.
         // So we're some sort of primitive, and thus we can determine size from the signature.
         // 
         // @dbgtodo inspection - We didn't have this assert in Whidbey, and it's firing in vararg 

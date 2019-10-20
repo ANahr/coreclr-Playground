@@ -8,7 +8,7 @@
 
 #ifndef __ExInfo_h__
 #define __ExInfo_h__
-#if !defined(WIN64EXCEPTIONS)
+#if !defined(FEATURE_EH_FUNCLETS)
 
 #include "exstatecommon.h"
 
@@ -134,7 +134,7 @@ public:
         return m_pPrevNestedInfo;
     }
     
-    // Returns the throwble associated with the tracker
+    // Returns the throwable associated with the tracker
     inline OBJECTREF GetThrowable()
     {
         LIMITED_METHOD_CONTRACT;
@@ -179,5 +179,5 @@ private:
 PTR_ExInfo GetEHTrackerForPreallocatedException(OBJECTREF oPreAllocThrowable, PTR_ExInfo pStartingEHTracker);
 #endif // _TARGET_X86_
 
-#endif // !WIN64EXCEPTIONS
+#endif // !FEATURE_EH_FUNCLETS
 #endif // __ExInfo_h__

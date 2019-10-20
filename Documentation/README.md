@@ -11,19 +11,19 @@ Intro to .NET Core
 Getting Started
 ===============
 
-- [Installing the .NET Core SDK](https://www.microsoft.com/net/core)
-- [[WIP] Official .NET Core Docs](http://dotnet.github.io/docs/)
+- [Installing the .NET Core SDK](https://dotnet.microsoft.com/download)
+- [Official .NET Core Docs](https://docs.microsoft.com/dotnet/core/)
 
 Project Docs
 ============
 
+- [Project Roadmap](https://github.com/dotnet/core/blob/master/roadmap.md)
 - [Developer Guide](project-docs/developer-guide.md)
-- [Project priorities](project-docs/project-priorities.md)
 - [Contributing to .NET Core](project-docs/contributing.md)
 - [Contributing Workflow](project-docs/contributing-workflow.md)
 - [Performance Guidelines](project-docs/performance-guidelines.md)
 - [Garbage Collector Guidelines](project-docs/garbage-collector-guidelines.md)
-- [Adding new public APIs to mscorlib](project-docs/adding_new_public_apis.md)
+- [Public APIs in System.Private.CoreLib](project-docs/changing-corelib.md)
 - [Project NuGet Dependencies](https://github.com/dotnet/corefx/blob/master/Documentation/project-docs/project-nuget-dependencies.md)
 
 Coding Guidelines
@@ -66,6 +66,8 @@ For your convenience, here are a few quick links to popular chapters:
 - [Introduction to the Common Language Runtime](botr/intro-to-clr.md)
 - [Garbage Collection Design](botr/garbage-collection.md)
 - [Type System](botr/type-system.md)
+
+For additional information, see this list of blog posts that provide a ['deep-dive' into the CoreCLR source code](deep-dive-blog-posts.md)
 
 Decoder Rings
 =============

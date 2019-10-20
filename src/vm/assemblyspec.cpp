@@ -19,11 +19,9 @@
 #include <stdlib.h>
 
 #include "assemblyspec.hpp"
-#include "security.h"
 #include "eeconfig.h"
 #include "strongname.h"
 #include "strongnameholders.h"
-#include "mdaassistants.h"
 #include "eventtrace.h"
 
 #ifdef FEATURE_COMINTEROP
@@ -187,7 +185,6 @@ BOOL AssemblySpec::IsValidAssemblyName()
 HRESULT AssemblySpec::InitializeSpecInternal(mdToken kAssemblyToken,
                                   IMDInternalImport *pImport,
                                   DomainAssembly *pStaticParent,
-                                  BOOL fIntrospectionOnly, 
                                   BOOL fAllowAllocation)
 {
     CONTRACTL
@@ -200,7 +197,6 @@ HRESULT AssemblySpec::InitializeSpecInternal(mdToken kAssemblyToken,
         PRECONDITION(pImport->IsValidToken(kAssemblyToken));
         PRECONDITION(TypeFromToken(kAssemblyToken) == mdtAssembly
                      || TypeFromToken(kAssemblyToken) == mdtAssemblyRef);
-        PRECONDITION(pStaticParent == NULL || !(pStaticParent->IsIntrospectionOnly() && !fIntrospectionOnly));   //Something's wrong if an introspection assembly loads an assembly for execution.
     }
     CONTRACTL_END;
     
@@ -208,16 +204,6 @@ HRESULT AssemblySpec::InitializeSpecInternal(mdToken kAssemblyToken,
     
     EX_TRY
     {
-        // We also did this check as a precondition as we should have prevented this structurally - but just 
-        // in case, make sure retail stops us from proceeding further.
-        if (pStaticParent != NULL && pStaticParent->IsIntrospectionOnly() && !fIntrospectionOnly)
-        {
-            EEPOLICY_HANDLE_FATAL_ERROR(COR_E_EXECUTIONENGINE);
-        }
-        
-        // Normalize this boolean as it tends to be used for comparisons
-        m_fIntrospectionOnly = !!fIntrospectionOnly;
-
         IfFailThrow(BaseAssemblySpec::Init(kAssemblyToken,pImport));
 
         if (IsContentType_WindowsRuntime())
@@ -269,7 +255,7 @@ void AssemblySpec::InitializeSpec(PEAssembly * pFile)
     mdAssembly a;
     IfFailThrow(pImport->GetAssemblyFromScope(&a));
 
-    InitializeSpec(a, pImport, NULL, pFile->IsIntrospectionOnly());
+    InitializeSpec(a, pImport, NULL);
     
 #ifdef FEATURE_COMINTEROP
     if (IsContentType_WindowsRuntime())
@@ -304,7 +290,7 @@ void AssemblySpec::InitializeSpec(PEAssembly * pFile)
 
 // This uses thread storage to allocate space. Please use Checkpoint and release it.
 HRESULT AssemblySpec::InitializeSpec(StackingAllocator* alloc, ASSEMBLYNAMEREF* pName, 
-                                  BOOL fParse /*=TRUE*/, BOOL fIntrospectionOnly /*=FALSE*/)
+                                  BOOL fParse /*=TRUE*/)
 {
     CONTRACTL
     {
@@ -447,16 +433,6 @@ HRESULT AssemblySpec::InitializeSpec(StackingAllocator* alloc, ASSEMBLYNAMEREF* 
 
     CloneFieldsToStackingAllocator(alloc);
 
-    // Hash for control 
-    // <TODO>@TODO cts, can we use unsafe in this case!!!</TODO>
-    if ((*pName)->GetHashForControl() != NULL)
-        SetHashForControl((*pName)->GetHashForControl()->GetDataPtr(), 
-                          (*pName)->GetHashForControl()->GetNumComponents(), 
-                          (*pName)->GetHashAlgorithmForControl());
-
-    // Normalize this boolean as it tends to be used for comparisons
-    m_fIntrospectionOnly = !!fIntrospectionOnly;
-
     // Extract embedded WinRT name, if present.
     ParseEncodedName();
 
@@ -470,7 +446,6 @@ void AssemblySpec::AssemblyNameInit(ASSEMBLYNAMEREF* pAsmName, PEImage* pImageIn
         THROWS;
         MODE_COOPERATIVE;
         GC_TRIGGERS;
-        SO_INTOLERANT;
         PRECONDITION(IsProtectedByGCFrame (pAsmName));
     }
     CONTRACTL_END;
@@ -495,18 +470,68 @@ void AssemblySpec::AssemblyNameInit(ASSEMBLYNAMEREF* pAsmName, PEImage* pImageIn
         // version
         gc.Version = AllocateObject(pVersion);
 
-
-        MethodDescCallSite ctorMethod(METHOD__VERSION__CTOR);
-            
-        ARG_SLOT VersionArgs[5] =
+        // BaseAssemblySpec and AssemblyName properties store uint16 components for the version. Version and AssemblyVersion
+        // store int32 or uint32. When the former are initialized from the latter, the components are truncated to uint16 size.
+        // When the latter are initialized from the former, they are zero-extended to int32 size. For uint16 components, the max
+        // value is used to indicate an unspecified component. For int32 components, -1 is used. Since we're initializing a
+        // Version from an assembly version, map the uint16 unspecified value to the int32 size.
+        int componentCount = 2;
+        if (m_context.usBuildNumber != (USHORT)-1)
         {
-            ObjToArgSlot(gc.Version),
-            (ARG_SLOT) m_context.usMajorVersion,      
-            (ARG_SLOT) m_context.usMinorVersion,
-            (ARG_SLOT) m_context.usBuildNumber,
-            (ARG_SLOT) m_context.usRevisionNumber,
-        };
-        ctorMethod.Call(VersionArgs);
+            ++componentCount;
+            if (m_context.usRevisionNumber != (USHORT)-1)
+            {
+                ++componentCount;
+            }
+        }
+        switch (componentCount)
+        {
+            case 2:
+            {
+                // Call Version(int, int) because Version(int, int, int, int) does not allow passing the unspecified value -1
+                MethodDescCallSite ctorMethod(METHOD__VERSION__CTOR_Ix2);
+                ARG_SLOT VersionArgs[] =
+                {
+                    ObjToArgSlot(gc.Version),
+                    (ARG_SLOT) m_context.usMajorVersion,
+                    (ARG_SLOT) m_context.usMinorVersion
+                };
+                ctorMethod.Call(VersionArgs);
+                break;
+            }
+
+            case 3:
+            {
+                // Call Version(int, int, int) because Version(int, int, int, int) does not allow passing the unspecified value -1
+                MethodDescCallSite ctorMethod(METHOD__VERSION__CTOR_Ix3);
+                ARG_SLOT VersionArgs[] =
+                {
+                    ObjToArgSlot(gc.Version),
+                    (ARG_SLOT) m_context.usMajorVersion,
+                    (ARG_SLOT) m_context.usMinorVersion,
+                    (ARG_SLOT) m_context.usBuildNumber
+                };
+                ctorMethod.Call(VersionArgs);
+                break;
+            }
+
+            default:
+            {
+                // Call Version(int, int, int, int)
+                _ASSERTE(componentCount == 4);
+                MethodDescCallSite ctorMethod(METHOD__VERSION__CTOR_Ix4);
+                ARG_SLOT VersionArgs[] =
+                {
+                    ObjToArgSlot(gc.Version),
+                    (ARG_SLOT) m_context.usMajorVersion,
+                    (ARG_SLOT) m_context.usMinorVersion,
+                    (ARG_SLOT) m_context.usBuildNumber,
+                    (ARG_SLOT) m_context.usRevisionNumber
+                };
+                ctorMethod.Call(VersionArgs);
+                break;
+            }
+        }
     }
     
     // cultureinfo
@@ -527,13 +552,13 @@ void AssemblySpec::AssemblyNameInit(ASSEMBLYNAMEREF* pAsmName, PEImage* pImageIn
         
         strCtor.Call(args);
     }
-    
 
     // public key or token byte array
     if (m_pbPublicKeyOrToken)
-        Security::CopyEncodingToByteArray((BYTE*) m_pbPublicKeyOrToken,
-                                          m_cbPublicKeyOrToken,
-                                          (OBJECTREF*) &gc.PublicKeyOrToken);
+    {
+        gc.PublicKeyOrToken = (U1ARRAYREF)AllocatePrimitiveArray(ELEMENT_TYPE_U1, m_cbPublicKeyOrToken);
+        memcpyNoGCRefs(gc.PublicKeyOrToken->m_Array, m_pbPublicKeyOrToken, m_cbPublicKeyOrToken);
+    }
 
     // simple name
     if(GetName())
@@ -554,7 +579,7 @@ void AssemblySpec::AssemblyNameInit(ASSEMBLYNAMEREF* pAsmName, PEImage* pImageIn
         IfFailThrow(pImageInfo->GetMDImport()->GetAssemblyProps(TokenFromRid(1, mdtAssembly), NULL, NULL, &hashAlgId, NULL, NULL, NULL));
     }
 
-    MethodDescCallSite init(METHOD__ASSEMBLY_NAME__INIT);
+    MethodDescCallSite init(METHOD__ASSEMBLY_NAME__CTOR);
     
     ARG_SLOT MethodArgs[] =
     {
@@ -689,7 +714,7 @@ void AssemblySpec::MatchPublicKeys(Assembly *pAssembly)
 }
 
 
-PEAssembly *AssemblySpec::ResolveAssemblyFile(AppDomain *pDomain, BOOL fPreBind)
+PEAssembly *AssemblySpec::ResolveAssemblyFile(AppDomain *pDomain)
 {
     CONTRACT(PEAssembly *)
     {
@@ -706,7 +731,7 @@ PEAssembly *AssemblySpec::ResolveAssemblyFile(AppDomain *pDomain, BOOL fPreBind)
     if (GetName() == NULL)
         RETURN NULL;
 
-    Assembly *pAssembly = pDomain->RaiseAssemblyResolveEvent(this, IsIntrospectionOnly(), fPreBind);
+    Assembly *pAssembly = pDomain->RaiseAssemblyResolveEvent(this);
 
     if (pAssembly != NULL) {
         PEAssembly *pFile = pAssembly->GetManifestFile();
@@ -719,7 +744,7 @@ PEAssembly *AssemblySpec::ResolveAssemblyFile(AppDomain *pDomain, BOOL fPreBind)
 }
 
 
-Assembly *AssemblySpec::LoadAssembly(FileLoadLevel targetLevel, AssemblyLoadSecurity *pLoadSecurity, BOOL fThrowOnFileNotFound, BOOL fRaisePrebindEvents, StackCrawlMark *pCallerStackMark)
+Assembly *AssemblySpec::LoadAssembly(FileLoadLevel targetLevel, BOOL fThrowOnFileNotFound)
 {
     CONTRACTL
     {
@@ -729,7 +754,7 @@ Assembly *AssemblySpec::LoadAssembly(FileLoadLevel targetLevel, AssemblyLoadSecu
     }
     CONTRACTL_END;
  
-    DomainAssembly * pDomainAssembly = LoadDomainAssembly(targetLevel, pLoadSecurity, fThrowOnFileNotFound, fRaisePrebindEvents, pCallerStackMark);
+    DomainAssembly * pDomainAssembly = LoadDomainAssembly(targetLevel, fThrowOnFileNotFound);
     if (pDomainAssembly == NULL) {
         _ASSERTE(!fThrowOnFileNotFound);
         return NULL;
@@ -743,9 +768,9 @@ BOOL AreSameBinderInstance(ICLRPrivBinder *pBinderA, ICLRPrivBinder *pBinderB)
 {
     LIMITED_METHOD_CONTRACT;
     
-    BOOL fIsSameInstance = FALSE;
+    BOOL fIsSameInstance = (pBinderA == pBinderB);
     
-    if ((pBinderA != NULL) && (pBinderB != NULL))
+    if (!fIsSameInstance && (pBinderA != NULL) && (pBinderB != NULL))
     {
         // Get the ID for the first binder
         UINT_PTR binderIDA = 0, binderIDB = 0;
@@ -785,15 +810,6 @@ ICLRPrivBinder* AssemblySpec::GetBindingContextFromParentAssembly(AppDomain *pDo
         
         // ICLRPrivAssembly implements ICLRPrivBinder and thus, "is a" binder in a manner of semantics.
         pParentAssemblyBinder = pParentPEAssembly->GetBindingContext();
-        if (pParentAssemblyBinder == NULL)
-        {
-            if (pParentPEAssembly->IsDynamic())
-            {
-                // If the parent assembly is dynamically generated, then use its fallback load context
-                // as the binder.
-                pParentAssemblyBinder = pParentPEAssembly->GetFallbackLoadContextBinder();
-            }
-        }
     }
 
     if (GetPreferFallbackLoadContextBinder())
@@ -811,13 +827,12 @@ ICLRPrivBinder* AssemblySpec::GetBindingContextFromParentAssembly(AppDomain *pDo
         //
         // 1) Domain Neutral assembly
         // 2) Entrypoint assembly
-        // 3) RefEmitted assembly
-        // 4) AssemblyLoadContext.LoadFromAssemblyName
+        // 3) AssemblyLoadContext.LoadFromAssemblyName
         //
         // For (1) and (2), we will need to bind against the DefaultContext binder (aka TPA Binder). This happens
         // below if we do not find the parent assembly binder.
         //
-        // For (3) and (4), fetch the fallback load context binder reference.
+        // For (3), fetch the fallback load context binder reference.
         
         pParentAssemblyBinder = GetFallbackLoadContextBinderForRequestingAssembly();
     }
@@ -847,8 +862,18 @@ ICLRPrivBinder* AssemblySpec::GetBindingContextFromParentAssembly(AppDomain *pDo
             // types being referenced from Windows.Foundation.Winmd).
             //
             // If the AssemblySpec does not correspond to WinRT type but our parent assembly binder is a WinRT binder,
-            // then such an assembly will not be found by the binder. In such a case, we reset our binder reference.
+            // then such an assembly will not be found by the binder.
+            // In such a case, the parent binder should be the fallback binder for the WinRT assembly if one exists.
+            ICLRPrivBinder* pParentWinRTBinder = pParentAssemblyBinder;
             pParentAssemblyBinder = NULL;
+            ReleaseHolder<ICLRPrivAssemblyID_WinRT> assembly;
+            if (SUCCEEDED(pParentWinRTBinder->QueryInterface<ICLRPrivAssemblyID_WinRT>(&assembly)))
+            {
+                pParentAssemblyBinder = dac_cast<PTR_CLRPrivAssemblyWinRT>(assembly.GetValue())->GetFallbackBinder();
+
+                // The fallback binder should not be a WinRT binder.
+                _ASSERTE(!AreSameBinderInstance(pWinRTBinder, pParentAssemblyBinder));
+            }
         }
     }
 #endif // defined(FEATURE_COMINTEROP)
@@ -867,10 +892,7 @@ ICLRPrivBinder* AssemblySpec::GetBindingContextFromParentAssembly(AppDomain *pDo
 }
 
 DomainAssembly *AssemblySpec::LoadDomainAssembly(FileLoadLevel targetLevel,
-                                                 AssemblyLoadSecurity *pLoadSecurity,
-                                                 BOOL fThrowOnFileNotFound,
-                                                 BOOL fRaisePrebindEvents,
-                                                 StackCrawlMark *pCallerStackMark)
+                                                 BOOL fThrowOnFileNotFound)
 {
     CONTRACT(DomainAssembly *)
     {
@@ -886,11 +908,8 @@ DomainAssembly *AssemblySpec::LoadDomainAssembly(FileLoadLevel targetLevel,
 
     ETWOnStartup (LoaderCatchCall_V1, LoaderCatchCallEnd_V1);
     AppDomain* pDomain = GetAppDomain();
-
-
-    DomainAssembly *pAssembly = nullptr;
-
-    ICLRPrivBinder * pBinder = GetHostBinder();
+    
+    ICLRPrivBinder* pBinder = GetHostBinder();
     
     // If no binder was explicitly set, check if parent assembly has a binder.
     if (pBinder == nullptr)
@@ -898,19 +917,8 @@ DomainAssembly *AssemblySpec::LoadDomainAssembly(FileLoadLevel targetLevel,
         pBinder = GetBindingContextFromParentAssembly(pDomain);
     }
 
-
-    if (pBinder != nullptr)
-    {
-        ReleaseHolder<ICLRPrivAssembly> pPrivAssembly;
-        HRESULT hrCachedResult;
-        if (SUCCEEDED(pBinder->FindAssemblyBySpec(GetAppDomain(), this, &hrCachedResult, &pPrivAssembly)) &&
-            SUCCEEDED(hrCachedResult))
-        {
-            pAssembly = pDomain->FindAssembly(pPrivAssembly);
-        }
-    }
-
-    if ((pAssembly == nullptr) && CanUseWithBindingCache())
+    DomainAssembly* pAssembly = nullptr;
+    if (CanUseWithBindingCache())
     {
         pAssembly = pDomain->FindCachedAssembly(this);
     }
@@ -921,12 +929,11 @@ DomainAssembly *AssemblySpec::LoadDomainAssembly(FileLoadLevel targetLevel,
         RETURN pAssembly;
     }
 
-
-    PEAssemblyHolder pFile(pDomain->BindAssemblySpec(this, fThrowOnFileNotFound, fRaisePrebindEvents, pCallerStackMark, pLoadSecurity));
+    PEAssemblyHolder pFile(pDomain->BindAssemblySpec(this, fThrowOnFileNotFound));
     if (pFile == NULL)
         RETURN NULL;
 
-    pAssembly = pDomain->LoadDomainAssembly(this, pFile, targetLevel, pLoadSecurity);
+    pAssembly = pDomain->LoadDomainAssembly(this, pFile, targetLevel);
 
     RETURN pAssembly;
 }
@@ -1215,27 +1222,6 @@ void AssemblySpecBindingCache::Clear()
     m_map.Clear();
 }
 
-void AssemblySpecBindingCache::OnAppDomainUnload()
-{
-    CONTRACTL
-    {
-        DESTRUCTOR_CHECK;
-        NOTHROW;
-        GC_TRIGGERS;
-        MODE_ANY;
-    }
-    CONTRACTL_END;
-
-    PtrHashMap::PtrIterator i = m_map.begin();
-    while (!i.end())
-    {
-        AssemblyBinding *b = (AssemblyBinding*) i.GetValue();
-        b->OnAppDomainUnload();
-
-        ++i;
-    }
-}
-
 void AssemblySpecBindingCache::Init(CrstBase *pCrst, LoaderHeap *pHeap)
 {
     WRAPPER_NO_CONTRACT;
@@ -1245,7 +1231,7 @@ void AssemblySpecBindingCache::Init(CrstBase *pCrst, LoaderHeap *pHeap)
     m_pHeap = pHeap;
 }
 
-AssemblySpecBindingCache::AssemblyBinding* AssemblySpecBindingCache::GetAssemblyBindingEntryForAssemblySpec(AssemblySpec* pSpec, BOOL fThrow)
+AssemblySpecBindingCache::AssemblyBinding* AssemblySpecBindingCache::LookupInternal(AssemblySpec* pSpec, BOOL fThrow)
 {
     CONTRACTL
     {
@@ -1266,9 +1252,9 @@ AssemblySpecBindingCache::AssemblyBinding* AssemblySpecBindingCache::GetAssembly
     }
     CONTRACTL_END;
 
-    AssemblyBinding* pEntry = (AssemblyBinding *) INVALIDENTRY;
     UPTR key = (UPTR)pSpec->Hash();
-    
+    UPTR lookupKey = key;
+
     // On CoreCLR, we will use the BinderID as the key 
     ICLRPrivBinder *pBinderContextForLookup = NULL;
     AppDomain *pSpecDomain = pSpec->GetAppDomain();
@@ -1276,11 +1262,18 @@ AssemblySpecBindingCache::AssemblyBinding* AssemblySpecBindingCache::GetAssembly
     
     // Check if the AssemblySpec already has specified its binding context. This will be set for assemblies that are
     // attempted to be explicitly bound using AssemblyLoadContext LoadFrom* methods.
-    pBinderContextForLookup = pSpec->GetBindingContext();
+    if(!pSpec->IsAssemblySpecForMscorlib())
+        pBinderContextForLookup = pSpec->GetBindingContext();
+    else
+    {
+        // For System.Private.Corelib Binding context is either not set or if set then it should be TPA
+        _ASSERTE(pSpec->GetBindingContext() == NULL || pSpec->GetBindingContext() == pSpecDomain->GetFusionContext());
+    }
+
     if (pBinderContextForLookup != NULL)
     {
         // We are working with the actual binding context in which the assembly was expected to be loaded.
-        // Thus, we dont need to get it from the parent assembly.
+        // Thus, we don't need to get it from the parent assembly.
         fGetBindingContextFromParent = false;
     }
 
@@ -1295,7 +1288,6 @@ AssemblySpecBindingCache::AssemblyBinding* AssemblySpecBindingCache::GetAssembly
         }
     }
 
-    UPTR lookupKey = key;
     if (pBinderContextForLookup)
     {
         UINT_PTR binderID = 0;
@@ -1303,9 +1295,9 @@ AssemblySpecBindingCache::AssemblyBinding* AssemblySpecBindingCache::GetAssembly
         _ASSERTE(SUCCEEDED(hr));
         lookupKey = key^binderID;
     }
-    
-    pEntry = (AssemblyBinding *) m_map.LookupValue(lookupKey, pSpec);
-    
+
+    AssemblyBinding* pEntry = (AssemblyBinding *)m_map.LookupValue(lookupKey, pSpec);
+
     // Reset the binding context if one was originally never present in the AssemblySpec and we didnt find any entry
     // in the cache.
     if (fGetBindingContextFromParent)
@@ -1322,8 +1314,7 @@ AssemblySpecBindingCache::AssemblyBinding* AssemblySpecBindingCache::GetAssembly
 BOOL AssemblySpecBindingCache::Contains(AssemblySpec *pSpec)
 {
     WRAPPER_NO_CONTRACT;
-
-    return (GetAssemblyBindingEntryForAssemblySpec(pSpec, TRUE) != (AssemblyBinding *) INVALIDENTRY);
+    return (LookupInternal(pSpec, TRUE) != (AssemblyBinding *) INVALIDENTRY);
 }
 
 DomainAssembly *AssemblySpecBindingCache::LookupAssembly(AssemblySpec *pSpec,
@@ -1349,7 +1340,7 @@ DomainAssembly *AssemblySpecBindingCache::LookupAssembly(AssemblySpec *pSpec,
 
     AssemblyBinding *entry = (AssemblyBinding *) INVALIDENTRY;
     
-    entry = GetAssemblyBindingEntryForAssemblySpec(pSpec, fThrow);
+    entry = LookupInternal(pSpec, fThrow);
 
     if (entry == (AssemblyBinding *) INVALIDENTRY)
         RETURN NULL;
@@ -1385,9 +1376,8 @@ PEAssembly *AssemblySpecBindingCache::LookupFile(AssemblySpec *pSpec, BOOL fThro
     }
     CONTRACT_END;
 
-    AssemblyBinding *entry = (AssemblyBinding *) INVALIDENTRY;
-    
-    entry = GetAssemblyBindingEntryForAssemblySpec(pSpec, fThrow);
+    AssemblyBinding *entry = (AssemblyBinding *) INVALIDENTRY;    
+    entry = LookupInternal(pSpec, fThrow);
     
     if (entry == (AssemblyBinding *) INVALIDENTRY)
         RETURN NULL;
@@ -1516,6 +1506,7 @@ BOOL AssemblySpecBindingCache::StoreAssembly(AssemblySpec *pSpec, DomainAssembly
 
     // On CoreCLR, we will use the BinderID as the key 
     ICLRPrivBinder* pBinderContextForLookup = pAssembly->GetFile()->GetBindingContext();
+
     _ASSERTE(pBinderContextForLookup || pAssembly->GetFile()->IsSystem());
     if (pBinderContextForLookup)
     {
@@ -1529,15 +1520,21 @@ BOOL AssemblySpecBindingCache::StoreAssembly(AssemblySpec *pSpec, DomainAssembly
             pSpec->SetBindingContext(pBinderContextForLookup);
         }
     }
-    
+
     AssemblyBinding *entry = (AssemblyBinding *) m_map.LookupValue(key, pSpec);
 
     if (entry == (AssemblyBinding *) INVALIDENTRY)
     {
         AssemblyBindingHolder abHolder;
-        entry = abHolder.CreateAssemblyBinding(m_pHeap);
 
-        entry->Init(pSpec,pAssembly->GetFile(),pAssembly,NULL,m_pHeap, abHolder.GetPamTracker());
+        LoaderHeap* pHeap = m_pHeap;
+        if (pAssembly->IsCollectible())
+        {
+            pHeap = pAssembly->GetLoaderAllocator()->GetHighFrequencyHeap();
+        }
+
+        entry = abHolder.CreateAssemblyBinding(pHeap);
+        entry->Init(pSpec,pAssembly->GetFile(),pAssembly,NULL,pHeap, abHolder.GetPamTracker());
 
         m_map.InsertValue(key, entry);
 
@@ -1596,6 +1593,7 @@ BOOL AssemblySpecBindingCache::StoreFile(AssemblySpec *pSpec, PEAssembly *pFile)
 
     // On CoreCLR, we will use the BinderID as the key 
     ICLRPrivBinder* pBinderContextForLookup = pFile->GetBindingContext();
+
     _ASSERTE(pBinderContextForLookup || pFile->IsSystem());
     if (pBinderContextForLookup)
     {
@@ -1615,9 +1613,27 @@ BOOL AssemblySpecBindingCache::StoreFile(AssemblySpec *pSpec, PEAssembly *pFile)
     if (entry == (AssemblyBinding *) INVALIDENTRY)
     {
         AssemblyBindingHolder abHolder;
-        entry = abHolder.CreateAssemblyBinding(m_pHeap);
 
-        entry->Init(pSpec,pFile,NULL,NULL,m_pHeap, abHolder.GetPamTracker());
+        LoaderHeap* pHeap = m_pHeap;
+
+#ifndef CROSSGEN_COMPILE
+        if (pBinderContextForLookup != NULL)
+        {
+            LoaderAllocator* pLoaderAllocator = NULL;
+
+            // Assemblies loaded with AssemblyLoadContext need to use a different heap if
+            // marked as collectible
+            if (SUCCEEDED(pBinderContextForLookup->GetLoaderAllocator((LPVOID*)&pLoaderAllocator)))
+            {
+                _ASSERTE(pLoaderAllocator != NULL);
+                pHeap = pLoaderAllocator->GetHighFrequencyHeap();
+            }
+        }
+#endif // !CROSSGEN_COMPILE
+
+        entry = abHolder.CreateAssemblyBinding(pHeap);
+
+        entry->Init(pSpec,pFile,NULL,NULL,pHeap, abHolder.GetPamTracker());
 
         m_map.InsertValue(key, entry);
         abHolder.SuppressRelease();
@@ -1665,7 +1681,7 @@ BOOL AssemblySpecBindingCache::StoreException(AssemblySpec *pSpec, Exception* pE
 
     UPTR key = (UPTR)pSpec->Hash();
 
-    AssemblyBinding *entry = GetAssemblyBindingEntryForAssemblySpec(pSpec, TRUE);
+    AssemblyBinding *entry = LookupInternal(pSpec, TRUE);
     if (entry == (AssemblyBinding *) INVALIDENTRY)
     {
         // TODO: Merge this with the failure lookup in the binder
@@ -1722,6 +1738,40 @@ BOOL AssemblySpecBindingCache::StoreException(AssemblySpec *pSpec, Exception* pE
     }
 }
 
+BOOL AssemblySpecBindingCache::RemoveAssembly(DomainAssembly* pAssembly)
+{
+    CONTRACT(BOOL)
+    {
+        INSTANCE_CHECK;
+        NOTHROW;
+        GC_TRIGGERS;
+        MODE_ANY;
+        PRECONDITION(pAssembly != NULL);
+    }
+    CONTRACT_END;
+    BOOL result = FALSE;
+    PtrHashMap::PtrIterator i = m_map.begin();
+    while (!i.end())
+    {
+        AssemblyBinding* entry = (AssemblyBinding*)i.GetValue();
+        if (entry->GetAssembly() == pAssembly)
+        {
+            UPTR key = i.GetKey();
+            m_map.DeleteValue(key, entry);
+
+            if (m_pHeap == NULL)
+                delete entry;
+            else
+                entry->~AssemblyBinding();
+
+            result = TRUE;
+        }
+        ++i;
+    }
+
+    RETURN result;
+}
+
 /* static */
 BOOL AssemblySpecHash::CompareSpecs(UPTR u1, UPTR u2)
 {
@@ -1730,9 +1780,6 @@ BOOL AssemblySpecHash::CompareSpecs(UPTR u1, UPTR u2)
     return AssemblySpecBindingCache::CompareSpecs(u1,u2);  
 }
 
-
-
-
 /* static */
 BOOL AssemblySpecBindingCache::CompareSpecs(UPTR u1, UPTR u2)
 {
@@ -1740,14 +1787,8 @@ BOOL AssemblySpecBindingCache::CompareSpecs(UPTR u1, UPTR u2)
     AssemblySpec *a1 = (AssemblySpec *) (u1 << 1);
     AssemblySpec *a2 = (AssemblySpec *) u2;
 
-
-    if ((!a1->CompareEx(a2)) ||
-        (a1->IsIntrospectionOnly() != a2->IsIntrospectionOnly()))
-        return FALSE;
-    return TRUE;  
+    return a1->CompareEx(a2);
 }
-
-
 
 /* static */
 BOOL DomainAssemblyCache::CompareBindingSpec(UPTR spec1, UPTR spec2)
@@ -1757,15 +1798,8 @@ BOOL DomainAssemblyCache::CompareBindingSpec(UPTR spec1, UPTR spec2)
     AssemblySpec* pSpec1 = (AssemblySpec*) (spec1 << 1);
     AssemblyEntry* pEntry2 = (AssemblyEntry*) spec2;
 
-
-
-    if ((!pSpec1->CompareEx(&pEntry2->spec)) ||
-        (pSpec1->IsIntrospectionOnly() != pEntry2->spec.IsIntrospectionOnly()))
-        return FALSE;
-
-    return TRUE;
+    return pSpec1->CompareEx(&pEntry2->spec);
 }
-
 
 DomainAssemblyCache::AssemblyEntry* DomainAssemblyCache::LookupEntry(AssemblySpec* pSpec)
 {
@@ -1816,6 +1850,11 @@ VOID DomainAssemblyCache::InsertEntry(AssemblySpec* pSpec, LPVOID pData1, LPVOID
 
             pEntry->spec.CopyFrom(pSpec);
             pEntry->spec.CloneFieldsToLoaderHeap(AssemblySpec::ALL_OWNED, m_pDomain->GetLowFrequencyHeap(), pamTracker);
+
+            // Clear the parent assembly, it is not needed for the AssemblySpec in the cache entry and it could contain stale
+            // pointer when the parent was a collectible assembly that was collected.
+            pEntry->spec.SetParentAssembly(NULL);
+
             pEntry->pData[0] = pData1;
             pEntry->pData[1] = pData2;
             DWORD hashValue = pEntry->Hash();

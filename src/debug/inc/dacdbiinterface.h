@@ -1923,7 +1923,7 @@ public:
                              OUT UINT32 *            pcGenericClassTypeParams,
                              OUT TypeParamsList *    pGenericTypeParams) = 0;
 
-    // Get the target field address of a context or thread local static. 
+    // Get the target field address of a thread local static.
     // Arguments: 
     //     input: vmField         - pointer to the field descriptor for the static field
     //            vmRuntimeThread - thread to which the static field belongs. This must 
@@ -1937,8 +1937,8 @@ public:
     //  Field storage is constant once allocated, so this value can be cached. 
 
     virtual
-    CORDB_ADDRESS GetThreadOrContextStaticAddress(VMPTR_FieldDesc vmField,
-                                                   VMPTR_Thread    vmRuntimeThread) = 0;
+    CORDB_ADDRESS GetThreadStaticAddress(VMPTR_FieldDesc vmField,
+                                         VMPTR_Thread    vmRuntimeThread) = 0;
 
     // Get the target field address of a collectible types static. 
     // Arguments: 
@@ -2532,6 +2532,7 @@ public:
     virtual
     HRESULT GetPEFileMDInternalRW(VMPTR_PEFile vmPEFile, OUT TADDR* pAddrMDInternalRW) = 0;
 
+    // DEPRECATED - use GetActiveRejitILCodeVersionNode
     // Retrieves the active ReJitInfo for a given module/methodDef, if it exists.
     //     Active is defined as after GetReJitParameters returns from the profiler dll and
     //     no call to Revert has completed yet.
@@ -2550,17 +2551,16 @@ public:
     virtual
     HRESULT GetReJitInfo(VMPTR_Module vmModule, mdMethodDef methodTk, OUT VMPTR_ReJitInfo* pReJitInfo) = 0;
 
-    // Retrieves the active ReJitInfo for a given MethodDesc/code address, if it exists.
-    //     Active is defined as after GetReJitParameters returns from the profiler dll and
-    //     no call to Revert has completed yet.
+    // DEPRECATED - use GetNativeCodeVersionNode
+    // Retrieves the ReJitInfo for a given MethodDesc/code address, if it exists.
     // 
     // 
     // Arguments:
     //    vmMethod         - The method to look for
     //    codeStartAddress - The code start address disambiguates between multiple rejitted instances
     //                       of the method.
-    //    pReJitInfo - [out] The RejitInfo request, if any, that is active on this method. If no request
-    //                 is active this will be pReJitInfo->IsNull() == TRUE.
+    //    pReJitInfo - [out] The RejitInfo request that corresponds to this MethodDesc/code address, if it exists.
+    //                       NULL otherwise.
     //
     // Returns:
     //    S_OK regardless of whether a rejit request is active or not, as long as the answer is certain
@@ -2569,7 +2569,7 @@ public:
     virtual
     HRESULT GetReJitInfo(VMPTR_MethodDesc vmMethod, CORDB_ADDRESS codeStartAddress, OUT VMPTR_ReJitInfo* pReJitInfo) = 0;
 
-
+    // DEPRECATED - use GetILCodeVersion
     // Retrieves the SharedReJitInfo for a given ReJitInfo. 
     // 
     // 
@@ -2584,6 +2584,7 @@ public:
     virtual
     HRESULT GetSharedReJitInfo(VMPTR_ReJitInfo vmReJitInfo, VMPTR_SharedReJitInfo* pSharedReJitInfo) = 0;
 
+    // DEPRECATED - use GetILCodeVersionData
     // Retrieves useful data from a SharedReJitInfo such as IL code and IL mapping.
     // 
     // 
@@ -2629,6 +2630,124 @@ public:
     // 
     virtual
     HRESULT GetMDStructuresVersion(ULONG32* pMDStructuresVersion) = 0;
+
+    // Retrieves the active rejit ILCodeVersionNode for a given module/methodDef, if it exists.
+    //     Active is defined as after GetReJitParameters returns from the profiler dll and
+    //     no call to Revert has completed yet.
+    // 
+    // 
+    // Arguments:
+    //    vmModule - The module to search in
+    //    methodTk - The methodDef token indicates the method within the module to check
+    //    pILCodeVersionNode - [out] The Rejit request, if any, that is active on this method. If no request
+    //                          is active this will be pILCodeVersionNode->IsNull() == TRUE.
+    //
+    // Returns:
+    //    S_OK regardless of whether a rejit request is active or not, as long as the answer is certain
+    //    error HRESULTs such as CORDBG_READ_VIRTUAL_FAILURE are possible
+    // 
+    virtual
+        HRESULT GetActiveRejitILCodeVersionNode(VMPTR_Module vmModule, mdMethodDef methodTk, OUT VMPTR_ILCodeVersionNode* pVmILCodeVersionNode) = 0;
+
+    // Retrieves the NativeCodeVersionNode for a given MethodDesc/code address, if it exists.
+    // NOTE: The initial (default) code generated for a MethodDesc is a valid MethodDesc/code address pair but it won't have a corresponding
+    // NativeCodeVersionNode.
+    // 
+    // 
+    // Arguments:
+    //    vmMethod                 - The method to look for
+    //    codeStartAddress         - The code start address disambiguates between multiple jitted instances of the method.
+    //    pVmNativeCodeVersionNode - [out] The NativeCodeVersionNode request that corresponds to this MethodDesc/code address, if it exists.
+    //                               NULL otherwise.
+    //
+    // Returns:
+    //    S_OK regardless of whether a rejit request is active or not, as long as the answer is certain
+    //    error HRESULTs such as CORDBG_READ_VIRTUAL_FAILURE are possible
+    // 
+    virtual
+        HRESULT GetNativeCodeVersionNode(VMPTR_MethodDesc vmMethod, CORDB_ADDRESS codeStartAddress, OUT VMPTR_NativeCodeVersionNode* pVmNativeCodeVersionNode) = 0;
+
+    // Retrieves the ILCodeVersionNode for a given NativeCodeVersionNode. 
+    // This may return a NULL node if the native code belongs to the default IL version for this this method.
+    // 
+    // 
+    // Arguments:
+    //    vmNativeCodeVersionNode  - The NativeCodeVersionNode to inspect
+    //    pVmILCodeVersionNode     - [out] The ILCodeVersionNode that is pointed to by vmNativeCodeVersionNode, if any.
+    //
+    // Returns:
+    //    S_OK if no error
+    //    error HRESULTs such as CORDBG_READ_VIRTUAL_FAILURE are possible
+    // 
+    virtual
+        HRESULT GetILCodeVersionNode(VMPTR_NativeCodeVersionNode vmNativeCodeVersionNode, VMPTR_ILCodeVersionNode* pVmILCodeVersionNode) = 0;
+
+    // Retrieves useful data from an ILCodeVersion such as IL code and IL mapping.
+    // 
+    // 
+    // Arguments:
+    //    ilCodeVersionNode - The ILCodeVersionNode to inspect
+    //    pData             - [out] Various properties of the ILCodeVersionNode such as IL code and IL mapping.
+    //
+    // Returns:
+    //    S_OK if no error
+    //    error HRESULTs such as CORDBG_READ_VIRTUAL_FAILURE are possible
+    // 
+    virtual
+        HRESULT GetILCodeVersionNodeData(VMPTR_ILCodeVersionNode ilCodeVersionNode, DacSharedReJitInfo* pData) = 0;
+
+    // Enable or disable the GC notification events. The GC notification events are turned off by default
+    // They will be delivered through ICorDebugManagedCallback4
+    // 
+    // 
+    // Arguments:
+    //    fEnable - true to enable the events, false to disable
+    //
+    // Returns:
+    //    S_OK if no error
+    //    error HRESULTs such as CORDBG_READ_VIRTUAL_FAILURE are possible
+    // 
+    virtual
+        HRESULT EnableGCNotificationEvents(BOOL fEnable) = 0;
+
+
+    typedef enum
+    {
+        kClosedDelegate,
+        kOpenDelegate,
+        kOpenInstanceVSD,
+        kClosedStaticWithScpecialSig,
+        kTrueMulticastDelegate,
+        kSecureDelegate,
+        kUnmanagedFunctionDelegate,
+        kUnknownDelegateType
+    } DelegateType;
+
+    // Returns true if the object is a type deriving from System.MulticastDelegate
+    //
+    // Arguments:
+    //    vmObject - pointer to runtime object to query for.
+    //
+    virtual
+    BOOL IsDelegate(VMPTR_Object vmObject) = 0;
+
+    // Returns the delegate type
+    virtual
+    HRESULT GetDelegateType(VMPTR_Object delegateObject, DelegateType *delegateType) = 0;
+
+    virtual
+    HRESULT GetDelegateFunctionData(
+        DelegateType delegateType,
+        VMPTR_Object delegateObject,
+        OUT VMPTR_DomainFile *ppFunctionDomainFile,
+        OUT mdMethodDef *pMethodDef) = 0;
+
+    virtual
+    HRESULT GetDelegateTargetObject(
+        DelegateType delegateType,
+        VMPTR_Object delegateObject,
+        OUT VMPTR_Object *ppTargetObj,
+        OUT VMPTR_AppDomain *ppTargetAppDomain) = 0;
 
     // The following tag tells the DD-marshalling tool to stop scanning.
     // END_MARSHAL

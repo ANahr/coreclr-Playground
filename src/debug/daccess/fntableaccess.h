@@ -41,9 +41,7 @@ struct FakeHeapList
     DWORD_PTR           mapBase;        // changed from PBYTE
     DWORD_PTR           pHdrMap;        // changed from DWORD*
     size_t              maxCodeHeapSize;
-    DWORD               cBlocks;
-    bool                bFull;          // Heap is considered full do not use for new allocations
-    bool                bFullForJumpStubs; // Heap is considered full do not use for new allocations of jump stubs
+    size_t              reserveForJumpStubs;
 };
 
 typedef struct _FakeHpRealCodeHdr
@@ -108,11 +106,11 @@ struct FakeStub
 #ifdef _DEBUG
     UINT32  m_signature;
 #else 
-#ifdef _WIN64
+#ifdef BIT64
     //README ALIGNEMENT: in retail mode UINT m_numCodeBytes does not align to 16byte for the code
     //                   after the Stub struct. This is to pad properly
     UINT    m_pad_code_bytes; 
-#endif // _WIN64
+#endif // BIT64
 #endif // _DEBUG
 };
 

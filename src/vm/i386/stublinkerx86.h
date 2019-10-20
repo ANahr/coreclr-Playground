@@ -10,6 +10,8 @@
 struct ArrayOpScript;
 class MetaSig;
 
+extern PCODE GetPreStubEntryPoint();
+
 //=======================================================================
 
 #define X86_INSTR_CALL_REL32    0xE8        // call rel32
@@ -184,7 +186,7 @@ class StubLinkerCPU : public StubLinker
         VOID X86EmitPushImm32(UINT value);
         VOID X86EmitPushImm32(CodeLabel &pTarget);
         VOID X86EmitPushImm8(BYTE value);
-        VOID X86EmitPushImmPtr(LPVOID value WIN64_ARG(X86Reg tmpReg = kR10));
+        VOID X86EmitPushImmPtr(LPVOID value BIT64_ARG(X86Reg tmpReg = kR10));
 
         VOID X86EmitCmpRegImm32(X86Reg reg, INT32 imm32); // cmp reg, imm32
         VOID X86EmitCmpRegIndexImm32(X86Reg reg, INT32 offs, INT32 imm32); // cmp [reg+offs], imm32
@@ -198,8 +200,11 @@ class StubLinkerCPU : public StubLinker
         VOID X64EmitMovSDToMem(X86Reg Xmmreg, X86Reg baseReg, __int32 ofs = 0);
         VOID X64EmitMovSSFromMem(X86Reg Xmmreg, X86Reg baseReg, __int32 ofs = 0);
         VOID X64EmitMovSSToMem(X86Reg Xmmreg, X86Reg baseReg, __int32 ofs = 0);
+        VOID X64EmitMovqRegXmm(X86Reg reg, X86Reg Xmmreg);
+        VOID X64EmitMovqXmmReg(X86Reg Xmmreg, X86Reg reg);
 
         VOID X64EmitMovXmmWorker(BYTE prefix, BYTE opcode, X86Reg Xmmreg, X86Reg baseReg, __int32 ofs = 0);
+        VOID X64EmitMovqWorker(BYTE opcode, X86Reg Xmmreg, X86Reg reg);
 #endif
 
         VOID X86EmitZeroOutReg(X86Reg reg);        
@@ -219,11 +224,7 @@ class StubLinkerCPU : public StubLinker
         VOID X86EmitLeaRIP(CodeLabel *target, X86Reg reg);
 #endif
 
-        static const unsigned X86TLSFetch_TRASHABLE_REGS = (1<<kEAX) | (1<<kEDX) | (1<<kECX);
-        VOID X86EmitTLSFetch(DWORD idx, X86Reg dstreg, unsigned preservedRegSet);
-
         VOID X86EmitCurrentThreadFetch(X86Reg dstreg, unsigned preservedRegSet);
-        VOID X86EmitCurrentAppDomainFetch(X86Reg dstreg, unsigned preservedRegSet);
         
         VOID X86EmitIndexRegLoad(X86Reg dstreg, X86Reg srcreg, __int32 ofs = 0);
         VOID X86EmitIndexRegStore(X86Reg dstreg, __int32 ofs, X86Reg srcreg);
@@ -250,10 +251,14 @@ class StubLinkerCPU : public StubLinker
                               );
         VOID X86EmitPushEBPframe();
 
+#if defined(_TARGET_X86_)
+#if defined(PROFILING_SUPPORTED) && !defined(FEATURE_STUBS_AS_IL)
         // These are used to emit calls to notify the profiler of transitions in and out of
         // managed code through COM->COM+ interop or N/Direct
         VOID EmitProfilerComCallProlog(TADDR pFrameVptr, X86Reg regFrame);
         VOID EmitProfilerComCallEpilog(TADDR pFrameVptr, X86Reg regFrame);
+#endif // PROFILING_SUPPORTED && !FEATURE_STUBS_AS_IL
+#endif // _TARGET_X86_
 
 
 
@@ -417,7 +422,7 @@ class StubLinkerCPU : public StubLinker
         VOID EmitDebugBreak();
 #endif // !FEATURE_STUBS_AS_IL
 
-#if defined(_DEBUG) && (defined(_TARGET_AMD64_) || defined(_TARGET_X86_)) && !defined(FEATURE_PAL)
+#if defined(_DEBUG) && !defined(FEATURE_PAL)
         //===========================================================================
         // Emits code to log JITHelper access
         void EmitJITHelperLoggingThunk(PCODE pJitHelper, LPVOID helperFuncCount);
@@ -435,6 +440,7 @@ class StubLinkerCPU : public StubLinker
 #ifdef _TARGET_AMD64_
 
         static Stub * CreateTailCallCopyArgsThunk(CORINFO_SIG_INFO * pSig,
+                                                  MethodDesc* pMD,
                                                   CorInfoHelperTailCallSpecialHandling flags);
 
 #endif // _TARGET_AMD64_
@@ -454,6 +460,7 @@ inline TADDR rel32Decode(/*PTR_INT32*/ TADDR pRel32)
     return pRel32 + 4 + *PTR_INT32(pRel32);
 }
 
+void rel32SetInterlocked(/*PINT32*/ PVOID pRel32, TADDR target, MethodDesc* pMD);
 BOOL rel32SetInterlocked(/*PINT32*/ PVOID pRel32, TADDR target, TADDR expected, MethodDesc* pMD);
 
 //------------------------------------------------------------------------
@@ -464,7 +471,7 @@ BOOL rel32SetInterlocked(/*PINT32*/ PVOID pRel32, TADDR target, TADDR expected, 
 
 EXTERN_C VOID STDCALL PrecodeFixupThunk();
 
-#ifdef _WIN64
+#ifdef BIT64
 
 #define OFFSETOF_PRECODE_TYPE              0
 #define OFFSETOF_PRECODE_TYPE_CALL_OR_JMP  5
@@ -482,7 +489,7 @@ EXTERN_C VOID STDCALL PrecodeRemotingThunk();
 
 #define SIZEOF_PRECODE_BASE                8
 
-#endif // _WIN64
+#endif // BIT64
 
 
 #include <pshpack1.h>
@@ -497,7 +504,7 @@ struct InvalidPrecode {
 // Regular precode
 struct StubPrecode {
 
-#ifdef _WIN64
+#ifdef BIT64
     static const BYTE Type = 0x40;
     // mov r10,pMethodDesc
     // inc eax
@@ -507,12 +514,12 @@ struct StubPrecode {
     // mov eax,pMethodDesc
     // mov ebp,ebp
     // jmp Stub
-#endif // _WIN64
+#endif // BIT64
 
-    IN_WIN64(USHORT m_movR10;)
-    IN_WIN32(BYTE   m_movEAX;)
+    IN_TARGET_64BIT(USHORT m_movR10;)
+    IN_TARGET_32BIT(BYTE   m_movEAX;)
     TADDR           m_pMethodDesc;
-    IN_WIN32(BYTE   m_mov_rm_r;)
+    IN_TARGET_32BIT(BYTE   m_mov_rm_r;)
     BYTE            m_type;
     BYTE            m_jmp;
     INT32           m_rel32;
@@ -533,12 +540,25 @@ struct StubPrecode {
         return rel32Decode(PTR_HOST_MEMBER_TADDR(StubPrecode, this, m_rel32));
     }
 
+    void ResetTargetInterlocked()
+    {
+        CONTRACTL
+        {
+            THROWS;
+            GC_NOTRIGGER;
+        }
+        CONTRACTL_END;
+
+        EnsureWritableExecutablePages(&m_rel32);
+        rel32SetInterlocked(&m_rel32, GetPreStubEntryPoint(), (MethodDesc*)GetMethodDesc());
+    }
+
     BOOL SetTargetInterlocked(TADDR target, TADDR expected)
     {
         CONTRACTL
         {
             THROWS;
-            GC_TRIGGERS;
+            GC_NOTRIGGER;
         }
         CONTRACTL_END;
 
@@ -546,10 +566,10 @@ struct StubPrecode {
         return rel32SetInterlocked(&m_rel32, target, expected, (MethodDesc*)GetMethodDesc());
     }
 };
-IN_WIN64(static_assert_no_msg(offsetof(StubPrecode, m_movR10) == OFFSETOF_PRECODE_TYPE);)
-IN_WIN64(static_assert_no_msg(offsetof(StubPrecode, m_type) == OFFSETOF_PRECODE_TYPE_MOV_R10);)
-IN_WIN32(static_assert_no_msg(offsetof(StubPrecode, m_mov_rm_r) == OFFSETOF_PRECODE_TYPE);)
-IN_WIN32(static_assert_no_msg(offsetof(StubPrecode, m_type) == OFFSETOF_PRECODE_TYPE_MOV_RM_R);)
+IN_TARGET_64BIT(static_assert_no_msg(offsetof(StubPrecode, m_movR10) == OFFSETOF_PRECODE_TYPE);)
+IN_TARGET_64BIT(static_assert_no_msg(offsetof(StubPrecode, m_type) == OFFSETOF_PRECODE_TYPE_MOV_R10);)
+IN_TARGET_32BIT(static_assert_no_msg(offsetof(StubPrecode, m_mov_rm_r) == OFFSETOF_PRECODE_TYPE);)
+IN_TARGET_32BIT(static_assert_no_msg(offsetof(StubPrecode, m_type) == OFFSETOF_PRECODE_TYPE_MOV_RM_R);)
 typedef DPTR(StubPrecode) PTR_StubPrecode;
 
 
@@ -559,7 +579,7 @@ typedef DPTR(StubPrecode) PTR_StubPrecode;
 // (This is fake precode. VTable slot does not point to it.)
 struct NDirectImportPrecode : StubPrecode {
 
-#ifdef _WIN64
+#ifdef BIT64
     static const int Type = 0x48;
     // mov r10,pMethodDesc
     // dec eax
@@ -569,7 +589,7 @@ struct NDirectImportPrecode : StubPrecode {
     // mov eax,pMethodDesc
     // mov eax,eax
     // jmp NDirectImportThunk
-#endif // _WIN64
+#endif // BIT64
 
     void Init(MethodDesc* pMD, LoaderAllocator *pLoaderAllocator);
 
@@ -582,71 +602,6 @@ struct NDirectImportPrecode : StubPrecode {
 typedef DPTR(NDirectImportPrecode) PTR_NDirectImportPrecode;
 
 #endif // HAS_NDIRECT_IMPORT_PRECODE
-
-
-#ifdef HAS_REMOTING_PRECODE
-
-// Precode with embedded remoting interceptor
-struct RemotingPrecode {
-
-#ifdef _WIN64
-    static const int Type = XXX;       // NYI
-    // mov r10,pMethodDesc
-    // call PrecodeRemotingThunk
-    // jmp Prestub/Stub/NativeCode
-#else
-    static const int Type = 0x90;
-    // mov eax,pMethodDesc
-    // nop
-    // call PrecodeRemotingThunk
-    // jmp Prestub/Stub/NativeCode
-#endif // _WIN64
-
-    IN_WIN64(USHORT m_movR10;)
-    IN_WIN32(BYTE   m_movEAX;)
-    TADDR           m_pMethodDesc;
-    BYTE            m_type;
-    BYTE            m_call;
-    INT32           m_callRel32;
-    BYTE            m_jmp;
-    INT32           m_rel32;
-
-    void Init(MethodDesc* pMD, LoaderAllocator *pLoaderAllocator = NULL);
-
-    TADDR GetMethodDesc()
-    {
-        LIMITED_METHOD_CONTRACT; 
-        SUPPORTS_DAC;
-
-        return m_pMethodDesc;
-    }
-
-    PCODE GetTarget()
-    { 
-        LIMITED_METHOD_DAC_CONTRACT;
-
-        return rel32Decode(PTR_HOST_MEMBER_TADDR(RemotingPrecode, this, m_rel32));
-    }
-
-    BOOL SetTargetInterlocked(TADDR target, TADDR expected)
-    {
-        CONTRACTL
-        {
-            THROWS;
-            GC_TRIGGERS;
-        }
-        CONTRACTL_END;
-
-        EnsureWritableExecutablePages(&m_rel32);
-        return rel32SetInterlocked(&m_rel32, target, expected, (MethodDesc*)GetMethodDesc());
-    }
-};
-IN_WIN64(static_assert_no_msg(offsetof(RemotingPrecode, m_movR10) == OFFSETOF_PRECODE_TYPE);)
-IN_WIN64(static_assert_no_msg(offsetof(RemotingPrecode, m_type) == OFFSETOF_PRECODE_TYPE_MOV_R10);)
-IN_WIN32(static_assert_no_msg(offsetof(RemotingPrecode, m_type) == OFFSETOF_PRECODE_TYPE);)
-typedef DPTR(RemotingPrecode) PTR_RemotingPrecode;
-
-#endif // HAS_REMOTING_PRECODE
 
 
 #ifdef HAS_FIXUP_PRECODE
@@ -703,6 +658,11 @@ struct FixupPrecode {
     }
 #endif // HAS_FIXUP_PRECODE_CHUNKS
 
+#ifdef FIXUP_PRECODE_PREALLOCATE_DYNAMIC_METHOD_JUMP_STUBS
+    PCODE GetDynamicMethodPrecodeFixupJumpStub();
+    PCODE GetDynamicMethodEntryJumpStub();
+#endif // FIXUP_PRECODE_PREALLOCATE_DYNAMIC_METHOD_JUMP_STUBS
+
     PCODE GetTarget()
     {
         LIMITED_METHOD_DAC_CONTRACT;
@@ -710,6 +670,7 @@ struct FixupPrecode {
         return rel32Decode(PTR_HOST_MEMBER_TADDR(FixupPrecode, this, m_rel32));
     }
 
+    void ResetTargetInterlocked();
     BOOL SetTargetInterlocked(TADDR target, TADDR expected);
 
     static BOOL IsFixupPrecodeByASM(TADDR addr)
@@ -730,9 +691,9 @@ struct FixupPrecode {
     void EnumMemoryRegions(CLRDataEnumMemoryFlags flags);
 #endif
 };
-IN_WIN32(static_assert_no_msg(offsetof(FixupPrecode, m_type) == OFFSETOF_PRECODE_TYPE));
-IN_WIN64(static_assert_no_msg(offsetof(FixupPrecode, m_op)   == OFFSETOF_PRECODE_TYPE);)
-IN_WIN64(static_assert_no_msg(offsetof(FixupPrecode, m_type) == OFFSETOF_PRECODE_TYPE_CALL_OR_JMP);)
+IN_TARGET_32BIT(static_assert_no_msg(offsetof(FixupPrecode, m_type) == OFFSETOF_PRECODE_TYPE));
+IN_TARGET_64BIT(static_assert_no_msg(offsetof(FixupPrecode, m_op)   == OFFSETOF_PRECODE_TYPE);)
+IN_TARGET_64BIT(static_assert_no_msg(offsetof(FixupPrecode, m_type) == OFFSETOF_PRECODE_TYPE_CALL_OR_JMP);)
 
 typedef DPTR(FixupPrecode) PTR_FixupPrecode;
 
@@ -743,11 +704,11 @@ typedef DPTR(FixupPrecode) PTR_FixupPrecode;
 // Precode to stuffle this and retbuf for closed delegates over static methods with return buffer
 struct ThisPtrRetBufPrecode {
 
-#ifdef _WIN64
+#ifdef BIT64
     static const int Type = 0x90;
 #else
     static const int Type = 0xC2;
-#endif // _WIN64
+#endif // BIT64
 
     // mov regScratch,regArg0
     // mov regArg0,regArg1
@@ -756,12 +717,12 @@ struct ThisPtrRetBufPrecode {
     // jmp EntryPoint
     // dw pMethodDesc
 
-    IN_WIN64(BYTE   m_nop1;)
-    IN_WIN64(BYTE   m_prefix1;)
+    IN_TARGET_64BIT(BYTE   m_nop1;)
+    IN_TARGET_64BIT(BYTE   m_prefix1;)
     WORD            m_movScratchArg0;
-    IN_WIN64(BYTE   m_prefix2;)
+    IN_TARGET_64BIT(BYTE   m_prefix2;)
     WORD            m_movArg0Arg1;
-    IN_WIN64(BYTE   m_prefix3;)
+    IN_TARGET_64BIT(BYTE   m_prefix3;)
     WORD            m_movArg1Scratch;
     BYTE            m_nop2;
     BYTE            m_jmp;
@@ -782,7 +743,7 @@ struct ThisPtrRetBufPrecode {
 
     BOOL SetTargetInterlocked(TADDR target, TADDR expected);
 };
-IN_WIN32(static_assert_no_msg(offsetof(ThisPtrRetBufPrecode, m_movArg1Scratch) + 1 == OFFSETOF_PRECODE_TYPE);)
+IN_TARGET_32BIT(static_assert_no_msg(offsetof(ThisPtrRetBufPrecode, m_movArg1Scratch) + 1 == OFFSETOF_PRECODE_TYPE);)
 typedef DPTR(ThisPtrRetBufPrecode) PTR_ThisPtrRetBufPrecode;
 
 #endif // HAS_THISPTR_RETBUF_PRECODE

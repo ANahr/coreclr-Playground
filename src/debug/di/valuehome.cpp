@@ -204,10 +204,10 @@ void RegValueHome::SetEnregisteredValue(MemoryRange newValue, DT_CONTEXT * pCont
                      extendedVal = (SSIZE_T) *(short*)newValue.StartAddress();          break;
             case 4:  _ASSERTE(sizeof(DWORD) == 4); 
                      extendedVal = (SSIZE_T) *(int*)newValue.StartAddress();            break;
-#if defined(DBG_TARGET_WIN64)
+#if defined(DBG_TARGET_64BIT)
             case 8:  _ASSERTE(sizeof(ULONGLONG) == 8); 
                      extendedVal = (SSIZE_T) *(ULONGLONG*)newValue.StartAddress();      break;
-#endif // DBG_TARGET_WIN64
+#endif // DBG_TARGET_64BIT
             default: _ASSERTE(!"bad size");
         }
     }
@@ -222,10 +222,10 @@ void RegValueHome::SetEnregisteredValue(MemoryRange newValue, DT_CONTEXT * pCont
                      extendedVal = *( WORD*)newValue.StartAddress();     break;
             case 4:  _ASSERTE(sizeof(DWORD) == 4);
                      extendedVal = *(DWORD*)newValue.StartAddress();     break;
-#if defined(DBG_TARGET_WIN64)
+#if defined(DBG_TARGET_64BIT)
             case 8:  _ASSERTE(sizeof(ULONGLONG) == 8); 
                      extendedVal = *(ULONGLONG*)newValue.StartAddress(); break;
-#endif // DBG_TARGET_WIN64
+#endif // DBG_TARGET_64BIT
             default: _ASSERTE(!"bad size");
         }
     }
@@ -430,7 +430,6 @@ void MemRegValueHome::GetEnregisteredValue(MemoryRange valueOutBuffer)
 
 } // MemRegValueHome::GetEnregisteredValue
 
-#if !defined(DBG_TARGET_ARM) // @ARMTODO
 
 // ----------------------------------------------------------------------------
 // FloatRegValueHome member function implementations
@@ -481,18 +480,36 @@ void FloatRegValueHome::SetEnregisteredValue(MemoryRange newValue,
     // restore our original state.
     DT_FLOATING_SAVE_AREA currentFPUState;
 
+    #ifdef _MSC_VER
     __asm fnsave currentFPUState // save the current FPU state.
+    #else
+    __asm__ __volatile__
+    (
+        "  fnsave %0\n" \
+        : "=m"(currentFPUState)
+    );
+    #endif
 
     // Copy the state out of the context.
     DT_FLOATING_SAVE_AREA floatarea = pContext->FloatSave;
     floatarea.StatusWord &= 0xFF00; // remove any error codes.
     floatarea.ControlWord |= 0x3F; // mask all exceptions.
 
+    #ifdef _MSC_VER
     __asm
     {
         fninit
         frstor floatarea          ;; reload the threads FPU state.
     }
+    #else
+    __asm__
+    (
+        "  fninit\n" \
+        "  frstor %0\n" \
+        : /* no outputs */
+        : "m"(floatarea)
+    );
+    #endif
 
     double td; // temp double
     double popArea[DebuggerIPCE_FloatCount];
@@ -519,17 +536,35 @@ void FloatRegValueHome::SetEnregisteredValue(MemoryRange newValue,
     }
 
     // Save out the modified float area.
+    #ifdef _MSC_VER
     __asm fnsave floatarea
+    #else
+    __asm__ __volatile__
+    (
+        "  fnsave %0\n" \
+        : "=m"(floatarea)
+    );
+    #endif
 
     // Put it into the context.
     pContext->FloatSave= floatarea;
 
     // Restore our FPU state
+    #ifdef _MSC_VER
     __asm
     {
         fninit
         frstor currentFPUState    ;; restore our saved FPU state.
     }
+    #else
+    __asm__
+    (
+        "  fninit\n" \
+        "  frstor %0\n" \
+        : /* no outputs */
+        : "m"(currentFPUState)
+    );
+    #endif
     #endif // DBG_TARGET_X86
 
     // update the thread's floating point stack
@@ -545,7 +580,6 @@ void FloatRegValueHome::GetEnregisteredValue(MemoryRange valueOutBuffer)
     ThrowHR(E_NOTIMPL);
 } // FloatRegValueHome::GetEnregisteredValue
 
-#endif // !DBG_TARGET_ARM @ARMTODO
 
 // ============================================================================
 // RemoteValueHome implementation

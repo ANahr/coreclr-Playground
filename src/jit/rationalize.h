@@ -8,14 +8,14 @@
 class Rationalizer : public Phase
 {
 private:
-    BasicBlock*  m_block;
-    GenTreeStmt* m_statement;
+    BasicBlock* m_block;
+    Statement*  m_statement;
 
 public:
     Rationalizer(Compiler* comp);
 
 #ifdef DEBUG
-    static void ValidateStatement(GenTree* tree, BasicBlock* block);
+    static void ValidateStatement(Statement* stmt, BasicBlock* block);
 
     // general purpose sanity checking of de facto standard GenTree
     void SanityCheck();
@@ -28,7 +28,6 @@ public:
     virtual void DoPhase() override;
 
     static void RewriteAssignmentIntoStoreLcl(GenTreeOp* assignment);
-    static void MorphAsgIntoStoreObj(Compiler::fgWalkData* data, GenTreeStmt* stmt, GenTree** ppTree);
 
 private:
     inline LIR::Range& BlockRange() const
@@ -38,25 +37,24 @@ private:
 
     // SIMD related
     void RewriteSIMDOperand(LIR::Use& use, bool keepBlk);
-    void FixupIfSIMDLocal(GenTreeLclVarCommon* node);
 
     // Intrinsic related transformations
-    static void RewriteNodeAsCall(GenTreePtr*           ppTree,
-                                  Compiler::fgWalkData* data,
-                                  CORINFO_METHOD_HANDLE callHnd,
+    void RewriteNodeAsCall(GenTree**             use,
+                           ArrayStack<GenTree*>& parents,
+                           CORINFO_METHOD_HANDLE callHnd,
 #ifdef FEATURE_READYTORUN_COMPILER
-                                  CORINFO_CONST_LOOKUP entryPoint,
+                           CORINFO_CONST_LOOKUP entryPoint,
 #endif
-                                  GenTreeArgList* args);
+                           GenTreeCall::Use* args);
 
-    static void RewriteIntrinsicAsUserCall(GenTreePtr* ppTree, Compiler::fgWalkData* data);
+    void RewriteIntrinsicAsUserCall(GenTree** use, Compiler::GenTreeStack& parents);
 
     // Other transformations
     void RewriteAssignment(LIR::Use& use);
     void RewriteAddress(LIR::Use& use);
 
     // Root visitor
-    Compiler::fgWalkResult RewriteNode(GenTree** useEdge, ArrayStack<GenTree*>& parents);
+    Compiler::fgWalkResult RewriteNode(GenTree** useEdge, Compiler::GenTreeStack& parents);
 };
 
 inline Rationalizer::Rationalizer(Compiler* _comp) : Phase(_comp, "IR Rationalize", PHASE_RATIONALIZE)

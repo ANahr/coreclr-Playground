@@ -38,22 +38,30 @@ HRESULT STDMETHODCALLTYPE CreateICeeGen(REFIID riid, void **pCeeGen)
 
 HRESULT CCeeGen::CreateNewInstance(CCeeGen* & pGen) // static, public
 {
-    pGen = new CCeeGen();
-    _ASSERTE(pGen != NULL);
-    TESTANDRETURNMEMORY(pGen);
+    NewHolder<CCeeGen> pGenHolder(new CCeeGen());
+    _ASSERTE(pGenHolder != NULL);
+    TESTANDRETURNMEMORY(pGenHolder);
     
-    pGen->m_peSectionMan = new PESectionMan;    
-    _ASSERTE(pGen->m_peSectionMan != NULL);
-    TESTANDRETURNMEMORY(pGen->m_peSectionMan);
+    pGenHolder->m_peSectionMan = new PESectionMan;    
+    _ASSERTE(pGenHolder->m_peSectionMan != NULL);
+    TESTANDRETURNMEMORY(pGenHolder->m_peSectionMan);
 
-    HRESULT hr = pGen->m_peSectionMan->Init();
-    TESTANDRETURNHR(hr);
+    HRESULT hr = pGenHolder->m_peSectionMan->Init();
+    if (FAILED(hr))
+    {
+        pGenHolder->Cleanup();
+        return hr;
+    }
 
-    hr = pGen->Init();
-    TESTANDRETURNHR(hr);
+    hr = pGenHolder->Init();
+    if (FAILED(hr))
+    {
+        // Init() calls Cleanup() on failure
+        return hr;
+    }
 
+    pGen = pGenHolder.Extract();
     return hr;
-
 }
 
 STDMETHODIMP CCeeGen::QueryInterface(REFIID riid, void** ppv)
@@ -505,7 +513,7 @@ HRESULT CCeeGen::getSectionCreate (const char *name, DWORD flags, CeeSection **s
     HRESULT hr = m_peSectionMan->getSectionCreate(name, flags, &pewSect);
     TESTANDRETURNHR(hr);
     CeeSection *newSect = new CeeSection(*this, *pewSect);
-    // if this fails, the PESection will get nuked in the destructor for CCeeGen
+    // if this fails, the PESection will get zapped in the destructor for CCeeGen
     if (newSect == NULL)
     {
         return E_OUTOFMEMORY;

@@ -4,38 +4,25 @@
 
 #if defined(_TARGET_ARM_)
 
+// This typedef defines the type that we use to hold encoded instructions.
+//
+typedef unsigned int code_t;
+
 /************************************************************************/
 /*         Routines that compute the size of / encode instructions      */
 /************************************************************************/
 
-struct CnsVal
-{
-    int cnsVal;
-#ifdef RELOC_SUPPORT
-    bool cnsReloc;
-#endif
-};
-
 insSize emitInsSize(insFormat insFmt);
 
-BYTE* emitOutputAM(BYTE* dst, instrDesc* id, size_t code, CnsVal* addc = NULL);
-BYTE* emitOutputSV(BYTE* dst, instrDesc* id, size_t code, CnsVal* addc = NULL);
-BYTE* emitOutputCV(BYTE* dst, instrDesc* id, size_t code, CnsVal* addc = NULL);
-
-BYTE* emitOutputR(BYTE* dst, instrDesc* id);
-BYTE* emitOutputRI(BYTE* dst, instrDesc* id);
-BYTE* emitOutputRR(BYTE* dst, instrDesc* id);
-BYTE* emitOutputIV(BYTE* dst, instrDesc* id);
 #ifdef FEATURE_ITINSTRUCTION
-BYTE* emitOutputIT(BYTE* dst, instruction ins, insFormat fmt, ssize_t condcode);
+BYTE* emitOutputIT(BYTE* dst, instruction ins, insFormat fmt, code_t condcode);
 #endif // FEATURE_ITINSTRUCTION
-BYTE* emitOutputNOP(BYTE* dst, instruction ins, insFormat fmt);
 
 BYTE* emitOutputLJ(insGroup* ig, BYTE* dst, instrDesc* id);
 BYTE* emitOutputShortBranch(BYTE* dst, instruction ins, insFormat fmt, ssize_t distVal, instrDescJmp* id);
 
-static unsigned emitOutput_Thumb1Instr(BYTE* dst, ssize_t code);
-static unsigned emitOutput_Thumb2Instr(BYTE* dst, ssize_t code);
+static unsigned emitOutput_Thumb1Instr(BYTE* dst, code_t code);
+static unsigned emitOutput_Thumb2Instr(BYTE* dst, code_t code);
 
 /************************************************************************/
 /*             Debug-only routines to display instructions              */
@@ -43,17 +30,14 @@ static unsigned emitOutput_Thumb2Instr(BYTE* dst, ssize_t code);
 
 #ifdef DEBUG
 
-const char* emitFPregName(unsigned reg, bool varName = true);
-
 void emitDispInst(instruction ins, insFlags flags);
-void emitDispReloc(int value, bool addComma);
 void emitDispImm(int imm, bool addComma, bool alwaysHex = false);
+void emitDispReloc(BYTE* addr);
 void emitDispCond(int cond);
 void emitDispShiftOpts(insOpts opt);
 void emitDispRegmask(int imm, bool encodedPC_LR);
 void emitDispRegRange(regNumber reg, int len, emitAttr attr);
 void emitDispReg(regNumber reg, emitAttr attr, bool addComma);
-void emitDispFloatReg(regNumber reg, emitAttr attr, bool addComma);
 void emitDispAddrR(regNumber reg, emitAttr attr);
 void emitDispAddrRI(regNumber reg, int imm, emitAttr attr);
 void emitDispAddrRR(regNumber reg1, regNumber reg2, emitAttr attr);
@@ -85,19 +69,11 @@ void emitDispIns(instrDesc* id,
 /************************************************************************/
 
 private:
-instrDesc* emitNewInstrAmd(emitAttr attr, int dsp);
-instrDesc* emitNewInstrAmdCns(emitAttr attr, int dsp, int cns);
-
 instrDesc* emitNewInstrCallDir(
     int argCnt, VARSET_VALARG_TP GCvars, regMaskTP gcrefRegs, regMaskTP byrefRegs, emitAttr retSize);
 
 instrDesc* emitNewInstrCallInd(
     int argCnt, ssize_t disp, VARSET_VALARG_TP GCvars, regMaskTP gcrefRegs, regMaskTP byrefRegs, emitAttr retSize);
-
-void emitGetInsCns(instrDesc* id, CnsVal* cv);
-int emitGetInsAmdCns(instrDesc* id, CnsVal* cv);
-void emitGetInsDcmCns(instrDesc* id, CnsVal* cv);
-int emitGetInsAmdAny(instrDesc* id);
 
 /************************************************************************/
 /*               Private helpers for instruction output                 */
@@ -109,35 +85,18 @@ bool emitInsIsLoad(instruction ins);
 bool emitInsIsStore(instruction ins);
 bool emitInsIsLoadOrStore(instruction ins);
 
+emitter::insFormat emitInsFormat(instruction ins);
+emitter::code_t emitInsCode(instruction ins, insFormat fmt);
+
 // Generate code for a load or store operation and handle the case
 // of contained GT_LEA op1 with [base + index<<scale + offset]
 void emitInsLoadStoreOp(instruction ins, emitAttr attr, regNumber dataReg, GenTreeIndir* indir);
-
-/*****************************************************************************
-*
-*  Convert between an index scale in bytes to a smaller encoding used for
-*  storage in instruction descriptors.
-*/
-
-inline emitter::opSize emitEncodeScale(size_t scale)
-{
-    assert(scale == 1 || scale == 2 || scale == 4 || scale == 8);
-
-    return emitSizeEncode[scale - 1];
-}
-
-inline emitAttr emitDecodeScale(unsigned ensz)
-{
-    assert(ensz < 4);
-
-    return emitter::emitSizeDecode[ensz];
-}
+void emitInsLoadStoreOp(instruction ins, emitAttr attr, regNumber dataReg, GenTreeIndir* indir, int offset);
 
 static bool isModImmConst(int imm);
-
 static int encodeModImmConst(int imm);
 
-static int insUnscaleImm(int imm, emitAttr size);
+static int insUnscaleImm(instruction ins, int imm);
 
 /************************************************************************/
 /*           Public inline informational methods                        */
@@ -234,6 +193,13 @@ inline static bool insOptsROR(insOpts opt)
     return (opt == INS_OPTS_ROR);
 }
 
+// Returns the number of bits used by the given 'size'.
+inline static unsigned getBitWidth(emitAttr size)
+{
+    assert(size <= EA_8BYTE);
+    return (unsigned)size * BITS_PER_BYTE;
+}
+
 /************************************************************************/
 /*           The public entry points to output instructions             */
 /************************************************************************/
@@ -242,16 +208,21 @@ public:
 static bool emitIns_valid_imm_for_alu(int imm);
 static bool emitIns_valid_imm_for_mov(int imm);
 static bool emitIns_valid_imm_for_small_mov(regNumber reg, int imm, insFlags flags);
-static bool emitIns_valid_imm_for_add(int imm, insFlags flags);
+static bool emitIns_valid_imm_for_add(int imm, insFlags flags = INS_FLAGS_DONT_CARE);
+static bool emitIns_valid_imm_for_cmp(int imm, insFlags flags);
 static bool emitIns_valid_imm_for_add_sp(int imm);
+static bool emitIns_valid_imm_for_ldst_offset(int imm, emitAttr size);
+static bool emitIns_valid_imm_for_vldst_offset(int imm);
 
 void emitIns(instruction ins);
 
-void emitIns_I(instruction ins, emitAttr attr, ssize_t imm);
+void emitIns_I(instruction ins, emitAttr attr, target_ssize_t imm);
 
 void emitIns_R(instruction ins, emitAttr attr, regNumber reg);
 
-void emitIns_R_I(instruction ins, emitAttr attr, regNumber reg, ssize_t imm, insFlags flags = INS_FLAGS_DONT_CARE);
+void emitIns_R_I(
+    instruction ins, emitAttr attr, regNumber reg, target_ssize_t imm, insFlags flags = INS_FLAGS_DONT_CARE);
+void emitIns_MovRelocatableImmediate(instruction ins, emitAttr attr, regNumber reg, BYTE* addr);
 
 void emitIns_R_R(instruction ins, emitAttr attr, regNumber reg1, regNumber reg2, insFlags flags = INS_FLAGS_DONT_CARE);
 
@@ -296,7 +267,7 @@ void emitIns_C(instruction ins, emitAttr attr, CORINFO_FIELD_HANDLE fdlHnd, int 
 
 void emitIns_S(instruction ins, emitAttr attr, int varx, int offs);
 
-void emitIns_genStackOffset(regNumber r, int varx, int offs);
+void emitIns_genStackOffset(regNumber r, int varx, int offs, bool isFloatUsage);
 
 void emitIns_S_R(instruction ins, emitAttr attr, regNumber ireg, int varx, int offs);
 
@@ -308,7 +279,7 @@ void emitIns_R_C(instruction ins, emitAttr attr, regNumber reg, CORINFO_FIELD_HA
 
 void emitIns_C_R(instruction ins, emitAttr attr, CORINFO_FIELD_HANDLE fldHnd, regNumber reg, int offs);
 
-void emitIns_C_I(instruction ins, emitAttr attr, CORINFO_FIELD_HANDLE fdlHnd, ssize_t offs, ssize_t val);
+void emitIns_C_I(instruction ins, emitAttr attr, CORINFO_FIELD_HANDLE fdlHnd, int offs, ssize_t val);
 
 void emitIns_R_L(instruction ins, emitAttr attr, BasicBlock* dst, regNumber reg);
 
@@ -316,16 +287,13 @@ void emitIns_R_D(instruction ins, emitAttr attr, unsigned offs, regNumber reg);
 
 void emitIns_J_R(instruction ins, emitAttr attr, BasicBlock* dst, regNumber reg);
 
-void emitIns_I_AR(
-    instruction ins, emitAttr attr, int val, regNumber reg, int offs, int memCookie = 0, void* clsCookie = NULL);
+void emitIns_I_AR(instruction ins, emitAttr attr, int val, regNumber reg, int offs);
 
-void emitIns_R_AR(
-    instruction ins, emitAttr attr, regNumber ireg, regNumber reg, int offs, int memCookie = 0, void* clsCookie = NULL);
+void emitIns_R_AR(instruction ins, emitAttr attr, regNumber ireg, regNumber reg, int offs);
 
 void emitIns_R_AI(instruction ins, emitAttr attr, regNumber ireg, ssize_t disp);
 
-void emitIns_AR_R(
-    instruction ins, emitAttr attr, regNumber ireg, regNumber reg, int offs, int memCookie = 0, void* clsCookie = NULL);
+void emitIns_AR_R(instruction ins, emitAttr attr, regNumber ireg, regNumber reg, int offs);
 
 void emitIns_R_ARR(instruction ins, emitAttr attr, regNumber ireg, regNumber reg, regNumber rg2, int disp);
 
@@ -361,19 +329,17 @@ void emitIns_Call(EmitCallType          callType,
                   CORINFO_METHOD_HANDLE methHnd,                   // used for pretty printing
                   INDEBUG_LDISASM_COMMA(CORINFO_SIG_INFO* sigInfo) // used to report call sites to the EE
                   void*            addr,
-                  ssize_t          argSize,
+                  int              argSize,
                   emitAttr         retSize,
                   VARSET_VALARG_TP ptrVars,
                   regMaskTP        gcrefRegs,
                   regMaskTP        byrefRegs,
-                  IL_OFFSETX       ilOffset      = BAD_IL_OFFSET,
-                  regNumber        ireg          = REG_NA,
-                  regNumber        xreg          = REG_NA,
-                  unsigned         xmul          = 0,
-                  int              disp          = 0,
-                  bool             isJump        = false,
-                  bool             isNoGC        = false,
-                  bool             isProfLeaveCB = false);
+                  IL_OFFSETX       ilOffset = BAD_IL_OFFSET,
+                  regNumber        ireg     = REG_NA,
+                  regNumber        xreg     = REG_NA,
+                  unsigned         xmul     = 0,
+                  ssize_t          disp     = 0,
+                  bool             isJump   = false);
 
 /*****************************************************************************
  *

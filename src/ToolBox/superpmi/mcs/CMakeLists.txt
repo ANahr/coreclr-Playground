@@ -1,8 +1,5 @@
 project(mcs)
 
-remove_definitions(-DUNICODE)
-remove_definitions(-D_UNICODE)
-
 add_definitions(-DFEATURE_NO_HOST)
 add_definitions(-DSELF_NO_HOST)
 
@@ -27,7 +24,6 @@ set(MCS_SOURCES
     verbinteg.cpp
     verbmerge.cpp
     verbremovedup.cpp
-    verbsmarty.cpp
     verbstat.cpp
     verbstrip.cpp
     verbtoc.cpp
@@ -44,17 +40,13 @@ set(MCS_SOURCES
     ../superpmi-shared/spmiutil.cpp
     ../superpmi-shared/tocfile.cpp
     ../superpmi-shared/typeutils.cpp
+    ../superpmi-shared/spmidumphelper.cpp
 )
 
-add_precompiled_header(
-    standardpch.h
-    ../superpmi-shared/standardpch.cpp
-    MCS_SOURCES
-)
-
-add_executable(mcs
+_add_executable(mcs
     ${MCS_SOURCES}
 )
+target_precompile_header(TARGET mcs HEADER standardpch.h)
 
 if(CLR_CMAKE_PLATFORM_UNIX)
     target_link_libraries(mcs
@@ -70,7 +62,7 @@ else()
         ${STATIC_MT_CPP_LIB}
     )
 
-    install (FILES ${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/mcs.pdb DESTINATION PDB)
+    _install (FILES ${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/mcs.pdb DESTINATION PDB)
 endif(CLR_CMAKE_PLATFORM_UNIX)
 
-install (TARGETS mcs DESTINATION .)
+_install (TARGETS mcs DESTINATION .)

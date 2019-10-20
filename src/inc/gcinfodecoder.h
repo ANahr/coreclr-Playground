@@ -8,6 +8,12 @@
  *
  *****************************************************************/
 
+// ******************************************************************************
+// WARNING!!!: These values are used by SOS in the diagnostics repo. Values should 
+// added or removed in a backwards and forwards compatible way.
+// See: https://github.com/dotnet/diagnostics/blob/master/src/inc/gcinfodecoder.h
+// ******************************************************************************
+
 #ifndef _GC_INFO_DECODER_
 #define _GC_INFO_DECODER_
 
@@ -202,7 +208,10 @@ enum GcInfoDecoderFlags
     DECODE_PROLOG_LENGTH         = 0x400,   // length of the prolog (used to avoid reporting generics context)
     DECODE_EDIT_AND_CONTINUE     = 0x800,
     DECODE_REVERSE_PINVOKE_VAR   = 0x1000,
-    DECODE_RETURN_KIND           = 0x2000
+    DECODE_RETURN_KIND           = 0x2000,
+#if defined(_TARGET_ARM_) || defined(_TARGET_ARM64_)
+    DECODE_HAS_TAILCALLS         = 0x4000,
+#endif // _TARGET_ARM_ || _TARGET_ARM64_
 };
 
 enum GcInfoHeaderFlags
@@ -217,7 +226,11 @@ enum GcInfoHeaderFlags
     GC_INFO_HAS_GENERICS_INST_CONTEXT_MD     = 0x20,
     GC_INFO_HAS_GENERICS_INST_CONTEXT_THIS   = 0x30,
     GC_INFO_HAS_STACK_BASE_REGISTER     = 0x40,
+#ifdef _TARGET_AMD64_
     GC_INFO_WANTS_REPORT_ONLY_LEAF      = 0x80,
+#elif defined(_TARGET_ARM_) || defined(_TARGET_ARM64_)
+    GC_INFO_HAS_TAILCALLS               = 0x80,
+#endif // _TARGET_AMD64_
     GC_INFO_HAS_EDIT_AND_CONTINUE_PRESERVED_SLOTS = 0x100,
     GC_INFO_REVERSE_PINVOKE_FRAME = 0x200,
 
@@ -240,7 +253,7 @@ public:
         _ASSERTE( pBuffer != NULL );
 
         m_pCurrent = m_pBuffer = dac_cast<PTR_size_t>((size_t)dac_cast<TADDR>(pBuffer) & ~((size_t)sizeof(size_t)-1));
-        m_RelPos = m_InitialRelPos = (int)((size_t)dac_cast<TADDR>(pBuffer) % sizeof(size_t)) * 8;
+        m_RelPos = m_InitialRelPos = (int)((size_t)dac_cast<TADDR>(pBuffer) % sizeof(size_t)) * 8/*BITS_PER_BYTE*/;
     }
 
     BitStreamReader(const BitStreamReader& other)
@@ -355,7 +368,7 @@ public:
     inline size_t DecodeVarLengthUnsigned( int base )
     {
         _ASSERTE((base > 0) && (base < (int)BITS_PER_SIZE_T));
-        size_t numEncodings = 1 << base;
+        size_t numEncodings = size_t{ 1 } << base;
         size_t result = 0;
         for(int shift=0; ; shift+=base)
         {
@@ -374,7 +387,7 @@ public:
     inline SSIZE_T DecodeVarLengthSigned( int base )
     {
         _ASSERTE((base > 0) && (base < (int)BITS_PER_SIZE_T));
-        size_t numEncodings = 1 << base;
+        size_t numEncodings = size_t{ 1 } << base;
         SSIZE_T result = 0;
         for(int shift=0; ; shift+=base)
         {
@@ -520,6 +533,9 @@ public:
     bool    HasMethodTableGenericsInstContext();
     bool    GetIsVarArg();
     bool    WantsReportOnlyLeaf();
+#if defined(_TARGET_ARM_) || defined(_TARGET_ARM64_)
+    bool    HasTailCalls();
+#endif // _TARGET_ARM_ || _TARGET_ARM64_
     ReturnKind GetReturnKind();
     UINT32  GetCodeLength();
     UINT32  GetStackBaseRegister();
@@ -540,7 +556,11 @@ private:
     bool    m_IsVarArg;
     bool    m_GenericSecretParamIsMD;
     bool    m_GenericSecretParamIsMT;
+#ifdef _TARGET_AMD64_
     bool    m_WantsReportOnlyLeaf;
+#elif defined(_TARGET_ARM_) || defined(_TARGET_ARM64_)
+    bool    m_HasTailCalls;
+#endif // _TARGET_AMD64_
     INT32   m_SecurityObjectStackSlot;
     INT32   m_GSCookieStackSlot;
     INT32   m_ReversePInvokeFrameStackSlot;

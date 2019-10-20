@@ -16,14 +16,6 @@ static bool strictArmAsm;
 /*         Routines that compute the size of / encode instructions      */
 /************************************************************************/
 
-struct CnsVal
-{
-    ssize_t cnsVal;
-#ifdef RELOC_SUPPORT
-    bool cnsReloc;
-#endif
-};
-
 #ifdef DEBUG
 
 /************************************************************************/
@@ -34,7 +26,6 @@ const char* emitFPregName(unsigned reg, bool varName = true);
 const char* emitVectorRegName(regNumber reg);
 
 void emitDispInst(instruction ins);
-void emitDispReloc(int value, bool addComma);
 void emitDispImm(ssize_t imm, bool addComma, bool alwaysHex = false);
 void emitDispFloatZero();
 void emitDispFloatImm(ssize_t imm8);
@@ -69,9 +60,6 @@ void emitDispIns(instrDesc* id,
 /************************************************************************/
 
 private:
-instrDesc* emitNewInstrAmd(emitAttr attr, int dsp);
-instrDesc* emitNewInstrAmdCns(emitAttr attr, int dsp, int cns);
-
 instrDesc* emitNewInstrCallDir(int              argCnt,
                                VARSET_VALARG_TP GCvars,
                                regMaskTP        gcrefRegs,
@@ -87,11 +75,6 @@ instrDesc* emitNewInstrCallInd(int              argCnt,
                                emitAttr         retSize,
                                emitAttr         secondRetSize);
 
-void emitGetInsCns(instrDesc* id, CnsVal* cv);
-ssize_t emitGetInsAmdCns(instrDesc* id, CnsVal* cv);
-void emitGetInsDcmCns(instrDesc* id, CnsVal* cv);
-ssize_t emitGetInsAmdAny(instrDesc* id);
-
 /************************************************************************/
 /*               Private helpers for instruction output                 */
 /************************************************************************/
@@ -101,7 +84,6 @@ bool emitInsIsCompare(instruction ins);
 bool emitInsIsLoad(instruction ins);
 bool emitInsIsStore(instruction ins);
 bool emitInsIsLoadOrStore(instruction ins);
-emitAttr emitInsAdjustLoadStoreAttr(instruction ins, emitAttr attr);
 emitAttr emitInsTargetRegSize(instrDesc* id);
 emitAttr emitInsLoadStoreSize(instrDesc* id);
 
@@ -327,6 +309,12 @@ static code_t insEncodeFloatElemsize(emitAttr size);
 // Returns the encoding to select the index for an Arm64 float vector by elem instruction
 static code_t insEncodeFloatIndex(emitAttr elemsize, ssize_t index);
 
+// Returns the encoding to select the vector elemsize for an Arm64 ld/st# vector instruction
+static code_t insEncodeVLSElemsize(emitAttr size);
+
+// Returns the encoding to select the index for an Arm64 ld/st# vector by elem instruction
+static code_t insEncodeVLSIndex(emitAttr elemsize, ssize_t index);
+
 // Returns the encoding to select the 'conversion' operation for a type 'fmt' Arm64 instruction
 static code_t insEncodeConvertOpt(insFormat fmt, insOpts conversion);
 
@@ -356,6 +344,12 @@ static bool isIntegerRegister(regNumber reg)
 {
     return (reg >= REG_INT_FIRST) && (reg <= REG_INT_LAST);
 }
+
+//  Returns true if reg encodes for REG_SP or REG_FP
+static bool isStackRegister(regNumber reg)
+{
+    return (reg == REG_ZR) || (reg == REG_FP);
+} // ZR (R31) encodes the SP register
 
 // Returns true if 'value' is a legal unsigned immediate 8 bit encoding (such as for fMOV).
 static bool isValidUimm8(ssize_t value)
@@ -466,7 +460,7 @@ static bool emitIns_valid_imm_for_movi(INT64 imm, emitAttr size);
 static bool emitIns_valid_imm_for_fmov(double immDbl);
 
 // true if this 'imm' can be encoded as a input operand to an add instruction
-static bool emitIns_valid_imm_for_add(INT64 imm, emitAttr size);
+static bool emitIns_valid_imm_for_add(INT64 imm, emitAttr size = EA_8BYTE);
 
 // true if this 'imm' can be encoded as a input operand to a cmp instruction
 static bool emitIns_valid_imm_for_cmp(INT64 imm, emitAttr size);
@@ -686,6 +680,12 @@ static bool isValidImmCond(ssize_t imm);
 static bool isValidImmCondFlags(ssize_t imm);
 static bool isValidImmCondFlagsImm5(ssize_t imm);
 
+// Computes page "delta" between two addresses
+inline static ssize_t computeRelPageAddr(size_t dstAddr, size_t srcAddr)
+{
+    return (dstAddr >> 12) - (srcAddr >> 12);
+}
+
 /************************************************************************/
 /*           The public entry points to output instructions             */
 /************************************************************************/
@@ -726,7 +726,8 @@ void emitIns_R_R_R_I(instruction ins,
                      regNumber   reg2,
                      regNumber   reg3,
                      ssize_t     imm,
-                     insOpts     opt = INS_OPTS_NONE);
+                     insOpts     opt      = INS_OPTS_NONE,
+                     emitAttr    attrReg2 = EA_UNKNOWN);
 
 void emitIns_R_R_R_Ext(instruction ins,
                        emitAttr    attr,
@@ -759,7 +760,13 @@ void emitIns_S(instruction ins, emitAttr attr, int varx, int offs);
 
 void emitIns_S_R(instruction ins, emitAttr attr, regNumber ireg, int varx, int offs);
 
+void emitIns_S_S_R_R(
+    instruction ins, emitAttr attr, emitAttr attr2, regNumber ireg, regNumber ireg2, int varx, int offs);
+
 void emitIns_R_S(instruction ins, emitAttr attr, regNumber ireg, int varx, int offs);
+
+void emitIns_R_R_S_S(
+    instruction ins, emitAttr attr, emitAttr attr2, regNumber ireg, regNumber ireg2, int varx, int offs);
 
 void emitIns_S_I(instruction ins, emitAttr attr, int varx, int offs, int val);
 
@@ -776,16 +783,15 @@ void emitIns_R_D(instruction ins, emitAttr attr, unsigned offs, regNumber reg);
 
 void emitIns_J_R(instruction ins, emitAttr attr, BasicBlock* dst, regNumber reg);
 
-void emitIns_I_AR(
-    instruction ins, emitAttr attr, int val, regNumber reg, int offs, int memCookie = 0, void* clsCookie = NULL);
+void emitIns_J_R_I(instruction ins, emitAttr attr, BasicBlock* dst, regNumber reg, int imm);
 
-void emitIns_R_AR(
-    instruction ins, emitAttr attr, regNumber ireg, regNumber reg, int offs, int memCookie = 0, void* clsCookie = NULL);
+void emitIns_I_AR(instruction ins, emitAttr attr, int val, regNumber reg, int offs);
+
+void emitIns_R_AR(instruction ins, emitAttr attr, regNumber ireg, regNumber reg, int offs);
 
 void emitIns_R_AI(instruction ins, emitAttr attr, regNumber ireg, ssize_t disp);
 
-void emitIns_AR_R(
-    instruction ins, emitAttr attr, regNumber ireg, regNumber reg, int offs, int memCookie = 0, void* clsCookie = NULL);
+void emitIns_AR_R(instruction ins, emitAttr attr, regNumber ireg, regNumber reg, int offs);
 
 void emitIns_R_ARR(instruction ins, emitAttr attr, regNumber ireg, regNumber reg, regNumber rg2, int disp);
 
@@ -827,14 +833,12 @@ void emitIns_Call(EmitCallType          callType,
                   VARSET_VALARG_TP ptrVars,
                   regMaskTP        gcrefRegs,
                   regMaskTP        byrefRegs,
-                  IL_OFFSETX       ilOffset      = BAD_IL_OFFSET,
-                  regNumber        ireg          = REG_NA,
-                  regNumber        xreg          = REG_NA,
-                  unsigned         xmul          = 0,
-                  ssize_t          disp          = 0,
-                  bool             isJump        = false,
-                  bool             isNoGC        = false,
-                  bool             isProfLeaveCB = false);
+                  IL_OFFSETX       ilOffset = BAD_IL_OFFSET,
+                  regNumber        ireg     = REG_NA,
+                  regNumber        xreg     = REG_NA,
+                  unsigned         xmul     = 0,
+                  ssize_t          disp     = 0,
+                  bool             isJump   = false);
 
 BYTE* emitOutputLJ(insGroup* ig, BYTE* dst, instrDesc* i);
 unsigned emitOutputCall(insGroup* ig, BYTE* dst, instrDesc* i, code_t code);
@@ -851,17 +855,8 @@ BYTE* emitOutputShortConstant(
 
 inline bool emitIsCondJump(instrDesc* jmp)
 {
-    return ((jmp->idInsFmt() == IF_BI_0B) || (jmp->idInsFmt() == IF_LARGEJMP));
-}
-
-/*****************************************************************************
- *
- *  Given an instrDesc, return true if it's a compare and jump.
- */
-
-inline bool emitIsCmpJump(instrDesc* jmp)
-{
-    return ((jmp->idInsFmt() == IF_BI_1A) || (jmp->idInsFmt() == IF_BI_1B));
+    return ((jmp->idInsFmt() == IF_BI_0B) || (jmp->idInsFmt() == IF_BI_1A) || (jmp->idInsFmt() == IF_BI_1B) ||
+            (jmp->idInsFmt() == IF_LARGEJMP));
 }
 
 /*****************************************************************************

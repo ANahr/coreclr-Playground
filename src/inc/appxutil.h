@@ -10,13 +10,7 @@
 
 #include "clrtypes.h"
 #include "appmodel.h"
-#include "fusionsetup.h"
 
-#define PACKAGE_FILTER_CLR_DEFAULT (PACKAGE_FILTER_HEAD|PACKAGE_FILTER_DIRECT)
-
-
-typedef PACKAGE_INFO *              PPACKAGE_INFO;
-typedef PACKAGE_INFO const *        PCPACKAGE_INFO;
 
 //---------------------------------------------------------------------------------------------
 // Forward declarations
@@ -32,12 +26,6 @@ namespace AppX
 
     // On CoreCLR, the host is in charge of determining whether the process is AppX or not.
     void SetIsAppXProcess(bool);
-
-    inline bool IsAppXNGen()
-    {
-        WRAPPER_NO_CONTRACT;
-        return false;
-    }
 
 #ifdef DACCESS_COMPILE
         bool DacIsAppXProcess();

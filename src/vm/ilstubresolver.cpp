@@ -56,14 +56,7 @@ LPCUTF8 ILStubResolver::GetStubClassName(MethodDesc* pMD)
     }
     CONTRACTL_END;
 
-    if (pMD->GetDomain()->IsSharedDomain())
-    {
-        return "DomainNeutralILStubClass";
-    }
-    else
-    {
-        return "DomainBoundILStubClass";
-    }
+    return "ILStubClass";
 }
 
 LPCUTF8 ILStubResolver::GetStubMethodName()
@@ -87,8 +80,10 @@ LPCUTF8 ILStubResolver::GetStubMethodName()
 #ifdef FEATURE_ARRAYSTUB_AS_IL
         case ArrayOpStub:            return "IL_STUB_Array";
 #endif
-#ifdef FEATURE_STUBS_AS_IL
+#ifdef FEATURE_MULTICASTSTUB_AS_IL
         case MulticastDelegateStub:  return "IL_STUB_MulticastDelegate_Invoke";
+#endif
+#ifdef FEATURE_STUBS_AS_IL
         case UnboxingILStub:         return "IL_STUB_UnboxingStub";
         case InstantiatingStub:      return "IL_STUB_InstantiatingStub";
         case SecureDelegateStub:     return "IL_STUB_SecureDelegate_Invoke";
@@ -238,6 +233,11 @@ bool ILStubResolver::IsNativeToCLRInteropStub()
     return (m_type == NativeToCLRInteropStub);
 }
 
+bool ILStubResolver::IsCLRToNativeInteropStub()
+{
+    return (m_type == CLRToNativeInteropStub);
+}
+
 void ILStubResolver::SetStubType(ILStubType stubType)
 {
     LIMITED_METHOD_CONTRACT;
@@ -271,7 +271,7 @@ ILStubResolver::SetStubTargetMethodSig(
     }
     CONTRACTL_END;
 
-    NewHolder<BYTE> pNewSig = new BYTE[cbStubTargetSigLength];
+    NewArrayHolder<BYTE> pNewSig = new BYTE[cbStubTargetSigLength];
     
     memcpyNoGCRefs((void *)pNewSig, pStubTargetMethodSig, cbStubTargetSigLength);
     
@@ -318,9 +318,9 @@ ILStubResolver::AllocGeneratedIL(
 #if !defined(DACCESS_COMPILE)
     _ASSERTE(0 != cbCode);
 
-    NewHolder<BYTE>             pNewILCodeBuffer        = NULL;
-    NewHolder<BYTE>             pNewLocalSig            = NULL;
-    NewHolder<CompileTimeState> pNewCompileTimeState    = NULL;
+    NewArrayHolder<BYTE>             pNewILCodeBuffer        = NULL;
+    NewArrayHolder<BYTE>             pNewLocalSig            = NULL;
+    NewArrayHolder<CompileTimeState> pNewCompileTimeState    = NULL;
 
     pNewCompileTimeState = (CompileTimeState *)new BYTE[sizeof(CompileTimeState)];
     memset(pNewCompileTimeState, 0, sizeof(CompileTimeState));
@@ -397,7 +397,6 @@ COR_ILMETHOD_SECT_EH* ILStubResolver::AllocEHSect(size_t nClauses)
         return NULL;
     }
 }
-
 
 void ILStubResolver::FreeCompileTimeState()
 {

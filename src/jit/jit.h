@@ -33,7 +33,7 @@
 #pragma warning(disable : 4511) // can't generate copy constructor
 #pragma warning(disable : 4512) // can't generate assignment constructor
 #pragma warning(disable : 4610) // user defined constructor required
-#pragma warning(disable : 4211) // nonstandard extention used (char name[0] in structs)
+#pragma warning(disable : 4211) // nonstandard extension used (char name[0] in structs)
 #pragma warning(disable : 4127) // conditional expression constant
 #pragma warning(disable : 4201) // "nonstandard extension used : nameless struct/union"
 
@@ -161,8 +161,19 @@
 #endif
 
 #if defined(_TARGET_AMD64_) || defined(_TARGET_ARM64_)
+#ifndef _TARGET_64BIT_
 #define _TARGET_64BIT_
-#endif
+#endif // _TARGET_64BIT_
+#endif // defined(_TARGET_AMD64_) || defined(_TARGET_ARM64_)
+
+#ifdef _TARGET_64BIT_
+#ifdef _TARGET_X86_
+#error Cannot define both _TARGET_X86_ and _TARGET_64BIT_
+#endif // _TARGET_X86_
+#ifdef _TARGET_ARM_
+#error Cannot define both _TARGET_ARM_ and _TARGET_64BIT_
+#endif // _TARGET_ARM_
+#endif // _TARGET_64BIT_
 
 #if defined(_TARGET_X86_) || defined(_TARGET_AMD64_)
 #define _TARGET_XARCH_
@@ -171,6 +182,35 @@
 #if defined(_TARGET_ARM_) || defined(_TARGET_ARM64_)
 #define _TARGET_ARMARCH_
 #endif
+
+// If the UNIX_AMD64_ABI is defined make sure that _TARGET_AMD64_ is also defined.
+#if defined(UNIX_AMD64_ABI)
+#if !defined(_TARGET_AMD64_)
+#error When UNIX_AMD64_ABI is defined you must define _TARGET_AMD64_ defined as well.
+#endif
+#endif
+
+// If the UNIX_X86_ABI is defined make sure that _TARGET_X86_ is also defined.
+#if defined(UNIX_X86_ABI)
+#if !defined(_TARGET_X86_)
+#error When UNIX_X86_ABI is defined you must define _TARGET_X86_ defined as well.
+#endif
+#endif
+
+#if defined(PLATFORM_UNIX)
+#define _HOST_UNIX_
+#endif
+
+// Are we generating code to target Unix? This is true if we will run on Unix (_HOST_UNIX_ is defined).
+// It's also true if we are building an altjit targetting Unix, which we determine by checking if either
+// UNIX_AMD64_ABI or UNIX_X86_ABI is defined.
+#if defined(_HOST_UNIX_) || ((defined(UNIX_AMD64_ABI) || defined(UNIX_X86_ABI)) && defined(ALT_JIT))
+#define _TARGET_UNIX_
+#endif
+
+#ifndef _TARGET_UNIX_
+#define _TARGET_WINDOWS_
+#endif // !_TARGET_UNIX_
 
 // --------------------------------------------------------------------------------
 // IMAGE_FILE_MACHINE_TARGET
@@ -190,23 +230,15 @@
 
 // Include the AMD64 unwind codes when appropriate.
 #if defined(_TARGET_AMD64_)
-#include "win64unwind.h"
+// We need to temporarily set PLATFORM_UNIX, if necessary, to get the Unix-specific unwind codes.
+#if defined(_TARGET_UNIX_) && !defined(_HOST_UNIX_)
+#define PLATFORM_UNIX
 #endif
-
-// Macros for defining strongly-typed enums. Use as follows:
-//
-// DECLARE_TYPED_ENUM(FooEnum,BYTE)
-// {
-//    fooTag1, fooTag2
-// }
-// END_DECLARE_TYPED_ENUM(FooEnum, BYTE)
-//
-// VC++ understands the syntax to declare these directly, e.g., "enum FooEnum : BYTE",
-// but GCC does not, so we use typedefs.
-
-#define DECLARE_TYPED_ENUM(tag, baseType) enum tag : baseType
-
-#define END_DECLARE_TYPED_ENUM(tag, baseType) ;
+#include "win64unwind.h"
+#if defined(_TARGET_UNIX_) && !defined(_HOST_UNIX_)
+#undef PLATFORM_UNIX
+#endif
+#endif
 
 #include "corhdr.h"
 #include "corjit.h"
@@ -215,23 +247,6 @@
 #define __OPERATOR_NEW_INLINE 1 // indicate that I will define these
 #define __PLACEMENT_NEW_INLINE  // don't bring in the global placement new, it is easy to make a mistake
                                 // with our new(compiler*) pattern.
-
-#if COR_JIT_EE_VER > 460
-#define NO_CLRCONFIG // Don't bring in the usual CLRConfig infrastructure, since the JIT uses the JIT/EE
-                     // interface to retrieve config values.
-
-// This is needed for contract.inl when FEATURE_STACK_PROBE is enabled.
-struct CLRConfig
-{
-    static struct ConfigKey
-    {
-    } EXTERNAL_NO_SO_NOT_MAINLINE;
-    static DWORD GetConfigValue(const ConfigKey& key)
-    {
-        return 0;
-    }
-};
-#endif
 
 #include "utilcode.h" // this defines assert as _ASSERTE
 #include "host.h"     // this redefines assert for the JIT to use assertAbort
@@ -253,22 +268,22 @@ struct CLRConfig
 #define INDEBUG_LDISASM_COMMA(x)
 #endif
 
-#if defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
-#define FEATURE_UNIX_AMD64_STRUCT_PASSING_ONLY_ARG(x) , x
-#define FEATURE_UNIX_AMD64_STRUCT_PASSING_ONLY(x) x
-#else // !defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
-#define FEATURE_UNIX_AMD64_STRUCT_PASSING_ONLY_ARG(x)
-#define FEATURE_UNIX_AMD64_STRUCT_PASSING_ONLY(x)
-#endif // defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
+#if defined(UNIX_AMD64_ABI)
+#define UNIX_AMD64_ABI_ONLY_ARG(x) , x
+#define UNIX_AMD64_ABI_ONLY(x) x
+#else // !defined(UNIX_AMD64_ABI)
+#define UNIX_AMD64_ABI_ONLY_ARG(x)
+#define UNIX_AMD64_ABI_ONLY(x)
+#endif // defined(UNIX_AMD64_ABI)
 
-#if defined(FEATURE_UNIX_AMD64_STRUCT_PASSING) || (defined(_TARGET_X86_) && !defined(LEGACY_BACKEND))
+#if defined(UNIX_AMD64_ABI) || !defined(_TARGET_64BIT_) || defined(_TARGET_ARM64_)
 #define FEATURE_PUT_STRUCT_ARG_STK 1
 #define PUT_STRUCT_ARG_STK_ONLY_ARG(x) , x
 #define PUT_STRUCT_ARG_STK_ONLY(x) x
-#else // !(defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)|| (defined(_TARGET_X86_) && !defined(LEGACY_BACKEND)))
+#else
 #define PUT_STRUCT_ARG_STK_ONLY_ARG(x)
 #define PUT_STRUCT_ARG_STK_ONLY(x)
-#endif // !(defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)|| (defined(_TARGET_X86_) && !defined(LEGACY_BACKEND)))
+#endif
 
 #if defined(UNIX_AMD64_ABI)
 #define UNIX_AMD64_ABI_ONLY_ARG(x) , x
@@ -282,11 +297,20 @@ struct CLRConfig
 #define MULTIREG_HAS_SECOND_GC_RET 1
 #define MULTIREG_HAS_SECOND_GC_RET_ONLY_ARG(x) , x
 #define MULTIREG_HAS_SECOND_GC_RET_ONLY(x) x
-#else // !defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
+#else // !defined(UNIX_AMD64_ABI)
 #define MULTIREG_HAS_SECOND_GC_RET 0
 #define MULTIREG_HAS_SECOND_GC_RET_ONLY_ARG(x)
 #define MULTIREG_HAS_SECOND_GC_RET_ONLY(x)
-#endif // defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
+#endif // defined(UNIX_AMD64_ABI)
+
+// Arm64 Windows supports FEATURE_ARG_SPLIT, note this is different from
+// the official Arm64 ABI.
+// Case: splitting 16 byte struct between x7 and stack
+#if (defined(_TARGET_ARM_) || (defined(_TARGET_WINDOWS_) && defined(_TARGET_ARM64_)))
+#define FEATURE_ARG_SPLIT 1
+#else
+#define FEATURE_ARG_SPLIT 0
+#endif // (defined(_TARGET_ARM_) || (defined(_TARGET_WINDOWS_) && defined(_TARGET_ARM64_)))
 
 // To get rid of warning 4701 : local variable may be used without being initialized
 #define DUMMY_INIT(x) (x)
@@ -407,8 +431,6 @@ typedef ptrdiff_t ssize_t;
 
 #define CSE_INTO_HANDLERS 0
 
-#define CAN_DISABLE_DFA 1 // disable data flow for minopts
-
 #define LARGE_EXPSET 1   // Track 64 or 32 assertions/copies/consts/rangechecks
 #define ASSERTION_PROP 1 // Enable value/assertion propagation
 
@@ -416,13 +438,11 @@ typedef ptrdiff_t ssize_t;
 
 //=============================================================================
 
-#define OPT_MULT_ADDSUB 1 // optimize consecutive "lclVar += or -= icon"
-#define OPT_BOOL_OPS 1    // optimize boolean operations
+#define OPT_BOOL_OPS 1 // optimize boolean operations
 
 //=============================================================================
 
 #define REDUNDANT_LOAD 1      // track locals in regs, suppress loads
-#define STACK_PROBES 0        // Support for stack probes
 #define DUMP_FLOWGRAPHS DEBUG // Support for creating Xml Flowgraph reports in *.fgx files
 
 #define HANDLER_ENTRY_MUST_BE_IN_HOT_SECTION 1 // if 1 we must have all handler entry points in the Hot code section
@@ -449,7 +469,6 @@ typedef ptrdiff_t ssize_t;
                               // case of single block methods.
 #define COUNT_LOOPS 0         // Collect stats about loops, such as the total number of natural loops, a histogram of
                               // the number of loop exits, etc.
-#define COUNT_RANGECHECKS 0   // Count range checks removed (in lexical CSE?).
 #define DATAFLOW_ITER 0       // Count iterations in lexical CSE and constant folding dataflow.
 #define DISPLAY_SIZES 0       // Display generated code, data, and GC information sizes.
 #define MEASURE_BLOCK_SIZE 0  // Collect stats about basic block and flowList node sizes and memory allocations.
@@ -483,7 +502,7 @@ typedef ptrdiff_t ssize_t;
 #if !defined(_HOST_X86_) && !defined(_HOST_AMD64_)
 #define MEASURE_CLRAPI_CALLS 0 // Cycle counters only hooked up on x86/x64.
 #endif
-#if !defined(_MSC_VER) && !defined(__clang__)
+#if !defined(_MSC_VER) && !defined(__GNUC__)
 #define MEASURE_CLRAPI_CALLS 0 // Only know how to do this with VC and Clang.
 #endif
 
@@ -516,11 +535,10 @@ const bool dspGCtbls = true;
 #endif // !DEBUG
 
 #ifdef DEBUG
-void JitDump(const char* pcFormat, ...);
 #define JITDUMP(...)                                                                                                   \
     {                                                                                                                  \
         if (JitTls::GetCompiler()->verbose)                                                                            \
-            JitDump(__VA_ARGS__);                                                                                      \
+            logf(__VA_ARGS__);                                                                                         \
     }
 #define JITLOG(x)                                                                                                      \
     {                                                                                                                  \
@@ -541,6 +559,9 @@ void JitDump(const char* pcFormat, ...);
 #define DISPTREE(t)                                                                                                    \
     if (JitTls::GetCompiler()->verbose)                                                                                \
         JitTls::GetCompiler()->gtDispTree(t);
+#define DISPSTMT(t)                                                                                                    \
+    if (JitTls::GetCompiler()->verbose)                                                                                \
+        JitTls::GetCompiler()->gtDispStmt(t);
 #define DISPRANGE(range)                                                                                               \
     if (JitTls::GetCompiler()->verbose)                                                                                \
         JitTls::GetCompiler()->gtDispRange(range);
@@ -555,6 +576,7 @@ void JitDump(const char* pcFormat, ...);
 #define DBEXEC(flg, expr)
 #define DISPNODE(t)
 #define DISPTREE(t)
+#define DISPSTMT(t)
 #define DISPRANGE(range)
 #define DISPTREERANGE(range, t)
 #define VERBOSE 0
@@ -574,50 +596,16 @@ void JitDump(const char* pcFormat, ...);
 #else
 #define DOUBLE_ALIGN 0 // no special handling for double alignment
 #endif
-/*****************************************************************************/
-#ifdef DEBUG
-extern void _cdecl debugStop(const char* why, ...);
-#endif
-/*****************************************************************************/
 
 #ifdef DEBUG
 
-struct JitOptions
-{
-    const char* methodName; // Method to display output for
-    const char* className;  // Class  to display output for
-
-    double   CGknob;   // Tweakable knob for testing
-    unsigned testMask; // Tweakable mask for testing
-
-    JitOptions* lastDummyField; // Ensures instantiation uses right order of arguments
-};
-
-extern JitOptions jitOpts;
-
-/*****************************************************************************
-*
-*  Returns a word filled with the JITs allocator CHK fill value.
-*
-*/
+// Forward declarations for UninitializedWord and IsUninitialized are needed by alloc.h
 template <typename T>
-inline T UninitializedWord()
-{
-    __int64 word = 0x0101010101010101LL * (JitConfig.JitDefaultFill() & 0xFF);
-    return (T)word;
-}
-
-/*****************************************************************************
-*
-*  Determines whether this value is coming from uninitialized JIT memory
-*
-*/
+inline T UninitializedWord(Compiler* comp);
 
 template <typename T>
-inline bool IsUninitialized(T data)
-{
-    return data == UninitializedWord<T>();
-}
+inline bool IsUninitialized(T data);
+
 #endif // DEBUG
 
 /*****************************************************************************/
@@ -683,6 +671,18 @@ inline size_t roundDn(size_t size, size_t mult = sizeof(size_t))
     return (size) & ~(mult - 1);
 }
 
+#ifdef _HOST_64BIT_
+inline unsigned int roundUp(unsigned size, unsigned mult)
+{
+    return (unsigned int)roundUp((size_t)size, (size_t)mult);
+}
+
+inline unsigned int roundDn(unsigned size, unsigned mult)
+{
+    return (unsigned int)roundDn((size_t)size, (size_t)mult);
+}
+#endif // _HOST_64BIT_
+
 inline unsigned int unsigned_abs(int x)
 {
     return ((unsigned int)abs(x));
@@ -699,22 +699,20 @@ inline size_t unsigned_abs(ssize_t x)
 
 #if CALL_ARG_STATS || COUNT_BASIC_BLOCKS || COUNT_LOOPS || EMITTER_STATS || MEASURE_NODE_SIZE || MEASURE_MEM_ALLOC
 
+#define HISTOGRAM_MAX_SIZE_COUNT 64
+
 class Histogram
 {
 public:
-    Histogram(IAllocator* allocator, const unsigned* const sizeTable);
-    ~Histogram();
+    Histogram(const unsigned* const sizeTable);
 
     void dump(FILE* output);
     void record(unsigned size);
 
 private:
-    void ensureAllocated();
-
-    IAllocator*           m_allocator;
     unsigned              m_sizeCount;
     const unsigned* const m_sizeTable;
-    unsigned*             m_counts;
+    unsigned              m_counts[HISTOGRAM_MAX_SIZE_COUNT];
 };
 
 #endif // CALL_ARG_STATS || COUNT_BASIC_BLOCKS || COUNT_LOOPS || EMITTER_STATS || MEASURE_NODE_SIZE
@@ -727,17 +725,6 @@ private:
 
 /*****************************************************************************/
 
-#define SECURITY_CHECK 1
-#define VERIFY_IMPORTER 1
-
-/*****************************************************************************/
-
-#if !defined(RELOC_SUPPORT)
-#define RELOC_SUPPORT 1
-#endif
-
-/*****************************************************************************/
-
 #include "error.h"
 
 /*****************************************************************************/
@@ -746,7 +733,6 @@ private:
 #pragma warning(push)
 #pragma warning(default : 4820) // 'bytes' bytes padding added after construct 'member_name'
 #endif                          // CHECK_STRUCT_PADDING
-
 #include "alloc.h"
 #include "target.h"
 
@@ -797,11 +783,6 @@ private:
 
 #define CLFLG_MINOPT (CLFLG_TREETRANS)
 
-#define JIT_RESERVED_STACK 64 // Reserved for arguments of calls and hidden
-                              // pushes for finallys so that we don't
-                              // probe on every call site. See comment in
-                              // for CORINFO_STACKPROBE_DEPTH in corjit.h
-
 /*****************************************************************************/
 
 extern void dumpILBytes(const BYTE* const codeAddr, unsigned codeSize, unsigned alignSize);
@@ -837,14 +818,8 @@ const int MIN_SHORT_AS_INT = -32768;
 
 /*****************************************************************************/
 
-enum CompMemKind
-{
-#define CompMemKindMacro(kind) CMK_##kind,
-#include "compmemkind.h"
-    CMK_Count
-};
-
 class Compiler;
+
 class JitTls
 {
 #ifdef DEBUG
@@ -866,9 +841,51 @@ public:
 };
 
 #if defined(DEBUG)
-
+//  Include the definition of Compiler for use by these template functions
+//
 #include "compiler.h"
 
+//****************************************************************************
+//
+//  Returns a word filled with the JITs allocator default fill value.
+//
+template <typename T>
+inline T UninitializedWord(Compiler* comp)
+{
+    unsigned char defaultFill = 0xdd;
+    if (comp == nullptr)
+    {
+        comp = JitTls::GetCompiler();
+    }
+    defaultFill = Compiler::compGetJitDefaultFill(comp);
+    assert(defaultFill <= 0xff);
+    __int64 word = 0x0101010101010101LL * defaultFill;
+    return (T)word;
+}
+
+//****************************************************************************
+//
+//  Tries to determine if this value is coming from uninitialized JIT memory
+//    - Returns true if the value matches what we initialized the memory to.
+//
+//  Notes:
+//    - Asserts that use this are assuming that the UninitializedWord value
+//      isn't a legal value for 'data'.  Thus using a default fill value of
+//      0x00 will often trigger such asserts.
+//
+template <typename T>
+inline bool IsUninitialized(T data)
+{
+    return data == UninitializedWord<T>(JitTls::GetCompiler());
+}
+
+#pragma warning(push)
+#pragma warning(disable : 4312)
+//****************************************************************************
+//
+//  Debug template definitions for dspPtr, dspOffset
+//    - Used to format pointer/offset values for diffable Disasm
+//
 template <typename T>
 T dspPtr(T p)
 {
@@ -880,9 +897,15 @@ T dspOffset(T o)
 {
     return (o == ZERO) ? ZERO : (JitTls::GetCompiler()->opts.dspDiffable ? T(0xD1FFAB1E) : o);
 }
+#pragma warning(pop)
 
 #else // !defined(DEBUG)
 
+//****************************************************************************
+//
+//  Non-Debug template definitions for dspPtr, dspOffset
+//    - This is a nop in non-Debug builds
+//
 template <typename T>
 T dspPtr(T p)
 {

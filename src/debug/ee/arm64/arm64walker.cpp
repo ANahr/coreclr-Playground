@@ -105,10 +105,10 @@ BYTE*  NativeWalker::SetupOrSimulateInstructionForPatchSkip(T_CONTEXT * context,
     /*
     Modify the patchBypass if the opcode is IP-relative, otherwise return it
     The following are the instructions that are IP-relative  :
-    • ADR and ADRP.
-    • The Load register (literal) instruction class.
-    • Direct branches that use an immediate offset.
-    • The unconditional branch with link instructions, BL and BLR, that use the PC to create the return link
+    . ADR and ADRP.
+    . The Load register (literal) instruction class.
+    . Direct branches that use an immediate offset.
+    . The unconditional branch with link instructions, BL and BLR, that use the PC to create the return link
       address.
     */
 
@@ -200,12 +200,15 @@ BYTE*  NativeWalker::SetupOrSimulateInstructionForPatchSkip(T_CONTEXT * context,
                 switch (opc)
                 {
                 case 0: //4byte data into St
-                    RegContents = 0xFFFFFFFF & RegContents;  //zero the upper 32bit
-                    SetReg(context, RegNum, RegContents);
-                case 1: //8byte data into Dt
-                    SetReg(context, RegNum, RegContents);
+                    SimdRegContents.Low = 0xFFFFFFFF & RegContents;  //zero the upper 32bit
+                    SimdRegContents.High = 0;
+                    SetSimdReg(context, RegNum, SimdRegContents);
                     break;
-
+                case 1: //8byte data into Dt
+                    SimdRegContents.Low = RegContents;
+                    SimdRegContents.High = 0;
+                    SetSimdReg(context, RegNum, SimdRegContents);
+                    break;
                 case 2: //SIMD 16 byte data
                     SimdRegContents = GetSimdMem(ip);
                     SetSimdReg(context, RegNum, SimdRegContents);
@@ -408,7 +411,7 @@ BOOL  NativeWalker::DecodePCRelativeBranchInst(PT_CONTEXT context, const PRD_TYP
             bit_pos = bit_pos + 32;
         }
 
-        PCODE bit_val = 1 << bit_pos;
+        PCODE bit_val = PCODE{ 1 } << bit_pos;
         if (opcode & 0x01000000) //TBNZ
         {
             result = (RegContent & bit_val) != 0;

@@ -421,7 +421,6 @@ BOOL StubManager::CheckIsStub_Worker(PCODE stubStartAddress)
         NOTHROW;
         CAN_TAKE_LOCK;     // CheckIsStub_Internal can enter SimpleRWLock
         GC_NOTRIGGER;
-        SO_TOLERANT;
     }
     CONTRACTL_END;
 
@@ -434,10 +433,6 @@ BOOL StubManager::CheckIsStub_Worker(PCODE stubStartAddress)
     {
         return FALSE;
     }
-
-    CONTRACT_VIOLATION(SOToleranceViolation);
-    // @todo : this might not have a thread
-    //    BEGIN_SO_INTOLERANT_CODE_NOTHROW(GetThread(), return FALSE);
 
     struct Param
     {
@@ -484,11 +479,9 @@ BOOL StubManager::CheckIsStub_Worker(PCODE stubStartAddress)
 #ifdef DACCESS_COMPILE
     PAL_ENDTRY
 #else
-    EX_END_CATCH(SwallowAllExceptions);        
-#endif    
+    EX_END_CATCH(SwallowAllExceptions);
+#endif
 
-    //END_SO_INTOLERANT_CODE;
-    
     return param.fIsStub;
 }
 
@@ -1060,17 +1053,6 @@ BOOL PrecodeStubManager::DoTraceStub(PCODE stubStartAddress,
             return TRUE;
 #endif // HAS_NDIRECT_IMPORT_PRECODE
 
-#ifdef HAS_REMOTING_PRECODE
-        case PRECODE_REMOTING:
-#ifndef DACCESS_COMPILE
-            trace->InitForManagerPush(GetEEFuncEntryPoint(PrecodeRemotingThunk), this);
-#else
-            trace->InitForOther(NULL);
-#endif
-            LOG_TRACE_DESTINATION(trace, stubStartAddress, "PrecodeStubManager::DoTraceStub - remoting");
-            return TRUE;
-#endif // HAS_REMOTING_PRECODE
-
 #ifdef HAS_FIXUP_PRECODE
         case PRECODE_FIXUP:
             break;
@@ -1136,64 +1118,8 @@ BOOL PrecodeStubManager::TraceManager(Thread *thread,
     }
     CONTRACTL_END;
 
-    BOOL bRet = FALSE;
-
-#ifdef HAS_REMOTING_PRECODE
-    PCODE ip = GetIP(pContext);
-
-    if (ip == GetEEFuncEntryPoint(PrecodeRemotingThunk))
-    {
-        BYTE** pStack = (BYTE**)GetSP(pContext);
-
-        // Aligning down will handle differences in layout of virtual and nonvirtual remoting precodes
-#ifdef _TARGET_ARM_
-        // The offset here is Lr-7.  6 for the size of the Precode struct, 1 for THUMB_CODE alignment.
-        Precode* pPrecode = (Precode*)(pContext->Lr - 7);
-
-        _ASSERTE(pPrecode->GetType() == PRECODE_REMOTING);
-
-        // We need to tell the debugger where we're returning to just in case 
-        // the debugger can't continue on.
-        *pRetAddr = pStack[1];
-
-        Object* pThis = (Object*)(size_t)pContext->R0;
-#else
-        Precode* pPrecode = (Precode*)ALIGN_DOWN(pStack[0] - sizeof(INT32) 
-                - offsetof(RemotingPrecode,m_callRel32),
-            PRECODE_ALIGNMENT);
-
-        _ASSERTE(pPrecode->GetType() == PRECODE_REMOTING);
-
-        // We need to tell the debugger where we're returning to just in case 
-        // the debugger can't continue on.
-        *pRetAddr = pStack[1];
-
-        Object* pThis = (Object*)(size_t)pContext->Ecx;
-#endif
-
-        if (pThis != NULL && pThis->IsTransparentProxy())
-        {
-            // We have proxy in the way.
-#ifdef DACCESS_COMPILE
-            DacNotImpl();
-#else
-            trace->InitForFramePush(GetEEFuncEntryPoint(TransparentProxyStubPatchLabel));
-#endif
-        }
-        else
-        {
-            // No proxy in the way. Follow the target.
-            trace->InitForStub(pPrecode->GetTarget());
-        }
-        bRet = TRUE;
-    }
-    else
-#endif // HAS_REMOTING_PRECODE
-    {
-        _ASSERTE(!"Unexpected call to PrecodeStubManager::TraceManager");
-    }
-
-    return bRet;
+    _ASSERTE(!"Unexpected call to PrecodeStubManager::TraceManager");
+    return FALSE;
 }
 #endif
 
@@ -1522,6 +1448,7 @@ BOOL RangeSectionStubManager::DoTraceStub(PCODE stubStartAddress, TraceDestinati
     case STUB_CODE_BLOCK_STUBLINK:
         return StubLinkStubManager::g_pManager->DoTraceStub(stubStartAddress, trace);
 
+#ifdef FEATURE_PREJIT
     case STUB_CODE_BLOCK_VIRTUAL_METHOD_THUNK:
         {
             PCODE pTarget = GetMethodThunkTarget(stubStartAddress);
@@ -1553,6 +1480,7 @@ BOOL RangeSectionStubManager::DoTraceStub(PCODE stubStartAddress, TraceDestinati
         }
 
         __fallthrough;
+#endif
 
     case STUB_CODE_BLOCK_METHOD_CALL_THUNK:
 #ifdef DACCESS_COMPILE
@@ -1583,10 +1511,14 @@ BOOL RangeSectionStubManager::TraceManager(Thread *thread,
     }
     CONTRACTL_END;
 
+#ifdef FEATURE_PREJIT
     // Both virtual and external import thunks have the same structure. We can use
     // common code to handle them.
     _ASSERTE(GetIP(pContext) == GetEEFuncEntryPoint(VirtualMethodFixupPatchLabel) 
          || GetIP(pContext) == GetEEFuncEntryPoint(ExternalMethodFixupPatchLabel));
+#else
+    _ASSERTE(GetIP(pContext) == GetEEFuncEntryPoint(ExternalMethodFixupPatchLabel));
+#endif
 
     *pRetAddr = (BYTE *)StubManagerHelpers::GetReturnAddress(pContext);
 
@@ -1651,7 +1583,6 @@ RangeSectionStubManager::GetStubKind(PCODE stubStartAddress)
     {
         NOTHROW;
         GC_NOTRIGGER;
-        SO_TOLERANT;
         MODE_ANY;
     }
     CONTRACTL_END;
@@ -1706,14 +1637,14 @@ BOOL ILStubManager::DoTraceStub(PCODE stubStartAddress,
 
     PCODE traceDestination = NULL;
 
-#ifdef FEATURE_STUBS_AS_IL
+#ifdef FEATURE_MULTICASTSTUB_AS_IL
     MethodDesc* pStubMD = ExecutionManager::GetCodeMethodDesc(stubStartAddress);
     if (pStubMD != NULL && pStubMD->AsDynamicMethodDesc()->IsMulticastStub())
     {
         traceDestination = GetEEFuncEntryPoint(StubHelpers::MulticastDebuggerTraceHelper);
     }
     else
-#endif // FEATURE_STUBS_AS_IL
+#endif // FEATURE_MULTICASTSTUB_AS_IL
     {
         // This call is going out to unmanaged code, either through pinvoke or COM interop.
         traceDestination = stubStartAddress;
@@ -1813,7 +1744,7 @@ BOOL ILStubManager::TraceManager(Thread *thread,
     PCODE stubIP = GetIP(pContext);
     *pRetAddr = (BYTE *)StubManagerHelpers::GetReturnAddress(pContext);
 
-#ifdef FEATURE_STUBS_AS_IL
+#ifdef FEATURE_MULTICASTSTUB_AS_IL
     if (stubIP == GetEEFuncEntryPoint(StubHelpers::MulticastDebuggerTraceHelper))
     {
         stubIP = (PCODE)*pRetAddr;
@@ -1830,7 +1761,7 @@ BOOL ILStubManager::TraceManager(Thread *thread,
     // See code:ILStubCache.CreateNewMethodDesc for the code that sets flags on stub MDs
     PCODE target;
 
-#ifdef FEATURE_STUBS_AS_IL
+#ifdef FEATURE_MULTICASTSTUB_AS_IL
     if(pStubMD->IsMulticastStub())
     {
         _ASSERTE(GetIP(pContext) == GetEEFuncEntryPoint(StubHelpers::MulticastDebuggerTraceHelper));
@@ -1859,7 +1790,7 @@ BOOL ILStubManager::TraceManager(Thread *thread,
 
     }
     else 
-#endif // FEATURE_STUBS_AS_IL
+#endif // FEATURE_MULTICASTSTUB_AS_IL
     if (pStubMD->IsReverseStub())
     {
         if (pStubMD->IsStatic())
@@ -1997,7 +1928,7 @@ static BOOL IsVarargPInvokeStub(PCODE stubStartAddress)
     if (stubStartAddress == GetEEFuncEntryPoint(VarargPInvokeStub))
         return TRUE;
 
-#ifndef _TARGET_X86_
+#if !defined(_TARGET_X86_) && !defined(_TARGET_ARM64_)
     if (stubStartAddress == GetEEFuncEntryPoint(VarargPInvokeStub_RetBuffArg))
         return TRUE;
 #endif
@@ -2601,7 +2532,6 @@ JumpStubStubManager::DoEnumMemoryRegions(CLRDataEnumMemoryFlags flags)
     EMEM_OUT(("MEM: %p JumpStubStubManager\n", dac_cast<TADDR>(this)));
 }
 
-#ifdef FEATURE_PREJIT
 void
 RangeSectionStubManager::DoEnumMemoryRegions(CLRDataEnumMemoryFlags flags)
 {
@@ -2610,7 +2540,6 @@ RangeSectionStubManager::DoEnumMemoryRegions(CLRDataEnumMemoryFlags flags)
     DAC_ENUM_VTHIS();
     EMEM_OUT(("MEM: %p RangeSectionStubManager\n", dac_cast<TADDR>(this)));
 }
-#endif
 
 void
 ILStubManager::DoEnumMemoryRegions(CLRDataEnumMemoryFlags flags)

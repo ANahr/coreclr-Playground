@@ -180,6 +180,11 @@ typedef  SHash<ZapperLoaderModuleTableTraits> ZapperLoaderModuleTable;
 class CEECompileInfo : public ICorCompileInfo
 {
   public:
+    CEECompileInfo()
+       : m_fGeneratingNgenPDB(FALSE)
+    {
+    }
+
     virtual ~CEECompileInfo()
     {
         WRAPPER_NO_CONTRACT;
@@ -193,14 +198,8 @@ class CEECompileInfo : public ICorCompileInfo
                          IMetaDataAssemblyEmit    *pEmitter,
                          BOOL                     fForceDebug,
                          BOOL                     fForceProfiling,
-                         BOOL                     fForceInstrument,
-                         BOOL                     fForceFulltrustDomain);
+                         BOOL                     fForceInstrument);
 
-    HRESULT MakeCrossDomainCallback(
-                                    ICorCompilationDomain*  pDomain,
-                                    CROSS_DOMAIN_CALLBACK   pfnCallback,
-                                    LPVOID                  pArgs);
-   
     HRESULT DestroyDomain(ICorCompilationDomain   *pDomain);
 
     HRESULT LoadAssemblyByPath(LPCWSTR                  wzPath,
@@ -243,11 +242,10 @@ class CEECompileInfo : public ICorCompileInfo
     void GetModuleFileName(CORINFO_MODULE_HANDLE module,
                            SString               &result);
 
-    void EncodeModuleAsIndexes( CORINFO_MODULE_HANDLE   fromHandle,
-                                CORINFO_MODULE_HANDLE   handle,
-                                DWORD                   *pAssemblyIndex,
-                                DWORD                   *pModuleIndex,
-                                IMetaDataAssemblyEmit   *pAssemblyEmit); 
+    void EncodeModuleAsIndex( CORINFO_MODULE_HANDLE   fromHandle,
+                              CORINFO_MODULE_HANDLE   handle,
+                              DWORD                   *pIndex,
+                              IMetaDataAssemblyEmit   *pAssemblyEmit); 
 
     void EncodeClass(  CORINFO_MODULE_HANDLE   referencingModule,
                        CORINFO_CLASS_HANDLE    classHandle,
@@ -335,7 +333,8 @@ class CEECompileInfo : public ICorCompileInfo
                              SString                &result);
 
     void GetCallRefMap(CORINFO_METHOD_HANDLE hMethod, 
-                       GCRefMapBuilder * pBuilder);
+                       GCRefMapBuilder * pBuilder,
+                       bool isDispatchCell);
 
     void CompressDebugInfo(
                                     IN ICorDebugInfo::OffsetMapping * pOffsetMapping,
@@ -351,9 +350,7 @@ class CEECompileInfo : public ICorCompileInfo
             IN  CORINFO_METHOD_HANDLE    hMethod,
             OUT CORJIT_FLAGS            *pFlags);
 
-#ifdef _WIN64
-    SIZE_T  getPersonalityValue();
-#endif
+    ICorJitHost* GetJitHost();
 
     void* GetStubSize(void *pStubAddress, DWORD *pSizeToCopy);
 
@@ -375,6 +372,10 @@ class CEECompileInfo : public ICorCompileInfo
     int GetVersionResilientTypeHashCode(CORINFO_MODULE_HANDLE moduleHandle, mdToken token);
 
     int GetVersionResilientMethodHashCode(CORINFO_METHOD_HANDLE methodHandle);
+
+    BOOL EnumMethodsForStub(CORINFO_METHOD_HANDLE hMethod, void** enumerator);
+    BOOL EnumNextMethodForStub(void * enumerator, CORINFO_METHOD_HANDLE *hMethod);
+    void EnumCloseForStubEnumerator(void *enumerator);
 #endif
 
     BOOL HasCustomAttribute(CORINFO_METHOD_HANDLE method, LPCSTR customAttributeName);
@@ -406,7 +407,6 @@ class CEECompileInfo : public ICorCompileInfo
         {
             THROWS;
             GC_NOTRIGGER;
-            SO_TOLERANT;
             MODE_ANY;
         }
         CONTRACTL_END;
@@ -569,6 +569,7 @@ class CEEPreloader : public ICorCompilePreloader
     void MethodReferencedByCompiledCode(CORINFO_METHOD_HANDLE handle);
 
     BOOL IsUncompiledMethod(CORINFO_METHOD_HANDLE handle);
+    BOOL ShouldSuppressGCTransition(CORINFO_METHOD_HANDLE handle);
 
 private:
     void AddToUncompiledMethods(MethodDesc *pMethod, BOOL fForStubs);
@@ -637,10 +638,10 @@ public:
     void NoteDeduplicatedCode(CORINFO_METHOD_HANDLE method, CORINFO_METHOD_HANDLE duplicateMethod);
 
     CORINFO_METHOD_HANDLE LookupMethodDef(mdMethodDef token);
+    bool GetMethodInfo(mdMethodDef token, CORINFO_METHOD_HANDLE ftnHnd, CORINFO_METHOD_INFO * methInfo);
 
     CorCompileILRegion GetILRegion(mdMethodDef token);
 
-    CORINFO_CLASS_HANDLE  FindTypeForProfileEntry(CORBBTPROF_BLOB_PARAM_SIG_ENTRY * profileBlobEntry);
     CORINFO_METHOD_HANDLE FindMethodForProfileEntry(CORBBTPROF_BLOB_PARAM_SIG_ENTRY * profileBlobEntry);
 
     void ReportInlining(CORINFO_METHOD_HANDLE inliner, CORINFO_METHOD_HANDLE inlinee);
@@ -654,7 +655,9 @@ public:
 
     ULONG Release();
 
+#ifdef FEATURE_READYTORUN_COMPILER
     void GetSerializedInlineTrackingMap(SBuffer* pBuffer);
+#endif
 
     void Error(mdToken token, Exception * pException);
 };
@@ -787,9 +790,6 @@ class CompilationDomain : public AppDomain,
     PEAssembly *BindAssemblySpec(
         AssemblySpec *pSpec,
         BOOL fThrowOnFileNotFound,
-        BOOL fRaisePrebindEvents,
-        StackCrawlMark *pCallerStackMark = NULL,
-        AssemblyLoadSecurity *pLoadSecurity = NULL,
         BOOL fUseHostBinderIfAvailable = TRUE) DAC_EMPTY_RET(NULL);
 
     BOOL CanEagerBindToZapFile(Module *targetModule, BOOL limitToHardBindList = TRUE);

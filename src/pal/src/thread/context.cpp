@@ -26,6 +26,8 @@ SET_DEFAULT_DEBUG_CHANNEL(THREAD); // some headers have code with asserts, so do
 #include "pal/context.h"
 #include "pal/debug.h"
 #include "pal/thread.hpp"
+#include "pal/utils.h"
+#include "pal/virtual.h"
 
 #include <sys/ptrace.h> 
 #include <errno.h>
@@ -165,7 +167,7 @@ typedef int __ptrace_request;
 	ASSIGN_REG(X28)
 
 #else
-#error Don't know how to assign registers on this architecture
+#error "Don't know how to assign registers on this architecture"
 #endif
 
 #define ASSIGN_ALL_REGS     \
@@ -338,10 +340,9 @@ CONTEXT_SetThreadContext(
         
     if (dwProcessId == GetCurrentProcessId())
     {
-#ifdef FEATURE_PAL_SXS
         // Need to implement SetThreadContext(current thread) for the IX architecture; look at common_signal_handler.
         _ASSERT(FALSE);
-#endif // FEATURE_PAL_SXS
+
         ASSERT("SetThreadContext should be called for cross-process only.\n");
         SetLastError(ERROR_INVALID_PARAMETER);
         goto EXIT;
@@ -463,6 +464,27 @@ void CONTEXTToNativeContext(CONST CONTEXT *lpContext, native_context_t *native)
         {
             FPREG_Xmm(native, i) = lpContext->FltSave.XmmRegisters[i];
         }
+#elif defined(_ARM64_)
+        fpsimd_context* fp = GetNativeSigSimdContext(native);
+        if (fp)
+        {
+            fp->fpsr = lpContext->Fpsr;
+            fp->fpcr = lpContext->Fpcr;
+            for (int i = 0; i < 32; i++)
+            {
+                *(NEON128*) &fp->vregs[i] = lpContext->V[i];
+            }
+        }
+#elif defined(_ARM_)
+        VfpSigFrame* fp = GetNativeSigSimdContext(native);
+        if (fp)
+        {
+            fp->Fpscr = lpContext->Fpscr;
+            for (int i = 0; i < 32; i++)
+            {
+                fp->D[i] = lpContext->D[i];
+            }
+        }
 #endif
     }
 
@@ -470,7 +492,7 @@ void CONTEXTToNativeContext(CONST CONTEXT *lpContext, native_context_t *native)
 #if defined(_AMD64_) && defined(XSTATE_SUPPORTED)
     if ((lpContext->ContextFlags & CONTEXT_XSTATE) == CONTEXT_XSTATE)
     {
-        _ASSERTE(FPREG_HasExtendedState(native));
+        _ASSERTE(FPREG_HasYmmRegisters(native));
         memcpy_s(FPREG_Xstate_Ymmh(native), sizeof(M128A) * 16, lpContext->VectorRegister, sizeof(M128A) * 16);
     }
 #endif //_AMD64_ && XSTATE_SUPPORTED
@@ -506,8 +528,6 @@ void CONTEXTFromNativeContext(const native_context_t *native, LPCONTEXT lpContex
         // although the pc value retrived from native context might not have set the least bit.
         // This becomes especially problematic if the context is on the JIT_WRITEBARRIER.
         lpContext->Pc |= 0x1;
-#elif defined(_X86_)
-        lpContext->ResumeEsp = MCREG_Esp(native->uc_mcontext);
 #endif
     }
 
@@ -563,6 +583,33 @@ void CONTEXTFromNativeContext(const native_context_t *native, LPCONTEXT lpContex
         {
             lpContext->FltSave.XmmRegisters[i] = FPREG_Xmm(native, i);
         }
+#elif defined(_ARM64_)
+        const fpsimd_context* fp = GetConstNativeSigSimdContext(native);
+        if (fp)
+        {
+            lpContext->Fpsr = fp->fpsr;
+            lpContext->Fpcr = fp->fpcr;
+            for (int i = 0; i < 32; i++)
+            {
+                lpContext->V[i] = *(NEON128*) &fp->vregs[i];
+            }
+        }
+#elif defined(_ARM_)
+        const VfpSigFrame* fp = GetConstNativeSigSimdContext(native);
+        if (fp)
+        {
+            lpContext->Fpscr = fp->Fpscr;
+            for (int i = 0; i < 32; i++)
+            {
+                lpContext->D[i] = fp->D[i];
+            }
+        }
+        else
+        {
+            // Floating point state is not valid
+            // Mark the context correctly
+            lpContext->ContextFlags &= ~(ULONG)CONTEXT_FLOATING_POINT;
+        }
 #endif
     }
 
@@ -571,7 +618,7 @@ void CONTEXTFromNativeContext(const native_context_t *native, LPCONTEXT lpContex
     {
     // TODO: Enable for all Unix systems
 #if XSTATE_SUPPORTED
-        if (FPREG_HasExtendedState(native))
+        if (FPREG_HasYmmRegisters(native))
         {
             memcpy_s(lpContext->VectorRegister, sizeof(M128A) * 16, FPREG_Xstate_Ymmh(native), sizeof(M128A) * 16);
         }
@@ -890,10 +937,8 @@ CONTEXT_GetThreadContextFromPort(
   
     if (lpContext->ContextFlags & (CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_SEGMENTS) & CONTEXT_AREA_MASK)
     {
-#ifdef _X86_  
-        x86_thread_state32_t State;
-        StateFlavor = x86_THREAD_STATE32;
-#elif defined(_AMD64_)
+
+#ifdef _AMD64_
         x86_thread_state64_t State;
         StateFlavor = x86_THREAD_STATE64;
 #else
@@ -911,41 +956,47 @@ CONTEXT_GetThreadContextFromPort(
     }
     
     if (lpContext->ContextFlags & CONTEXT_ALL_FLOATING & CONTEXT_AREA_MASK) {
-#ifdef _X86_
-        x86_float_state32_t State;
-        StateFlavor = x86_FLOAT_STATE32;
-#elif defined(_AMD64_)
-        x86_float_state64_t State;
-        StateFlavor = x86_FLOAT_STATE64;
-#else
-#error Unexpected architecture.
-#endif
-        StateCount = sizeof(State) / sizeof(natural_t);
-        MachRet = thread_get_state(Port, StateFlavor, (thread_state_t)&State, &StateCount);
-        if (MachRet != KERN_SUCCESS)
-        {
-            ASSERT("thread_get_state(FLOAT_STATE) failed: %d\n", MachRet);
-            goto exit;
-        }
-        
-        CONTEXT_GetThreadContextFromThreadState(StateFlavor, (thread_state_t)&State, lpContext);
-    }
+        // The thread_get_state for floating point state can fail for some flavors when the processor is not
+        // in the right mode at the time we are taking the state. So we will try to get the AVX state first and
+        // if it fails, get the FLOAT state and if that fails, take AVX512 state. Both AVX and AVX512 states
+        // are supersets of the FLOAT state.
+        // Check a few fields to make sure the assumption is correct.
+        static_assert_no_msg(sizeof(x86_avx_state64_t) > sizeof(x86_float_state64_t));
+        static_assert_no_msg(sizeof(x86_avx512_state64_t) > sizeof(x86_avx_state64_t));
+        static_assert_no_msg(offsetof(x86_avx_state64_t, __fpu_fcw) == offsetof(x86_float_state64_t, __fpu_fcw));
+        static_assert_no_msg(offsetof(x86_avx_state64_t, __fpu_xmm0) == offsetof(x86_float_state64_t, __fpu_xmm0));
+        static_assert_no_msg(offsetof(x86_avx512_state64_t, __fpu_fcw) == offsetof(x86_float_state64_t, __fpu_fcw));
+        static_assert_no_msg(offsetof(x86_avx512_state64_t, __fpu_xmm0) == offsetof(x86_float_state64_t, __fpu_xmm0));
 
-#if defined(_AMD64_) && defined(XSTATE_SUPPORTED)
-    if (lpContext->ContextFlags & CONTEXT_XSTATE & CONTEXT_AREA_MASK) {
-        x86_avx_state64_t State;
+        x86_avx512_state64_t State;
+
         StateFlavor = x86_AVX_STATE64;
-        StateCount = sizeof(State) / sizeof(natural_t);
+        StateCount = sizeof(x86_avx_state64_t) / sizeof(natural_t);
         MachRet = thread_get_state(Port, StateFlavor, (thread_state_t)&State, &StateCount);
         if (MachRet != KERN_SUCCESS)
         {
-            ASSERT("thread_get_state(XSTATE) failed: %d\n", MachRet);
-            goto exit;
+            // The AVX state is not available, try to get the AVX512 state.
+            StateFlavor = x86_AVX512_STATE64;
+            StateCount = sizeof(x86_avx512_state64_t) / sizeof(natural_t);
+            MachRet = thread_get_state(Port, StateFlavor, (thread_state_t)&State, &StateCount);
+            if (MachRet != KERN_SUCCESS)
+            {
+                // Neither the AVX nor the AVX512 state is not available, try to get at least the FLOAT state.
+                lpContext->ContextFlags &= ~(CONTEXT_XSTATE & CONTEXT_AREA_MASK);
+
+                StateFlavor = x86_FLOAT_STATE64;
+                StateCount = sizeof(x86_float_state64_t) / sizeof(natural_t);
+                MachRet = thread_get_state(Port, StateFlavor, (thread_state_t)&State, &StateCount);
+                if (MachRet != KERN_SUCCESS)
+                {
+                    // We were unable to get any floating point state. This case was observed on OSX with AVX512 capable processors.
+                    lpContext->ContextFlags &= ~((CONTEXT_XSTATE | CONTEXT_ALL_FLOATING) & CONTEXT_AREA_MASK);
+                }
+            }
         }
 
         CONTEXT_GetThreadContextFromThreadState(StateFlavor, (thread_state_t)&State, lpContext);
     }
-#endif
 
 exit:
     return MachRet;
@@ -964,66 +1015,7 @@ CONTEXT_GetThreadContextFromThreadState(
 {
     switch (threadStateFlavor)
     {
-#ifdef _X86_
-        case x86_THREAD_STATE32:
-            if (lpContext->ContextFlags & (CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_SEGMENTS) & CONTEXT_AREA_MASK)
-            {
-                x86_thread_state32_t *pState = (x86_thread_state32_t *)threadState;
-
-                lpContext->Eax = pState->eax;
-                lpContext->Ebx = pState->ebx;
-                lpContext->Ecx = pState->ecx;
-                lpContext->Edx = pState->edx;
-                lpContext->Edi = pState->edi;
-                lpContext->Esi = pState->esi;
-                lpContext->Ebp = pState->ebp;
-                lpContext->Esp = pState->esp;
-                lpContext->ResumeEsp = pState->esp;
-                lpContext->SegSs = pState->ss;
-                lpContext->EFlags = pState->eflags;
-                lpContext->Eip = pState->eip;
-                lpContext->SegCs = pState->cs;
-                lpContext->SegDs_PAL_Undefined = pState->ds;
-                lpContext->SegEs_PAL_Undefined = pState->es;
-                lpContext->SegFs_PAL_Undefined = pState->fs;
-                lpContext->SegGs_PAL_Undefined = pState->gs;
-            }
-            break;
-
-        case x86_FLOAT_STATE32:
-        {
-            x86_float_state32_t *pState = (x86_float_state32_t *)threadState;
-
-            if (lpContext->ContextFlags & CONTEXT_FLOATING_POINT & CONTEXT_AREA_MASK)
-            {
-                lpContext->FloatSave.ControlWord = *(DWORD*)&pState->fpu_fcw;
-                lpContext->FloatSave.StatusWord = *(DWORD*)&pState->fpu_fsw;
-                lpContext->FloatSave.TagWord = pState->fpu_ftw;
-                lpContext->FloatSave.ErrorOffset = pState->fpu_ip;
-                lpContext->FloatSave.ErrorSelector = pState->fpu_cs;
-                lpContext->FloatSave.DataOffset = pState->fpu_dp;
-                lpContext->FloatSave.DataSelector = pState->fpu_ds;
-                lpContext->FloatSave.Cr0NpxState = pState->fpu_mxcsr;
-
-                // Windows stores the floating point registers in a packed layout (each 10-byte register end to end
-                // for a total of 80 bytes). But Mach returns each register in an 16-bit structure (presumably for
-                // alignment purposes). So we can't just memcpy the registers over in a single block, we need to copy
-                // them individually.
-                for (int i = 0; i < 8; i++)
-                    memcpy(&lpContext->FloatSave.RegisterArea[i * 10], (&pState->fpu_stmm0)[i].mmst_reg, 10);
-            }
-
-            if (lpContext->ContextFlags & CONTEXT_EXTENDED_REGISTERS & CONTEXT_AREA_MASK)
-            {
-                // The only extended register information that Mach will tell us about are the xmm register values.
-                // Both Windows and Mach store the registers in a packed layout (each of the 8 registers is 16 bytes)
-                // so we can simply memcpy them across.
-                memcpy(lpContext->ExtendedRegisters + CONTEXT_EXREG_XMM_OFFSET, &pState->fpu_xmm0, 8 * 16);
-            }
-        }
-        break;
-
-#elif defined(_AMD64_)
+#ifdef _AMD64_
         case x86_THREAD_STATE64:
             if (lpContext->ContextFlags & (CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_SEGMENTS) & CONTEXT_AREA_MASK)
             {
@@ -1058,6 +1050,16 @@ CONTEXT_GetThreadContextFromThreadState(
             }
             break;
 
+        case x86_AVX_STATE64:
+        case x86_AVX512_STATE64:
+            if (lpContext->ContextFlags & CONTEXT_XSTATE & CONTEXT_AREA_MASK)
+            {
+                x86_avx_state64_t *pState = (x86_avx_state64_t *)threadState;
+                memcpy(&lpContext->VectorRegister, &pState->__fpu_ymmh0, 16 * 16);
+            }
+
+            // Intentional fall-through, the AVX states are supersets of the FLOAT state
+
         case x86_FLOAT_STATE64:
             if (lpContext->ContextFlags & CONTEXT_FLOATING_POINT & CONTEXT_AREA_MASK)
             {
@@ -1084,16 +1086,6 @@ CONTEXT_GetThreadContextFromThreadState(
                 memcpy(&lpContext->Xmm0, &pState->__fpu_xmm0, 16 * 16);
             }
             break;
-
-#ifdef XSTATE_SUPPORTED
-        case x86_AVX_STATE64:
-            if (lpContext->ContextFlags & CONTEXT_XSTATE & CONTEXT_AREA_MASK)
-            {
-                x86_avx_state64_t *pState = (x86_avx_state64_t *)threadState;
-                memcpy(&lpContext->VectorRegister, &pState->__fpu_ymmh0, 16 * 16);
-            }
-            break;
-#endif
 #else
 #error Unexpected architecture.
 #endif
@@ -1182,27 +1174,7 @@ CONTEXT_SetThreadContextOnPort(
 
     if (lpContext->ContextFlags & (CONTEXT_CONTROL|CONTEXT_INTEGER) & CONTEXT_AREA_MASK)
     {
-#ifdef _X86_
-        x86_thread_state32_t State;
-        StateFlavor = x86_THREAD_STATE32;
-        
-        State.eax = lpContext->Eax;
-        State.ebx = lpContext->Ebx;
-        State.ecx = lpContext->Ecx;
-        State.edx = lpContext->Edx;
-        State.edi = lpContext->Edi;
-        State.esi = lpContext->Esi;
-        State.ebp = lpContext->Ebp;
-        State.esp = lpContext->Esp;
-        State.ss = lpContext->SegSs;
-        State.eflags = lpContext->EFlags;
-        State.eip = lpContext->Eip;
-        State.cs = lpContext->SegCs;
-        State.ds = lpContext->SegDs_PAL_Undefined;
-        State.es = lpContext->SegEs_PAL_Undefined;
-        State.fs = lpContext->SegFs_PAL_Undefined;
-        State.gs = lpContext->SegGs_PAL_Undefined;
-#elif defined(_AMD64_)
+#ifdef _AMD64_
         x86_thread_state64_t State;
         StateFlavor = x86_THREAD_STATE64;
 
@@ -1250,11 +1222,7 @@ CONTEXT_SetThreadContextOnPort(
     if (lpContext->ContextFlags & CONTEXT_ALL_FLOATING & CONTEXT_AREA_MASK)
     {
         
-#ifdef _X86_
-        x86_float_state32_t State;
-        StateFlavor = x86_FLOAT_STATE32;
-        StateCount = sizeof(State) / sizeof(natural_t);
-#elif defined(_AMD64_)
+#ifdef _AMD64_
 #ifdef XSTATE_SUPPORTED
         // We're relying on the fact that the initial portion of
         // x86_avx_state64_t is identical to x86_float_state64_t.
@@ -1305,23 +1273,7 @@ CONTEXT_SetThreadContextOnPort(
 
         if (lpContext->ContextFlags & CONTEXT_FLOATING_POINT & CONTEXT_AREA_MASK)
         {
-#ifdef _X86_
-            *(DWORD*)&State.fpu_fcw = lpContext->FloatSave.ControlWord;
-            *(DWORD*)&State.fpu_fsw = lpContext->FloatSave.StatusWord;
-            State.fpu_ftw = lpContext->FloatSave.TagWord;
-            State.fpu_ip = lpContext->FloatSave.ErrorOffset;
-            State.fpu_cs = lpContext->FloatSave.ErrorSelector;
-            State.fpu_dp = lpContext->FloatSave.DataOffset;
-            State.fpu_ds = lpContext->FloatSave.DataSelector;
-            State.fpu_mxcsr = lpContext->FloatSave.Cr0NpxState;
-
-            // Windows stores the floating point registers in a packed layout (each 10-byte register end to
-            // end for a total of 80 bytes). But Mach returns each register in an 16-bit structure (presumably
-            // for alignment purposes). So we can't just memcpy the registers over in a single block, we need
-            // to copy them individually.
-            for (int i = 0; i < 8; i++)
-                memcpy((&State.fpu_stmm0)[i].mmst_reg, &lpContext->FloatSave.RegisterArea[i * 10], 10);
-#elif defined(_AMD64_)
+#ifdef _AMD64_
             *(DWORD*)&State.__fpu_fcw = lpContext->FltSave.ControlWord;
             *(DWORD*)&State.__fpu_fsw = lpContext->FltSave.StatusWord;
             State.__fpu_ftw = lpContext->FltSave.TagWord;
@@ -1344,16 +1296,6 @@ CONTEXT_SetThreadContextOnPort(
 #error Unexpected architecture.
 #endif
         }
-
-#ifdef _X86_
-        if (lpContext->ContextFlags & CONTEXT_EXTENDED_REGISTERS & CONTEXT_AREA_MASK)
-        {
-            // The only extended register information that Mach will tell us about are the xmm register
-            // values. Both Windows and Mach store the registers in a packed layout (each of the 8 registers
-            // is 16 bytes) so we can simply memcpy them across.
-            memcpy(&State.fpu_xmm0, lpContext->ExtendedRegisters + CONTEXT_EXREG_XMM_OFFSET, 8 * 16);
-        }
-#endif // _X86_
 
 #if defined(_AMD64_) && defined(XSTATE_SUPPORTED)
         if (lpContext->ContextFlags & CONTEXT_XSTATE & CONTEXT_AREA_MASK)
@@ -1441,8 +1383,29 @@ DBG_FlushInstructionCache(
                           IN LPCVOID lpBaseAddress,
                           IN SIZE_T dwSize)
 {
-    // Intrinsic should do the right thing across all platforms
+#ifndef _ARM_
+    // Intrinsic should do the right thing across all platforms (except Linux arm)
     __builtin___clear_cache((char *)lpBaseAddress, (char *)((INT_PTR)lpBaseAddress + dwSize));
+#else // _ARM_
+    // On Linux/arm (at least on 3.10) we found that there is a problem with __do_cache_op (arch/arm/kernel/traps.c)
+    // implementing cacheflush syscall. cacheflush flushes only the first page in range [lpBaseAddress, lpBaseAddress + dwSize)
+    // and leaves other pages in undefined state which causes random tests failures (often due to SIGSEGV) with no particular pattern.
+    //
+    // As a workaround, we call __builtin___clear_cache on each page separately.
 
+    const SIZE_T pageSize = GetVirtualPageSize();
+    INT_PTR begin = (INT_PTR)lpBaseAddress;
+    const INT_PTR end = begin + dwSize;
+
+    while (begin < end)
+    {
+        INT_PTR endOrNextPageBegin = ALIGN_UP(begin + 1, pageSize);
+        if (endOrNextPageBegin > end)
+            endOrNextPageBegin = end;
+
+        __builtin___clear_cache((char *)begin, (char *)endOrNextPageBegin);
+        begin = endOrNextPageBegin;
+    }
+#endif // _ARM_
     return TRUE;
 }

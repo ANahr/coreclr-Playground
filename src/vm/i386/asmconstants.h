@@ -33,9 +33,6 @@
 #define DBG_FRE(dbg,fre) fre
 #endif
 
-//***************************************************************************
- #define HAS_TRACK_CXX_EXCEPTION_CODE_HACK 0
-
 #define INITIAL_SUCCESS_COUNT               0x100
 
 #define DynamicHelperFrameFlags_Default     0
@@ -43,7 +40,7 @@
 #define DynamicHelperFrameFlags_ObjectArg2  2
 
 
-// CONTEXT from rotor_pal.h
+// CONTEXT from pal.h
 #define CONTEXT_Edi 0x9c
 ASMCONSTANTS_C_ASSERT(CONTEXT_Edi == offsetof(CONTEXT,Edi))
 
@@ -68,21 +65,7 @@ ASMCONSTANTS_C_ASSERT(CONTEXT_Eip == offsetof(CONTEXT,Eip))
 #define CONTEXT_Esp 0xc4
 ASMCONSTANTS_C_ASSERT(CONTEXT_Esp == offsetof(CONTEXT,Esp))
 
-// SYSTEM_INFO from rotor_pal.h
-#define SYSTEM_INFO_dwNumberOfProcessors 20 
-ASMCONSTANTS_C_ASSERT(SYSTEM_INFO_dwNumberOfProcessors == offsetof(SYSTEM_INFO,dwNumberOfProcessors))
-
-// SpinConstants from clr/src/vars.h
-#define SpinConstants_dwInitialDuration 0 
-ASMCONSTANTS_C_ASSERT(SpinConstants_dwInitialDuration == offsetof(SpinConstants,dwInitialDuration))
-
-#define SpinConstants_dwMaximumDuration 4 
-ASMCONSTANTS_C_ASSERT(SpinConstants_dwMaximumDuration == offsetof(SpinConstants,dwMaximumDuration))
-
-#define SpinConstants_dwBackoffFactor 8
-ASMCONSTANTS_C_ASSERT(SpinConstants_dwBackoffFactor == offsetof(SpinConstants,dwBackoffFactor))
-
-#ifndef WIN64EXCEPTIONS
+#ifndef FEATURE_EH_FUNCLETS
 // EHContext from clr/src/vm/i386/cgencpu.h
 #define EHContext_Eax 0x00
 ASMCONSTANTS_C_ASSERT(EHContext_Eax == offsetof(EHContext,Eax))
@@ -110,7 +93,7 @@ ASMCONSTANTS_C_ASSERT(EHContext_Esp == offsetof(EHContext,Esp))
 
 #define EHContext_Eip 0x20
 ASMCONSTANTS_C_ASSERT(EHContext_Eip == offsetof(EHContext,Eip))
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 
 
 // from clr/src/fjit/helperframe.h
@@ -179,9 +162,6 @@ ASMCONSTANTS_C_ASSERT(CORINFO_IndexOutOfRangeException_ASM == CORINFO_IndexOutOf
 #define CORINFO_OverflowException_ASM 4
 ASMCONSTANTS_C_ASSERT(CORINFO_OverflowException_ASM == CORINFO_OverflowException)
 
-#define CORINFO_SynchronizationLockException_ASM 5
-ASMCONSTANTS_C_ASSERT(CORINFO_SynchronizationLockException_ASM == CORINFO_SynchronizationLockException)
-
 #define CORINFO_ArrayTypeMismatchException_ASM 6
 ASMCONSTANTS_C_ASSERT(CORINFO_ArrayTypeMismatchException_ASM == CORINFO_ArrayTypeMismatchException)
 
@@ -193,17 +173,6 @@ ASMCONSTANTS_C_ASSERT(CORINFO_ArgumentException_ASM == CORINFO_ArgumentException
 
 
 #ifndef CROSSGEN_COMPILE
-
-// from clr/src/vm/threads.h
-#if defined(TRACK_CXX_EXCEPTION_CODE_HACK) // Is C++ exception code tracking turned on?
-    #define Thread_m_LastCxxSEHExceptionCode      0x20
-    ASMCONSTANTS_C_ASSERT(Thread_m_LastCxxSEHExceptionCode == offsetof(Thread, m_LastCxxSEHExceptionCode))
-
-    #define Thread_m_Context    0x3C
-#else
-    #define Thread_m_Context    0x38
-#endif // TRACK_CXX_EXCEPTION_CODE_HACK
-ASMCONSTANTS_C_ASSERT(Thread_m_Context == offsetof(Thread, m_Context))
 
 #define Thread_m_State      0x04
 ASMCONSTANTS_C_ASSERT(Thread_m_State == offsetof(Thread, m_State))
@@ -220,14 +189,11 @@ ASMCONSTANTS_C_ASSERT(Thread_m_pFrame == offsetof(Thread, m_pFrame))
 #endif // CROSSGEN_COMPILE
 
 #ifndef CROSSGEN_COMPILE
-#define Thread_m_dwLockCount 0x18
+#define Thread_m_dwLockCount 0x14
 ASMCONSTANTS_C_ASSERT(Thread_m_dwLockCount == offsetof(Thread, m_dwLockCount))
 
-#define Thread_m_ThreadId 0x1C
+#define Thread_m_ThreadId 0x18
 ASMCONSTANTS_C_ASSERT(Thread_m_ThreadId == offsetof(Thread, m_ThreadId))
-
-#define TS_CatchAtSafePoint_ASM 0x5F
-ASMCONSTANTS_C_ASSERT(Thread::TS_CatchAtSafePoint == TS_CatchAtSafePoint_ASM)
 
 #ifdef FEATURE_HIJACK
 #define TS_Hijacked_ASM 0x80
@@ -238,82 +204,6 @@ ASMCONSTANTS_C_ASSERT(Thread::TS_Hijacked == TS_Hijacked_ASM)
 
 
 // from clr/src/vm/appdomain.hpp
-
-#define AppDomain__m_dwId 0x4
-ASMCONSTANTS_C_ASSERT(AppDomain__m_dwId == offsetof(AppDomain, m_dwId));
-
-// from clr/src/vm/ceeload.cpp
-
-// from clr/src/vm/syncblk.h
-#define SizeOfSyncTableEntry_ASM 8
-ASMCONSTANTS_C_ASSERT(sizeof(SyncTableEntry) == SizeOfSyncTableEntry_ASM)
-
-#define SyncBlockIndexOffset_ASM 4
-ASMCONSTANTS_C_ASSERT(sizeof(ObjHeader) - offsetof(ObjHeader, m_SyncBlockValue) == SyncBlockIndexOffset_ASM)
-
-#ifndef __GNUC__
-#define SyncTableEntry_m_SyncBlock 0
-ASMCONSTANTS_C_ASSERT(offsetof(SyncTableEntry, m_SyncBlock) == SyncTableEntry_m_SyncBlock)
-
-#define SyncBlock_m_Monitor 0
-ASMCONSTANTS_C_ASSERT(offsetof(SyncBlock, m_Monitor) == SyncBlock_m_Monitor)
-
-#define AwareLock_m_MonitorHeld 0
-ASMCONSTANTS_C_ASSERT(offsetof(AwareLock, m_MonitorHeld) == AwareLock_m_MonitorHeld)
-#else
-// The following 3 offsets have value of 0, and must be
-// defined to be an empty string. Otherwise, gas may generate assembly
-// code with 0 displacement if 0 is left in the displacement field
-// of an instruction.
-#define SyncTableEntry_m_SyncBlock // 0
-ASMCONSTANTS_C_ASSERT(offsetof(SyncTableEntry, m_SyncBlock) == 0)
-
-#define SyncBlock_m_Monitor // 0
-ASMCONSTANTS_C_ASSERT(offsetof(SyncBlock, m_Monitor) == 0)
-
-#define AwareLock_m_MonitorHeld // 0
-ASMCONSTANTS_C_ASSERT(offsetof(AwareLock, m_MonitorHeld) == 0)
-#endif // !__GNUC__
-
-#define AwareLock_m_HoldingThread 8
-ASMCONSTANTS_C_ASSERT(offsetof(AwareLock, m_HoldingThread) == AwareLock_m_HoldingThread)
-
-#define AwareLock_m_Recursion 4
-ASMCONSTANTS_C_ASSERT(offsetof(AwareLock, m_Recursion) == AwareLock_m_Recursion)
-
-#define BIT_SBLK_IS_HASH_OR_SYNCBLKINDEX_ASM 0x08000000
-ASMCONSTANTS_C_ASSERT(BIT_SBLK_IS_HASH_OR_SYNCBLKINDEX_ASM == BIT_SBLK_IS_HASH_OR_SYNCBLKINDEX)
-
-#define BIT_SBLK_SPIN_LOCK_ASM 0x10000000
-ASMCONSTANTS_C_ASSERT(BIT_SBLK_SPIN_LOCK_ASM == BIT_SBLK_SPIN_LOCK)
-
-#define SBLK_MASK_LOCK_THREADID_ASM 0x000003FF   // special value of 0 + 1023 thread ids
-ASMCONSTANTS_C_ASSERT(SBLK_MASK_LOCK_THREADID_ASM == SBLK_MASK_LOCK_THREADID)
-
-#define SBLK_MASK_LOCK_RECLEVEL_ASM 0x0000FC00   // 64 recursion levels
-ASMCONSTANTS_C_ASSERT(SBLK_MASK_LOCK_RECLEVEL_ASM == SBLK_MASK_LOCK_RECLEVEL)
-
-#define SBLK_LOCK_RECLEVEL_INC_ASM 0x00000400   // each level is this much higher than the previous one
-ASMCONSTANTS_C_ASSERT(SBLK_LOCK_RECLEVEL_INC_ASM == SBLK_LOCK_RECLEVEL_INC)
-
-#define BIT_SBLK_IS_HASHCODE_ASM 0x04000000
-ASMCONSTANTS_C_ASSERT(BIT_SBLK_IS_HASHCODE_ASM == BIT_SBLK_IS_HASHCODE)
-
-#define MASK_SYNCBLOCKINDEX_ASM  0x03ffffff // ((1<<SYNCBLOCKINDEX_BITS)-1)
-ASMCONSTANTS_C_ASSERT(MASK_SYNCBLOCKINDEX_ASM == MASK_SYNCBLOCKINDEX)
-
-// BIT_SBLK_IS_HASH_OR_SYNCBLKINDEX_ASM + BIT_SBLK_SPIN_LOCK_ASM + 
-// SBLK_MASK_LOCK_THREADID_ASM + SBLK_MASK_LOCK_RECLEVEL_ASM
-#define SBLK_COMBINED_MASK_ASM 0x1800ffff
-ASMCONSTANTS_C_ASSERT(SBLK_COMBINED_MASK_ASM == (BIT_SBLK_IS_HASH_OR_SYNCBLKINDEX + BIT_SBLK_SPIN_LOCK + SBLK_MASK_LOCK_THREADID + SBLK_MASK_LOCK_RECLEVEL))
-
-// BIT_SBLK_IS_HASH_OR_SYNCBLKINDEX_ASM + BIT_SBLK_SPIN_LOCK_ASM
-#define BIT_SBLK_IS_HASH_OR_SYNCBLKINDEX_SPIN_LOCK_ASM 0x18000000
-ASMCONSTANTS_C_ASSERT(BIT_SBLK_IS_HASH_OR_SYNCBLKINDEX_SPIN_LOCK_ASM == (BIT_SBLK_IS_HASH_OR_SYNCBLKINDEX + BIT_SBLK_SPIN_LOCK))
-
-// BIT_SBLK_IS_HASHCODE + BIT_SBLK_SPIN_LOCK
-#define BIT_SBLK_IS_HASHCODE_OR_SPIN_LOCK_ASM 0x14000000
-ASMCONSTANTS_C_ASSERT(BIT_SBLK_IS_HASHCODE_OR_SPIN_LOCK_ASM == (BIT_SBLK_IS_HASHCODE + BIT_SBLK_SPIN_LOCK))
 
 // This is the offset from EBP at which the original CONTEXT is stored in one of the 
 // RedirectedHandledJITCase*_Stub functions.
@@ -358,25 +248,6 @@ ASMCONSTANTS_C_ASSERT(SIZEOF_FrameHandlerExRecordWithBarrier == sizeof(FrameHand
 #endif
 
 
-#ifdef MDA_SUPPORTED
-#define SIZEOF_StackImbalanceCookie 0x14
-ASMCONSTANTS_C_ASSERT(SIZEOF_StackImbalanceCookie == sizeof(StackImbalanceCookie))
-
-#define StackImbalanceCookie__m_pMD            0x00
-#define StackImbalanceCookie__m_pTarget        0x04
-#define StackImbalanceCookie__m_dwStackArgSize 0x08
-#define StackImbalanceCookie__m_callConv       0x0c
-#define StackImbalanceCookie__m_dwSavedEsp     0x10
-#define StackImbalanceCookie__HAS_FP_RETURN_VALUE 0x80000000
-
-ASMCONSTANTS_C_ASSERT(StackImbalanceCookie__m_pMD            == offsetof(StackImbalanceCookie, m_pMD))
-ASMCONSTANTS_C_ASSERT(StackImbalanceCookie__m_pTarget        == offsetof(StackImbalanceCookie, m_pTarget))
-ASMCONSTANTS_C_ASSERT(StackImbalanceCookie__m_dwStackArgSize == offsetof(StackImbalanceCookie, m_dwStackArgSize))
-ASMCONSTANTS_C_ASSERT(StackImbalanceCookie__m_callConv       == offsetof(StackImbalanceCookie, m_callConv))
-ASMCONSTANTS_C_ASSERT(StackImbalanceCookie__m_dwSavedEsp     == offsetof(StackImbalanceCookie, m_dwSavedEsp))
-ASMCONSTANTS_C_ASSERT(StackImbalanceCookie__HAS_FP_RETURN_VALUE == StackImbalanceCookie::HAS_FP_RETURN_VALUE)
-#endif // MDA_SUPPORTED
-
 #define MethodDesc_m_wFlags                   DBG_FRE(0x1a, 0x06)
 ASMCONSTANTS_C_ASSERT(MethodDesc_m_wFlags == offsetof(MethodDesc, m_wFlags))
 
@@ -403,9 +274,6 @@ ASMCONSTANTS_C_ASSERT(ASM__VTABLE_SLOTS_PER_CHUNK == VTABLE_SLOTS_PER_CHUNK)
 #define ASM__VTABLE_SLOTS_PER_CHUNK_LOG2 3
 ASMCONSTANTS_C_ASSERT(ASM__VTABLE_SLOTS_PER_CHUNK_LOG2 == VTABLE_SLOTS_PER_CHUNK_LOG2)
 
-#define TLS_GETTER_MAX_SIZE_ASM DBG_FRE(0x20, 0x10)
-ASMCONSTANTS_C_ASSERT(TLS_GETTER_MAX_SIZE_ASM == TLS_GETTER_MAX_SIZE)
-
 #define JIT_TailCall_StackOffsetToFlags       0x08
 
 #define CallDescrData__pSrc                0x00
@@ -429,20 +297,32 @@ ASMCONSTANTS_C_ASSERT(CallDescrData__returnValue          == offsetof(CallDescrD
 #define               UMEntryThunk__m_pUMThunkMarshInfo     0x0C
 ASMCONSTANTS_C_ASSERT(UMEntryThunk__m_pUMThunkMarshInfo == offsetof(UMEntryThunk, m_pUMThunkMarshInfo))
 
-#define               UMEntryThunk__m_dwDomainId            0x10
-ASMCONSTANTS_C_ASSERT(UMEntryThunk__m_dwDomainId == offsetof(UMEntryThunk, m_dwDomainId))
-
 #define               UMThunkMarshInfo__m_pILStub           0x00
 ASMCONSTANTS_C_ASSERT(UMThunkMarshInfo__m_pILStub == offsetof(UMThunkMarshInfo, m_pILStub))
 
 #define               UMThunkMarshInfo__m_cbActualArgSize   0x04
 ASMCONSTANTS_C_ASSERT(UMThunkMarshInfo__m_cbActualArgSize == offsetof(UMThunkMarshInfo, m_cbActualArgSize))
 
-#ifndef CROSSGEN_COMPILE
-#define               Thread__m_pDomain                     0x14
-ASMCONSTANTS_C_ASSERT(Thread__m_pDomain == offsetof(Thread, m_pDomain));
+#ifdef FEATURE_STUBS_AS_IL
+#define               UMThunkMarshInfo__m_cbRetPop   0x08
+ASMCONSTANTS_C_ASSERT(UMThunkMarshInfo__m_cbRetPop == offsetof(UMThunkMarshInfo, m_cbRetPop))
+#endif //FEATURE_STUBS_AS_IL
 
-#endif
+// For JIT_PInvokeBegin and JIT_PInvokeEnd helpers
+#define               Frame__m_Next 0x04
+ASMCONSTANTS_C_ASSERT(Frame__m_Next == offsetof(Frame, m_Next));
+
+#define               InlinedCallFrame__m_Datum 0x08
+ASMCONSTANTS_C_ASSERT(InlinedCallFrame__m_Datum == offsetof(InlinedCallFrame, m_Datum));
+
+#define               InlinedCallFrame__m_pCallSiteSP 0x0C
+ASMCONSTANTS_C_ASSERT(InlinedCallFrame__m_pCallSiteSP == offsetof(InlinedCallFrame, m_pCallSiteSP));
+
+#define               InlinedCallFrame__m_pCallerReturnAddress 0x10
+ASMCONSTANTS_C_ASSERT(InlinedCallFrame__m_pCallerReturnAddress == offsetof(InlinedCallFrame, m_pCallerReturnAddress));
+
+#define               InlinedCallFrame__m_pCalleeSavedFP 0x14
+ASMCONSTANTS_C_ASSERT(InlinedCallFrame__m_pCalleeSavedFP == offsetof(InlinedCallFrame, m_pCalleeSavedFP));
 
 #ifdef FEATURE_STUBS_AS_IL
 // DelegateObject from src/vm/object.h
@@ -507,6 +387,6 @@ private:
 void BogusFunction()
 {
 	// Sample usage to generate the error
-	FindCompileTimeConstant<offsetof(AppDomain, m_dwId)> bogus_variable;
+	FindCompileTimeConstant<offsetof(Thread, m_ExceptionState)> bogus_variable;
 }
 #endif // defined(__cplusplus) && defined(USE_COMPILE_TIME_CONSTANT_FINDER)

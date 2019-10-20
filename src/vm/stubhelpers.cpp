@@ -16,12 +16,10 @@
 #include "dllimport.h"
 #include "fieldmarshaler.h"
 #include "comdelegate.h"
-#include "security.h"
 #include "eventtrace.h"
 #include "comdatetime.h"
 #include "gcheaputilities.h"
 #include "interoputil.h"
-#include "gcscan.h"
 
 #ifdef FEATURE_COMINTEROP
 #include <oletls.h>
@@ -54,11 +52,10 @@ void StubHelpers::ValidateObjectInternal(Object *pObjUNSAFE, BOOL fValidateNextO
 	NOTHROW;
 	GC_NOTRIGGER;
 	MODE_ANY;
-	SO_TOLERANT;
 }
 	CONTRACTL_END;
 
-	_ASSERTE(GCScan::GetGcRuntimeStructuresValid());
+	_ASSERTE(GCHeapUtilities::GetGCHeap()->RuntimeStructuresValid());
 
 	// validate the object - there's no need to validate next object's
 	// header since we validate the next object explicitly below
@@ -97,7 +94,7 @@ MethodDesc *StubHelpers::ResolveInteropMethod(Object *pThisUNSAFE, MethodDesc *p
         MethodTable *pMT = pThisUNSAFE->GetMethodTable();
 
         _ASSERTE(pMT->IsDelegate());
-        return ((DelegateEEClass *)pMT->GetClass())->m_pInvokeMethod;
+        return ((DelegateEEClass *)pMT->GetClass())->GetInvokeMethod();
     }
     return pMD;
 }
@@ -159,7 +156,7 @@ void StubHelpers::ProcessByrefValidationList()
         {
             entry = s_ByrefValidationEntries[i];
 
-            Object *pObjUNSAFE = GCHeapUtilities::GetGCHeap()->GetContainingObject(entry.pByref);
+            Object *pObjUNSAFE = GCHeapUtilities::GetGCHeap()->GetContainingObject(entry.pByref, false);
             ValidateObjectInternal(pObjUNSAFE, TRUE);
         }
     }
@@ -183,7 +180,7 @@ void StubHelpers::ProcessByrefValidationList()
 
 #endif // VERIFY_HEAP
 
-FCIMPL1(double, StubHelpers::DateMarshaler__ConvertToNative,  INT64 managedDate)
+FCIMPL1_V(double, StubHelpers::DateMarshaler__ConvertToNative,  INT64 managedDate)
 {
     FCALL_CONTRACT;
 
@@ -281,12 +278,6 @@ FORCEINLINE static SOleTlsData *GetOrCreateOleTlsData()
 FORCEINLINE static void *GetCOMIPFromRCW_GetTargetNoInterception(IUnknown *pUnk, ComPlusCallInfo *pComInfo)
 {
     LIMITED_METHOD_CONTRACT;
-
-#ifdef _TARGET_X86_
-    _ASSERTE(pComInfo->m_pInterceptStub == NULL || pComInfo->m_pInterceptStub == (LPVOID)-1);
-    _ASSERTE(!pComInfo->HasCopyCtorArgs());
-#endif // _TARGET_X86_
-    _ASSERTE(!NDirect::IsHostHookEnabled());
 
     LPVOID *lpVtbl = *(LPVOID **)pUnk;
     return lpVtbl[pComInfo->m_cachedComSlot];
@@ -709,6 +700,9 @@ FCIMPL4(IUnknown*, StubHelpers::InterfaceMarshaler__ConvertToNative, Object* pOb
     // This is only called in IL stubs which are in CER, so we don't need to worry about ThreadAbort
     HELPER_METHOD_FRAME_BEGIN_RET_ATTRIB_1(Frame::FRAME_ATTR_NO_THREAD_ABORT, pObj);
 
+    // We're going to be making some COM calls, better initialize COM.
+    EnsureComStarted();
+
     pIntf = MarshalObjectToInterface(&pObj, pItfMT, pClsMT, dwFlags);
 
     // No exception will be thrown here (including thread abort as it is delayed in IL stubs)
@@ -729,6 +723,9 @@ FCIMPL4(Object*, StubHelpers::InterfaceMarshaler__ConvertToManaged, IUnknown **p
     
     OBJECTREF pObj = NULL;
     HELPER_METHOD_FRAME_BEGIN_RET_1(pObj);
+    
+    // We're going to be making some COM calls, better initialize COM.
+    EnsureComStarted();
 
     UnmarshalObjectFromInterface(&pObj, ppUnk, pItfMT, pClsMT, dwFlags);
 
@@ -742,12 +739,12 @@ void QCALLTYPE StubHelpers::InterfaceMarshaler__ClearNative(IUnknown * pUnk)
 {
     QCALL_CONTRACT;
 
-    BEGIN_QCALL_SO_TOLERANT;
+    BEGIN_QCALL;
 
     ULONG cbRef = SafeReleasePreemp(pUnk);
     LogInteropRelease(pUnk, cbRef, "InterfaceMarshalerBase::ClearNative: In/Out release");
 
-    END_QCALL_SO_TOLERANT;
+    END_QCALL;
 }
 #include <optdefault.h>
 
@@ -775,10 +772,7 @@ FCIMPL1(StringObject*, StubHelpers::UriMarshaler__GetRawUriFromNative, ABI::Wind
         GCX_PREEMP();
 
         // Get the RawUri string from the WinRT URI object
-        {
-            LeaveRuntimeHolder lrh(**(size_t**)(IUnknown*)pIUriRC);
-            IfFailThrow(pIUriRC->get_RawUri(hsRawUriName.Address()));
-        }
+        IfFailThrow(pIUriRC->get_RawUri(hsRawUriName.Address()));
 
         pwszRawUri = hsRawUriName.GetRawBuffer(&cchRawUri);
     }
@@ -811,69 +805,6 @@ FCIMPL2(IUnknown*, StubHelpers::UriMarshaler__CreateNativeUriInstance, WCHAR* pR
     return pIUriRC;
 }
 FCIMPLEND
-
-ABI::Windows::UI::Xaml::Interop::INotifyCollectionChangedEventArgs* QCALLTYPE 
-StubHelpers::EventArgsMarshaler__CreateNativeNCCEventArgsInstance
-(int action, ABI::Windows::UI::Xaml::Interop::IBindableVector *newItem, ABI::Windows::UI::Xaml::Interop::IBindableVector *oldItem, int newIndex, int oldIndex)
-{
-    QCALL_CONTRACT;
-
-   ABI::Windows::UI::Xaml::Interop::INotifyCollectionChangedEventArgs *pArgsRC = NULL;
-
-    BEGIN_QCALL;
-
-    EventArgsMarshalingInfo *marshalingInfo = GetAppDomain()->GetMarshalingData()->GetEventArgsMarshalingInfo();
-    ABI::Windows::UI::Xaml::Interop::INotifyCollectionChangedEventArgsFactory *pFactory = marshalingInfo->GetNCCEventArgsFactory();
-
-    SafeComHolderPreemp<IInspectable> pInner;
-    HRESULT hr;
-    {
-        LeaveRuntimeHolder lrh(**(size_t **)(IUnknown *)pFactory);
-        hr = pFactory->CreateInstanceWithAllParameters(
-            (ABI::Windows::UI::Xaml::Interop::NotifyCollectionChangedAction)action,
-            (ABI::Windows::UI::Xaml::Interop::IBindableVector *)newItem,
-            (ABI::Windows::UI::Xaml::Interop::IBindableVector *)oldItem,
-            newIndex,
-            oldIndex,
-            NULL,
-            &pInner,
-            &pArgsRC);
-    }
-    IfFailThrow(hr);
-
-    END_QCALL;
-
-    return pArgsRC;
-}
-
-ABI::Windows::UI::Xaml::Data::IPropertyChangedEventArgs* QCALLTYPE 
-	StubHelpers::EventArgsMarshaler__CreateNativePCEventArgsInstance(HSTRING name)
-{
-    QCALL_CONTRACT;
-
-    ABI::Windows::UI::Xaml::Data::IPropertyChangedEventArgs *pArgsRC = NULL;
-
-    BEGIN_QCALL;
-
-    EventArgsMarshalingInfo *marshalingInfo = GetAppDomain()->GetMarshalingData()->GetEventArgsMarshalingInfo();
-    ABI::Windows::UI::Xaml::Data::IPropertyChangedEventArgsFactory *pFactory = marshalingInfo->GetPCEventArgsFactory();
-
-    SafeComHolderPreemp<IInspectable> pInner;
-    HRESULT hr;
-    {
-        LeaveRuntimeHolder lrh(**(size_t **)(IUnknown *)pFactory);
-        hr = pFactory->CreateInstance(
-            name,
-            NULL,
-            &pInner,
-            &pArgsRC);
-    }
-    IfFailThrow(hr);
-
-    END_QCALL;
-
-    return pArgsRC;
-}
 
 // A helper to convert an IP to object using special flags.
 FCIMPL1(Object *, StubHelpers::InterfaceMarshaler__ConvertToManagedWithoutUnboxing, IUnknown *pNative)
@@ -963,7 +894,7 @@ FCIMPL2(ReflectClassBaseObject *, StubHelpers::WinRTTypeNameConverter__GetTypeFr
     HELPER_METHOD_FRAME_BEGIN_RET_2(refClass, refString);
 
     bool isPrimitive;
-    TypeHandle th = WinRTTypeNameConverter::GetManagedTypeFromWinRTTypeName(refString->GetBuffer(), &isPrimitive);
+    TypeHandle th = WinRTTypeNameConverter::LoadManagedTypeForWinRTTypeName(refString->GetBuffer(), /* pLoadBinder */ nullptr, &isPrimitive);
     *pbIsPrimitive = isPrimitive;
     
     refClass = th.GetManagedClassObject();
@@ -1040,7 +971,7 @@ FCIMPL2(IInspectable *, StubHelpers::GetOuterInspectable, Object *pThisUNSAFE, M
 
     OBJECTREF pThis = ObjectToOBJECTREF(pThisUNSAFE);
 
-    if (pThis->GetTrueMethodTable() != pCtorMD->GetMethodTable())
+    if (pThis->GetMethodTable() != pCtorMD->GetMethodTable())
     {
         // this is a composition scenario
         HELPER_METHOD_FRAME_BEGIN_RET_1(pThis);
@@ -1055,24 +986,6 @@ FCIMPL2(IInspectable *, StubHelpers::GetOuterInspectable, Object *pThisUNSAFE, M
     return pInsp;
 }
 FCIMPLEND
-
-#ifdef MDA_SUPPORTED
-FCIMPL2(ExceptionObject*, StubHelpers::TriggerExceptionSwallowedMDA, ExceptionObject* pExceptionUNSAFE, PCODE pManagedTarget)
-{
-    FCALL_CONTRACT;
-    OBJECTREF pException = ObjectToOBJECTREF(pExceptionUNSAFE);
-    HELPER_METHOD_FRAME_BEGIN_RET_1(pException);
-
-    // COM-to-CLR stubs use the target method entry point as their stub context
-    MethodDesc * pMD = Entry2MethodDesc(pManagedTarget, NULL);
-
-    MDA_TRIGGER_ASSISTANT(ExceptionSwallowedOnCallFromCom, ReportViolation(pMD, &pException));
-
-    HELPER_METHOD_FRAME_END();
-    return (ExceptionObject*)OBJECTREFToObject(pException);
-}
-FCIMPLEND
-#endif // MDA_SUPPORTED
 
 #endif // FEATURE_COMINTEROP
 
@@ -1174,9 +1087,10 @@ FCIMPL2(void*, StubHelpers::GetDelegateTarget, DelegateObject *pThisUNSAFE, UINT
     }
 #endif // _TARGET_X86_
 
-#if defined(_WIN64)
+#if defined(BIT64)
     UINT_PTR target = (UINT_PTR)orefThis->GetMethodPtrAux();
 
+    // See code:GenericPInvokeCalliHelper
     // The lowest bit is used to distinguish between MD and target on 64-bit.
     target = (target << 1) | 1;
 
@@ -1186,7 +1100,7 @@ FCIMPL2(void*, StubHelpers::GetDelegateTarget, DelegateObject *pThisUNSAFE, UINT
 
 #elif defined(_TARGET_ARM_)
     // @ARMTODO: Nothing to do for ARM yet since we don't support the hosted path.
-#endif // _WIN64, _TARGET_ARM_
+#endif // BIT64, _TARGET_ARM_
 
     if (pEntryPoint == NULL)
     {
@@ -1214,81 +1128,6 @@ FCIMPL2(void, StubHelpers::ThrowInteropParamException, UINT resID, UINT paramIdx
 FCIMPLEND
 
 #ifdef FEATURE_COMINTEROP
-FCIMPL1(void, StubHelpers::StubRegisterRCW, Object *unsafe_pThis)
-{
-    FCALL_CONTRACT;
-
-    OBJECTREF oref = ObjectToOBJECTREF(unsafe_pThis);
-    HELPER_METHOD_FRAME_BEGIN_1(oref);
-
-#if defined(_DEBUG) && defined(FEATURE_MDA)
-    // Make sure that we only get here because the MDA is turned on.
-    MdaRaceOnRCWCleanup* mda = MDA_GET_ASSISTANT(RaceOnRCWCleanup);
-    _ASSERTE(mda != NULL);
-#endif // _DEBUG
-
-    // RegisterRCW may throw OOM in which case we need to decrement the refcount on the RCW
-    class RCWDecrementUseCountHolder
-    {
-    public:
-        RCW *m_pRCW;
-
-        RCWDecrementUseCountHolder(RCW *pRCW)
-        {
-            LIMITED_METHOD_CONTRACT;
-            m_pRCW = pRCW;
-        }
-
-        ~RCWDecrementUseCountHolder()
-        {
-            WRAPPER_NO_CONTRACT;
-            if (m_pRCW != NULL)
-            {
-                m_pRCW->DecrementUseCount();
-            }
-        }
-    };
-
-    RCWDecrementUseCountHolder holder(oref->GetSyncBlock()->GetInteropInfoNoCreate()->GetRCWAndIncrementUseCount());
-    if (holder.m_pRCW == NULL)
-    {
-        COMPlusThrow(kInvalidComObjectException, IDS_EE_COM_OBJECT_NO_LONGER_HAS_WRAPPER);
-    }
-
-    GET_THREAD()->RegisterRCW(holder.m_pRCW);
-
-    // if we made it here, suppress the DecrementUseCount call
-    holder.m_pRCW = NULL;
-
-    HELPER_METHOD_FRAME_END();
-}
-FCIMPLEND
-
-FCIMPL1(void, StubHelpers::StubUnregisterRCW, Object *unsafe_pThis)
-{
-    FCALL_CONTRACT;
-
-    OBJECTREF oref = ObjectToOBJECTREF(unsafe_pThis);
-    HELPER_METHOD_FRAME_BEGIN_1(oref);
-
-#if defined(_DEBUG) && defined(FEATURE_MDA)
-    // Make sure that we only get here because the MDA is turned on.
-    MdaRaceOnRCWCleanup* mda = MDA_GET_ASSISTANT(RaceOnRCWCleanup);
-    _ASSERTE(mda != NULL);
-#endif // _DEBUG
-
-    RCW *pRCW = GET_THREAD()->UnregisterRCW(INDEBUG(oref->GetSyncBlock()));
-
-    if (pRCW != NULL)
-    {
-        // Thread::RegisterRCW incremented the use count, decrement it now
-        pRCW->DecrementUseCount();
-    }
-
-    HELPER_METHOD_FRAME_END();
-}
-FCIMPLEND
-
 class COMInterfaceMarshalerCallback : public ICOMInterfaceMarshalerCallback
 {
 public :
@@ -1455,18 +1294,10 @@ FCIMPL1(Object*, StubHelpers::GetWinRTFactoryObject, MethodDesc *pCMD)
         if (callback.IsFreeThreaded())
             lpCtxCookie = NULL;
         
-        // Cache the result in the AD-wide cache, unless this is a proxy to a DCOM object on Apollo.  In the
-        // Apollo app model, out of process WinRT servers can have lifetimes independent of the application,
-        // and the cache may wind up with stale pointers if we save proxies to OOP factories.  In addition,
-        // their app model is such that OOP WinRT objects cannot rely on having static state as they can be
-        // forcibly terminated at any point.  Therefore, not caching an OOP WinRT factory object in Apollo
-        // does not lead to correctness issues.
-        //
-        // This is not the same on the desktop, where OOP objects may contain static state, and therefore
-        // we need to keep them alive.
-#ifdef FEATURE_WINDOWSPHONE 
+        // Cache the result in the AD-wide cache, unless this is a proxy to a DCOM object.
+        // Out of process WinRT servers can have lifetimes independent of the application,
+        // and the cache may wind up with stale pointers if we save proxies to OOP factories.
         if (!callback.IsDCOMProxy())
-#endif // FEATURE_WINDOWSPHONE
         {
             pDomain->CacheWinRTFactoryObject(pMTOfTypeToCreate, &refFactory, lpCtxCookie);
         }
@@ -1480,36 +1311,6 @@ FCIMPLEND
 
 
 #endif
-
-#ifdef MDA_SUPPORTED
-NOINLINE static void CheckCollectedDelegateMDAHelper(UMEntryThunk *pEntryThunk)
-{
-    FC_INNER_PROLOG(StubHelpers::CheckCollectedDelegateMDA);
-    HELPER_METHOD_FRAME_BEGIN_ATTRIB(Frame::FRAME_ATTR_EXACT_DEPTH|Frame::FRAME_ATTR_CAPTURE_DEPTH_2);
-
-    CallbackOnCollectedDelegateHelper(pEntryThunk);
-
-    HELPER_METHOD_FRAME_END();
-    FC_INNER_EPILOG();
-}
-
-FCIMPL1(void, StubHelpers::CheckCollectedDelegateMDA, LPVOID pEntryThunk)
-{
-    CONTRACTL
-    {
-        FCALL_CHECK;
-        PRECONDITION(pEntryThunk != NULL);
-    }
-    CONTRACTL_END;
-
-    if (MDA_GET_ASSISTANT(CallbackOnCollectedDelegate) == NULL)
-        return;
-
-    // keep this FCall as fast as possible for the "MDA is off" case
-    FC_INNER_RETURN_VOID(CheckCollectedDelegateMDAHelper((UMEntryThunk *)pEntryThunk));
-}
-FCIMPLEND
-#endif // MDA_SUPPORTED
 
 #ifdef PROFILING_SUPPORTED
 FCIMPL3(SIZE_T, StubHelpers::ProfilerBeginTransitionCallback, SIZE_T pSecretParam, Thread* pThread, Object* unsafe_pThis)
@@ -1561,7 +1362,7 @@ FCIMPL3(SIZE_T, StubHelpers::ProfilerBeginTransitionCallback, SIZE_T pSecretPara
             _ASSERTE(pMT->IsDelegate());
 
             EEClass * pClass = pMT->GetClass();
-            pRealMD = ((DelegateEEClass*)pClass)->m_pInvokeMethod;
+            pRealMD = ((DelegateEEClass*)pClass)->GetInvokeMethod();
             _ASSERTE(pRealMD);
         }
     }
@@ -1701,7 +1502,7 @@ FCIMPL4(Object*, StubHelpers::GetCOMHRExceptionObject, HRESULT hr, MethodDesc *p
             }
         }
 
-        GetExceptionForHR(hr, pErrInfo, fForWinRT, &oThrowable, pResErrorInfo, bHasNonCLRLanguageErrorObject);
+        GetExceptionForHR(hr, pErrInfo, !fForWinRT, &oThrowable, pResErrorInfo, bHasNonCLRLanguageErrorObject);
     }
     HELPER_METHOD_FRAME_END();    
 
@@ -1760,30 +1561,6 @@ FCIMPL1(Object*, StubHelpers::AllocateInternal, EnregisteredTypeHandle pRegister
     HELPER_METHOD_FRAME_END();
 
     return OBJECTREFToObject(objRet);
-}
-FCIMPLEND
-
-FCIMPL1(void, StubHelpers::DecimalCanonicalizeInternal, DECIMAL *pDec)
-{
-    FCALL_CONTRACT;
-
-    if (FAILED(DecimalCanonicalize(pDec)))
-    {
-        FCThrowResVoid(kOverflowException, W("Overflow_Currency"));
-    }
-}
-FCIMPLEND
-
-FCIMPL1(int, StubHelpers::AnsiStrlen, __in_z char* pszStr)
-{
-    FCALL_CONTRACT;
-
-    size_t len = strlen(pszStr);
-
-    // the length should have been checked earlier (see StubHelpers.CheckStringLength)
-    _ASSERTE(FitsInI4(len));
-
-    return (int)len;
 }
 FCIMPLEND
 
@@ -1923,7 +1700,7 @@ FCIMPL2(void, StubHelpers::LogPinnedArgument, MethodDesc *target, Object *pinned
 }
 FCIMPLEND
 
-#ifdef _WIN64
+#ifdef _TARGET_64BIT_
 FCIMPL0(void*, StubHelpers::GetStubContextAddr)
 {
     FCALL_CONTRACT;
@@ -1932,19 +1709,7 @@ FCIMPL0(void*, StubHelpers::GetStubContextAddr)
     UNREACHABLE_MSG("This is a JIT intrinsic!");
 }
 FCIMPLEND
-#endif // _WIN64
-
-#ifdef MDA_SUPPORTED    
-FCIMPL0(void, StubHelpers::TriggerGCForMDA)
-{
-    FCALL_CONTRACT;
-
-    HELPER_METHOD_FRAME_BEGIN_0();
-    TriggerGCForMDAInternal();    
-    HELPER_METHOD_FRAME_END();
-}
-FCIMPLEND
-#endif // MDA_SUPPORTED
+#endif // _TARGET_64BIT_
 
 FCIMPL1(DWORD, StubHelpers::CalcVaListSize, VARARGS *varargs)
 {
@@ -1980,11 +1745,11 @@ FCIMPL2(void, StubHelpers::ArrayTypeCheck, Object* element, PtrArray* arr)
 FCIMPLEND
 #endif // FEATURE_ARRAYSTUB_AS_IL
 
-#ifdef FEATURE_STUBS_AS_IL
+#ifdef FEATURE_MULTICASTSTUB_AS_IL
 FCIMPL2(void, StubHelpers::MulticastDebuggerTraceHelper, Object* element, INT32 count)
 {
     FCALL_CONTRACT;
     FCUnique(0xa5);
 }
 FCIMPLEND
-#endif // FEATURE_STUBS_AS_IL
+#endif // FEATURE_MULTICASTSTUB_AS_IL

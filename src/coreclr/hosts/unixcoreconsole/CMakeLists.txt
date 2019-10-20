@@ -2,8 +2,6 @@ project(unixcoreconsole)
 
 include_directories(../unixcoreruncommon)
 
-add_compile_options(-fPIE)
-
 set(CORECONSOLE_SOURCES 
     coreconsole.cpp 
 )
@@ -30,9 +28,5 @@ if(NOT CLR_CMAKE_PLATFORM_ANDROID)
     pthread
   )
 endif()
-
-add_dependencies(coreconsole
-    coreclr
-)
 
 install_clr(coreconsole)

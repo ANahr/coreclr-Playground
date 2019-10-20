@@ -10,9 +10,9 @@ Module Name:
 
 Abstract:
 
-    Rotor Platform Adaptation Layer (PAL) header file.  This file
-    defines all types and API calls required by the Rotor port of
-    the Microsoft Common Language Runtime.
+    CoreCLR Platform Adaptation Layer (PAL) header file.  This file
+    defines all types and API calls required by the CoreCLR when
+    compiled for Unix-like systems.
 
     Defines which control the behavior of this include file:
       UNICODE - define it to set the Ansi/Unicode neutral names to
@@ -28,7 +28,7 @@ Abstract:
 
     If you want to add a PAL_ wrapper function to a native function in
     here, you also need to edit palinternal.h and win32pal.h.
-    
+
 
 
 --*/
@@ -37,10 +37,12 @@ Abstract:
 #define __PAL_H__
 
 #ifdef PAL_STDCPP_COMPAT
+#include <limits.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <string.h>
 #include <errno.h>
 #include <ctype.h>
@@ -64,9 +66,13 @@ extern "C" {
 #define QUOTE_MACRO_u_HELPER(x)     u###x
 #define QUOTE_MACRO_u(x)            QUOTE_MACRO_u_HELPER(x)
 
-#include <pal_char16.h>
 #include <pal_error.h>
 #include <pal_mstypes.h>
+
+// Native system libray handle.
+// On Unix systems, NATIVE_LIBRARY_HANDLE type represents a library handle not registered with the PAL.
+// To get a HMODULE on Unix, call PAL_RegisterLibraryDirect() on a NATIVE_LIBRARY_HANDLE.
+typedef PVOID NATIVE_LIBRARY_HANDLE;
 
 /******************* Processor-specific glue  *****************************/
 
@@ -137,23 +143,27 @@ extern "C" {
 #define LANG_THAI                        0x1e
 
 /******************* Compiler-specific glue *******************************/
-
-#ifndef _MSC_VER
-#if defined(CORECLR)
-// Define this if the underlying platform supports true 2-pass EH.
-// At the same time, this enables running several PAL instances
-// side-by-side.
-#define FEATURE_PAL_SXS 1
-#endif // CORECLR
+#ifndef THROW_DECL
+#if defined(_MSC_VER) || defined(__llvm__) || !defined(__cplusplus)
+#define THROW_DECL
+#else
+#define THROW_DECL throw()
 #endif // !_MSC_VER
+#endif // !THROW_DECL
 
-#if defined(_MSC_VER) || defined(__llvm__)
+#if defined(_MSC_VER)
 #define DECLSPEC_ALIGN(x)   __declspec(align(x))
 #else
-#define DECLSPEC_ALIGN(x) 
+#define DECLSPEC_ALIGN(x)   __attribute__ ((aligned(x)))
 #endif
 
 #define DECLSPEC_NORETURN   PAL_NORETURN
+
+#ifdef __clang_analyzer__
+#define ANALYZER_NORETURN __attribute((analyzer_noreturn))
+#else
+#define ANALYZER_NORETURN
+#endif
 
 #if !defined(_MSC_VER) || defined(SOURCE_FORMATTING)
 #define __assume(x) (void)0
@@ -167,6 +177,22 @@ extern "C" {
 #define FORCEINLINE inline
 #else
 #define FORCEINLINE __forceinline
+#endif
+#endif
+
+#ifndef NOOPT_ATTRIBUTE
+#if defined(__llvm__)
+#define NOOPT_ATTRIBUTE optnone
+#elif defined(__GNUC__)
+#define NOOPT_ATTRIBUTE optimize("O0")
+#endif
+#endif
+
+#ifndef NODEBUG_ATTRIBUTE
+#if defined(__llvm__)
+#define NODEBUG_ATTRIBUTE __nodebug__
+#elif defined(__GNUC__)
+#define NODEBUG_ATTRIBUTE __artificial__
 #endif
 #endif
 
@@ -186,8 +212,6 @@ typedef __builtin_va_list va_list;
 #define va_end      __builtin_va_end
 
 #define VOID void
-
-#define PUB __attribute__((visibility("default")))
 
 #else // __GNUC__
 
@@ -223,19 +247,6 @@ typedef char * va_list;
 
 #endif // __GNUC__
 
-#endif // !PAL_STDCPP_COMPAT
-
-/******************* PAL-Specific Entrypoints *****************************/
-
-#define IsDebuggerPresent PAL_IsDebuggerPresent
-
-PALIMPORT
-BOOL
-PALAPI
-PAL_IsDebuggerPresent(VOID);
- 
-#define MAXIMUM_SUSPEND_COUNT  MAXCHAR
-
 #define CHAR_BIT      8
 
 #define SCHAR_MIN   (-128)
@@ -253,6 +264,17 @@ PAL_IsDebuggerPresent(VOID);
 #define LONG_MIN    (-2147483647L - 1)
 #define LONG_MAX      2147483647L
 #define ULONG_MAX     0xffffffffUL
+
+#endif // !PAL_STDCPP_COMPAT
+
+/******************* PAL-Specific Entrypoints *****************************/
+
+#define IsDebuggerPresent PAL_IsDebuggerPresent
+
+PALIMPORT
+BOOL
+PALAPI
+PAL_IsDebuggerPresent(VOID);
 
 #define FLT_MAX 3.402823466e+38F
 #define DBL_MAX 1.7976931348623157e+308
@@ -277,16 +299,12 @@ PAL_IsDebuggerPresent(VOID);
 #define _UI32_MAX UINT_MAX
 #define _UI32_MIN UINT_MIN
 
-#ifdef PAL_STDCPP_COMPAT
 #undef NULL
-#endif
 
-#ifndef NULL
 #if defined(__cplusplus)
 #define NULL    0
 #else
-#define NULL    ((void *)0)
-#endif
+#define NULL    ((PVOID)0)
 #endif
 
 #if defined(PAL_STDCPP_COMPAT) && !defined(__cplusplus)
@@ -295,82 +313,13 @@ PAL_IsDebuggerPresent(VOID);
 
 #ifndef PAL_STDCPP_COMPAT
 
-#if _WIN64 || _MSC_VER >= 1400
+#if BIT64 || _MSC_VER >= 1400
 typedef __int64 time_t;
 #else
 typedef long time_t;
 #endif
 #define _TIME_T_DEFINED
 #endif // !PAL_STDCPP_COMPAT
-
-#if ENABLE_DOWNLEVEL_FOR_NLS
-#define MAKELCID(lgid, srtid)  ((DWORD)((((DWORD)((WORD  )(srtid))) << 16) |  \
-                                         ((DWORD)((WORD  )(lgid)))))
-#define LANGIDFROMLCID(lcid)   ((WORD)(lcid))
-#define SORTIDFROMLCID(lcid)   ((WORD)((((DWORD)(lcid)) >> 16) & 0xf))
-
-#define LANG_NEUTRAL                     0x00
-#define LANG_INVARIANT                   0x7f
-#define SUBLANG_NEUTRAL                  0x00    // language neutral
-#define SUBLANG_DEFAULT                  0x01    // user default
-#define SORT_DEFAULT                     0x0     // sorting default
-#define SUBLANG_SYS_DEFAULT              0x02    // system default
-
-#define MAKELANGID(p, s)       ((((WORD  )(s)) << 10) | (WORD  )(p))
-#define PRIMARYLANGID(lgid)    ((WORD  )(lgid) & 0x3ff)
-#define SUBLANGID(lgid)        ((WORD  )(lgid) >> 10)
-
-#define LANG_SYSTEM_DEFAULT    (MAKELANGID(LANG_NEUTRAL, SUBLANG_SYS_DEFAULT))
-#define LANG_USER_DEFAULT      (MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT))
-#define LOCALE_SYSTEM_DEFAULT  (MAKELCID(LANG_SYSTEM_DEFAULT, SORT_DEFAULT))
-#define LOCALE_USER_DEFAULT    (MAKELCID(LANG_USER_DEFAULT, SORT_DEFAULT))
-#define LOCALE_NEUTRAL         (MAKELCID(MAKELANGID(LANG_NEUTRAL, SUBLANG_NEUTRAL), SORT_DEFAULT))
-#define LOCALE_US_ENGLISH      (MAKELCID(MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US), SORT_DEFAULT))
-#define LOCALE_INVARIANT       (MAKELCID(MAKELANGID(LANG_INVARIANT, SUBLANG_NEUTRAL), SORT_DEFAULT))
-
-#define SUBLANG_ENGLISH_US               0x01
-#define SUBLANG_CHINESE_TRADITIONAL      0x01    /* Chinese (Traditional) */
-
-#endif // ENABLE_DOWNLEVEL_FOR_NLS
-
-
-#define CT_CTYPE1                 0x00000001  /* ctype 1 information */
-#define CT_CTYPE2                 0x00000002  /* ctype 2 information */
-#define CT_CTYPE3                 0x00000004  /* ctype 3 information */
-#define C1_UPPER                  0x0001      /* upper case */
-#define C1_LOWER                  0x0002      /* lower case */
-#define C1_DIGIT                  0x0004      /* decimal digits */
-#define C1_SPACE                  0x0008      /* spacing characters */
-#define C1_PUNCT                  0x0010      /* punctuation characters */
-#define C1_CNTRL                  0x0020      /* control characters */
-#define C1_BLANK                  0x0040      /* blank characters */
-#define C1_XDIGIT                 0x0080      /* other digits */
-#define C1_ALPHA                  0x0100      /* any linguistic character */
-#define C2_LEFTTORIGHT            0x0001      /* left to right */
-#define C2_RIGHTTOLEFT            0x0002      /* right to left */
-#define C2_EUROPENUMBER           0x0003      /* European number, digit */
-#define C2_EUROPESEPARATOR        0x0004      /* European numeric separator */
-#define C2_EUROPETERMINATOR       0x0005      /* European numeric terminator */
-#define C2_ARABICNUMBER           0x0006      /* Arabic number */
-#define C2_COMMONSEPARATOR        0x0007      /* common numeric separator */
-#define C2_BLOCKSEPARATOR         0x0008      /* block separator */
-#define C2_SEGMENTSEPARATOR       0x0009      /* segment separator */
-#define C2_WHITESPACE             0x000A      /* white space */
-#define C2_OTHERNEUTRAL           0x000B      /* other neutrals */
-#define C2_NOTAPPLICABLE          0x0000      /* no implicit directionality */
-#define C3_NONSPACING             0x0001      /* nonspacing character */
-#define C3_DIACRITIC              0x0002      /* diacritic mark */
-#define C3_VOWELMARK              0x0004      /* vowel mark */
-#define C3_SYMBOL                 0x0008      /* symbols */
-#define C3_KATAKANA               0x0010      /* katakana character */
-#define C3_HIRAGANA               0x0020      /* hiragana character */
-#define C3_HALFWIDTH              0x0040      /* half width character */
-#define C3_FULLWIDTH              0x0080      /* full width character */
-#define C3_IDEOGRAPH              0x0100      /* ideographic character */
-#define C3_KASHIDA                0x0200      /* Arabic kashida character */
-#define C3_LEXICAL                0x0400      /* lexical character */
-#define C3_ALPHA                  0x8000      /* any ling. char (C1_ALPHA) */
-#define C3_NOTAPPLICABLE          0x0000      /* ctype 3 is not applicable */
 
 #define DLL_PROCESS_ATTACH 1
 #define DLL_THREAD_ATTACH  2
@@ -383,17 +332,25 @@ typedef long time_t;
 #define PAL_INITIALIZE_STD_HANDLES                  0x04
 #define PAL_INITIALIZE_REGISTER_SIGTERM_HANDLER     0x08
 #define PAL_INITIALIZE_DEBUGGER_EXCEPTIONS          0x10
+#define PAL_INITIALIZE_ENSURE_STACK_SIZE            0x20
+#define PAL_INITIALIZE_REGISTER_SIGNALS             0x40
 
 // PAL_Initialize() flags
-#define PAL_INITIALIZE                 (PAL_INITIALIZE_SYNC_THREAD | PAL_INITIALIZE_STD_HANDLES)
+#define PAL_INITIALIZE                 (PAL_INITIALIZE_SYNC_THREAD | \
+                                        PAL_INITIALIZE_STD_HANDLES)
 
-// PAL_InitializeDLL() flags - don't start any of the helper threads
-#define PAL_INITIALIZE_DLL             PAL_INITIALIZE_NONE       
+// PAL_InitializeDLL() flags - don't start any of the helper threads or register any exceptions
+#define PAL_INITIALIZE_DLL              PAL_INITIALIZE_NONE
 
 // PAL_InitializeCoreCLR() flags
-#define PAL_INITIALIZE_CORECLR         (PAL_INITIALIZE | PAL_INITIALIZE_EXEC_ALLOCATOR | PAL_INITIALIZE_REGISTER_SIGTERM_HANDLER | PAL_INITIALIZE_DEBUGGER_EXCEPTIONS)
+#define PAL_INITIALIZE_CORECLR         (PAL_INITIALIZE | \
+                                        PAL_INITIALIZE_EXEC_ALLOCATOR | \
+                                        PAL_INITIALIZE_REGISTER_SIGTERM_HANDLER | \
+                                        PAL_INITIALIZE_DEBUGGER_EXCEPTIONS | \
+                                        PAL_INITIALIZE_ENSURE_STACK_SIZE | \
+                                        PAL_INITIALIZE_REGISTER_SIGNALS)
 
-typedef DWORD (PALAPI *PTHREAD_START_ROUTINE)(LPVOID lpThreadParameter);
+typedef DWORD (PALAPI_NOEXPORT *PTHREAD_START_ROUTINE)(LPVOID lpThreadParameter);
 typedef PTHREAD_START_ROUTINE LPTHREAD_START_ROUTINE;
 
 /******************* PAL-Specific Entrypoints *****************************/
@@ -403,25 +360,31 @@ int
 PALAPI
 PAL_Initialize(
     int argc,
-    const char * const argv[]);
+    char * const argv[]);
+
+PALIMPORT
+void
+PALAPI
+PAL_InitializeWithFlags(
+    DWORD flags);
 
 PALIMPORT
 int
 PALAPI
-PAL_InitializeDLL(VOID);
+PAL_InitializeDLL(
+    VOID);
+
+PALIMPORT
+void
+PALAPI
+PAL_SetInitializeDLLFlags(
+    DWORD flags);
 
 PALIMPORT
 DWORD
 PALAPI
 PAL_InitializeCoreCLR(
     const char *szExePath);
-
-PALIMPORT
-DWORD_PTR
-PALAPI
-PAL_EntryPoint(
-    IN LPTHREAD_START_ROUTINE lpStartAddress,
-    IN LPVOID lpParameter);
 
 /// <summary>
 /// This function shuts down PAL WITHOUT exiting the current process.
@@ -459,6 +422,14 @@ PALAPI
 PAL_SetShutdownCallback(
     IN PSHUTDOWN_CALLBACK callback);
 
+PALIMPORT
+BOOL
+PALAPI
+PAL_GenerateCoreDump(
+    IN LPCSTR dumpName,
+    IN INT dumpType,
+    IN BOOL diag);
+
 typedef VOID (*PPAL_STARTUP_CALLBACK)(
     char *modulePath,
     HMODULE hModule,
@@ -469,6 +440,7 @@ DWORD
 PALAPI
 PAL_RegisterForRuntimeStartup(
     IN DWORD dwProcessId,
+    IN LPCWSTR lpApplicationGroupId,
     IN PPAL_STARTUP_CALLBACK pfnCallback,
     IN PVOID parameter,
     OUT PVOID *ppUnregisterToken);
@@ -484,18 +456,39 @@ BOOL
 PALAPI
 PAL_NotifyRuntimeStarted(VOID);
 
-static const int MAX_DEBUGGER_TRANSPORT_PIPE_NAME_LENGTH = 64;
+#ifdef __APPLE__
+PALIMPORT
+LPCSTR
+PALAPI
+PAL_GetApplicationGroupId();
+#endif
+
+static const unsigned int MAX_DEBUGGER_TRANSPORT_PIPE_NAME_LENGTH = MAX_PATH;
+
+PALIMPORT
+VOID
+PALAPI
+PAL_GetTransportName(
+    const unsigned int MAX_TRANSPORT_NAME_LENGTH,
+    OUT char *name,
+    IN const char *prefix,
+    IN DWORD id,
+    IN const char *applicationGroupId,
+    IN const char *suffix);
+
+PALIMPORT
+VOID
+PALAPI
+PAL_GetTransportPipeName(
+    OUT char *name,
+    IN DWORD id,
+    IN const char *applicationGroupId,
+    IN const char *suffix);
 
 PALIMPORT
 void
 PALAPI
-PAL_GetTransportPipeName(char *name, DWORD id, const char *suffix);
-
-PALIMPORT
-void
-PALAPI
-PAL_InitializeDebug(
-    void);
+PAL_IgnoreProfileSignal(int signalNum);
 
 PALIMPORT
 HINSTANCE
@@ -504,7 +497,7 @@ PAL_RegisterModule(
     IN LPCSTR lpLibFileName);
 
 PALIMPORT
-VOID 
+VOID
 PALAPI
 PAL_UnregisterModule(
     IN HINSTANCE hInstance);
@@ -522,10 +515,9 @@ PAL_GetPALDirectoryW(
 #endif
 
 PALIMPORT
-BOOL
+VOID
 PALAPI
 PAL_Random(
-    IN BOOL bStrong,
     IN OUT LPVOID lpBuffer,
     IN DWORD dwLength);
 
@@ -537,8 +529,25 @@ PAL_ProbeMemory(
     DWORD cbBuffer,
     BOOL fWriteAccess);
 
-/******************* winuser.h Entrypoints *******************************/
+PALIMPORT
+int
+PALAPI
+// Start the jitdump file
+PAL_PerfJitDump_Start(const char* path);
 
+PALIMPORT
+int
+PALAPI
+// Log a method to the jitdump file.
+PAL_PerfJitDump_LogMethod(void* pCode, size_t codeSize, const char* symbol, void* debugInfo, void* unwindInfo);
+
+PALIMPORT
+int
+PALAPI
+// Finish the jitdump file
+PAL_PerfJitDump_Finish();
+
+/******************* winuser.h Entrypoints *******************************/
 PALIMPORT
 LPSTR
 PALAPI
@@ -584,7 +593,6 @@ CharNextExA(
 #define MB_TOPMOST              0x00040000L
 
 #define MB_NOFOCUS                  0x00008000L
-#define MB_SETFOREGROUND            0x00010000L
 #define MB_DEFAULT_DESKTOP_ONLY     0x00020000L
 
 // Note: this is the NT 4.0 and greater value.
@@ -619,50 +627,16 @@ MessageBoxW(
 #define MessageBox MessageBoxA
 #endif
 
-/***************** wincon.h Entrypoints **********************************/
-
-#define CTRL_C_EVENT        0
-#define CTRL_BREAK_EVENT    1
-#define CTRL_CLOSE_EVENT    2
-// 3 is reserved!
-// 4 is reserved!
-#define CTRL_LOGOFF_EVENT   5
-#define CTRL_SHUTDOWN_EVENT 6
-
-typedef
-BOOL
-(PALAPI *PHANDLER_ROUTINE)(
-    DWORD CtrlType
-    );
-
-#ifndef CORECLR
-PALIMPORT
-BOOL
-PALAPI
-GenerateConsoleCtrlEvent(
-    IN DWORD dwCtrlEvent,
-    IN DWORD dwProcessGroupId
-    );
-#endif // !CORECLR
-
-//end wincon.h Entrypoints
-
 // From win32.h
 #ifndef _CRTIMP
-#ifdef __llvm__
+#ifdef __GNUC__
 #define _CRTIMP
-#else // __llvm__
+#else // __GNUC__
 #define _CRTIMP __declspec(dllimport)
-#endif // __llvm__
+#endif // __GNUC__
 #endif // _CRTIMP
 
 /******************* winbase.h Entrypoints and defines ************************/
-PALIMPORT
-BOOL
-PALAPI
-AreFileApisANSI(
-        VOID);
-
 typedef struct _SECURITY_ATTRIBUTES {
             DWORD nLength;
             LPVOID lpSecurityDescriptor;
@@ -728,28 +702,6 @@ CreateFileW(
 #define CreateFile CreateFileA
 #endif
 
-PALIMPORT
-BOOL
-PALAPI
-LockFile(
-    IN HANDLE hFile,
-    IN DWORD dwFileOffsetLow,
-    IN DWORD dwFileOffsetHigh,
-    IN DWORD nNumberOfBytesToLockLow,
-    IN DWORD nNumberOfBytesToLockHigh
-    );
-
-PALIMPORT
-BOOL
-PALAPI
-UnlockFile(
-    IN HANDLE hFile,
-    IN DWORD dwFileOffsetLow,
-    IN DWORD dwFileOffsetHigh,
-    IN DWORD nNumberOfBytesToUnlockLow,
-    IN DWORD nNumberOfBytesToUnlockHigh
-    );
-
 
 PALIMPORT
 DWORD
@@ -799,19 +751,6 @@ DeleteFileW(
 
 
 
-PALIMPORT
-BOOL
-PALAPI
-MoveFileW(
-     IN LPCWSTR lpExistingFileName,
-     IN LPCWSTR lpNewFileName);
-
-#ifdef UNICODE
-#define MoveFile MoveFileW
-#else
-#define MoveFile MoveFileA
-#endif
-
 #define MOVEFILE_REPLACE_EXISTING      0x00000001
 #define MOVEFILE_COPY_ALLOWED          0x00000002
 
@@ -855,7 +794,7 @@ RemoveDirectoryW(
 #define RemoveDirectory RemoveDirectoryA
 #endif
 
-typedef struct _BY_HANDLE_FILE_INFORMATION {  
+typedef struct _BY_HANDLE_FILE_INFORMATION {
     DWORD dwFileAttributes;
     FILETIME ftCreationTime;
     FILETIME ftLastAccessTime;
@@ -999,7 +938,13 @@ SetFileAttributesW(
 #define SetFileAttributes SetFileAttributesA
 #endif
 
-typedef LPVOID LPOVERLAPPED;  // diff from winbase.h
+typedef struct _OVERLAPPED {
+    ULONG_PTR Internal;
+    ULONG_PTR InternalHigh;
+    DWORD Offset;
+    DWORD OffsetHigh;
+    HANDLE  hEvent;
+} OVERLAPPED, *LPOVERLAPPED;
 
 PALIMPORT
 BOOL
@@ -1083,24 +1028,6 @@ CompareFileTime(
         IN CONST FILETIME *lpFileTime2);
 
 PALIMPORT
-BOOL
-PALAPI
-SetFileTime(
-        IN HANDLE hFile,
-        IN CONST FILETIME *lpCreationTime,
-        IN CONST FILETIME *lpLastAccessTime,
-        IN CONST FILETIME *lpLastWriteTime);
-
-PALIMPORT
-BOOL
-PALAPI
-GetFileTime(
-        IN HANDLE hFile,
-        OUT LPFILETIME lpCreationTime,
-        OUT LPFILETIME lpLastAccessTime,
-        OUT LPFILETIME lpLastWriteTime);
-
-PALIMPORT
 VOID
 PALAPI
 GetSystemTimeAsFileTime(
@@ -1130,15 +1057,6 @@ FileTimeToSystemTime(
             IN CONST FILETIME *lpFileTime,
             OUT LPSYSTEMTIME lpSystemTime);
 
-PALIMPORT
-BOOL
-PALAPI
-FileTimeToDosDateTime(
-    IN CONST FILETIME *lpFileTime,
-    OUT LPWORD lpFatDate,
-    OUT LPWORD lpFatTime
-    );
-
 
 
 PALIMPORT
@@ -1146,24 +1064,6 @@ BOOL
 PALAPI
 FlushFileBuffers(
          IN HANDLE hFile);
-
-#define FILE_TYPE_UNKNOWN         0x0000
-#define FILE_TYPE_DISK            0x0001
-#define FILE_TYPE_CHAR            0x0002
-#define FILE_TYPE_PIPE            0x0003
-#define FILE_TYPE_REMOTE          0x8000
-
-PALIMPORT
-DWORD
-PALAPI
-GetFileType(
-        IN HANDLE hFile);
-
-PALIMPORT
-UINT
-PALAPI
-GetConsoleCP(
-         VOID);
 
 PALIMPORT
 UINT
@@ -1233,6 +1133,14 @@ GetTempPathW(
          IN DWORD nBufferLength,
          OUT LPWSTR lpBuffer);
 
+PALIMPORT
+DWORD
+PALAPI
+GetTempPathA(
+         IN DWORD nBufferLength,
+         OUT LPSTR lpBuffer);
+
+
 #ifdef UNICODE
 #define GetTempPath GetTempPathW
 #else
@@ -1264,31 +1172,6 @@ SetCurrentDirectoryW(
 #else
 #define SetCurrentDirectory SetCurrentDirectoryA
 #endif
-
-// maximum length of the NETBIOS name (not including NULL)
-#define MAX_COMPUTERNAME_LENGTH 15
-
-// maximum length of the username (not including NULL)
-#define UNLEN   256
-
-PALIMPORT
-BOOL
-PALAPI
-GetUserNameW(
-    OUT LPWSTR lpBuffer,      // address of name buffer
-    IN OUT LPDWORD nSize );   // address of size of name buffer
-
-PALIMPORT
-BOOL
-PALAPI
-GetComputerNameW(
-    OUT LPWSTR lpBuffer,     // address of name buffer
-    IN OUT LPDWORD nSize);   // address of size of name buffer
-
-#ifdef UNICODE
-#define GetUserName GetUserNameW
-#define GetComputerName GetComputerNameW
-#endif // UNICODE
 
 PALIMPORT
 HANDLE
@@ -1343,6 +1226,19 @@ CreateEventW(
          IN BOOL bInitialState,
          IN LPCWSTR lpName);
 
+PALIMPORT
+HANDLE
+PALAPI
+CreateEventExW(
+         IN LPSECURITY_ATTRIBUTES lpEventAttributes,
+         IN LPCWSTR lpName,
+         IN DWORD dwFlags,
+         IN DWORD dwDesiredAccess);
+
+// CreateEventExW: dwFlags
+#define CREATE_EVENT_MANUAL_RESET ((DWORD)0x1)
+#define CREATE_EVENT_INITIAL_SET ((DWORD)0x2)
+
 #ifdef UNICODE
 #define CreateEvent CreateEventW
 #else
@@ -1381,10 +1277,22 @@ CreateMutexW(
     IN BOOL bInitialOwner,
     IN LPCWSTR lpName);
 
+PALIMPORT
+HANDLE
+PALAPI
+CreateMutexExW(
+    IN LPSECURITY_ATTRIBUTES lpMutexAttributes,
+    IN LPCWSTR lpName,
+    IN DWORD dwFlags,
+    IN DWORD dwDesiredAccess);
+
+// CreateMutexExW: dwFlags
+#define CREATE_MUTEX_INITIAL_OWNER ((DWORD)0x1)
+
 #ifdef UNICODE
-#define CreateMutex  CreateMutexW
+#define CreateMutex CreateMutexW
 #else
-#define CreateMutex  CreateMutexA
+#define CreateMutex CreateMutexA
 #endif
 
 PALIMPORT
@@ -1430,6 +1338,12 @@ PALIMPORT
 DWORD
 PALAPI
 GetCurrentThreadId(
+           VOID);
+
+PALIMPORT
+size_t
+PALAPI
+PAL_GetCurrentOSThreadId(
            VOID);
 
 // To work around multiply-defined symbols in the Carbon framework.
@@ -1575,6 +1489,13 @@ WaitForSingleObject(
 PALIMPORT
 DWORD
 PALAPI
+PAL_WaitForSingleObjectPrioritized(
+            IN HANDLE hHandle,
+            IN DWORD dwMilliseconds);
+
+PALIMPORT
+DWORD
+PALAPI
 WaitForSingleObjectEx(
             IN HANDLE hHandle,
             IN DWORD dwMilliseconds,
@@ -1600,17 +1521,13 @@ WaitForMultipleObjectsEx(
              IN BOOL bAlertable);
 
 PALIMPORT
-RHANDLE
+DWORD
 PALAPI
-PAL_LocalHandleToRemote(
-            IN HANDLE hLocal);
-
-PALIMPORT
-HANDLE
-PALAPI
-PAL_RemoteHandleToLocal(
-            IN RHANDLE hRemote);
-
+SignalObjectAndWait(
+    IN HANDLE hObjectToSignal,
+    IN HANDLE hObjectToWaitOn,
+    IN DWORD dwMilliseconds,
+    IN BOOL bAlertable);
 
 #define DUPLICATE_CLOSE_SOURCE      0x00000001
 #define DUPLICATE_SAME_ACCESS       0x00000002
@@ -1663,6 +1580,17 @@ CreateThread(
          OUT LPDWORD lpThreadId);
 
 PALIMPORT
+HANDLE
+PALAPI
+PAL_CreateThread64(
+    IN LPSECURITY_ATTRIBUTES lpThreadAttributes,
+    IN DWORD dwStackSize,
+    IN LPTHREAD_START_ROUTINE lpStartAddress,
+    IN LPVOID lpParameter,
+    IN DWORD dwCreationFlags,
+    OUT SIZE_T* pThreadId);
+
+PALIMPORT
 PAL_NORETURN
 VOID
 PALAPI
@@ -1670,19 +1598,12 @@ ExitThread(
        IN DWORD dwExitCode);
 
 PALIMPORT
-BOOL
-PALAPI
-GetExitCodeThread(
-           IN HANDLE hThread,
-           IN LPDWORD lpExitCode);
-
-PALIMPORT
 DWORD
 PALAPI
 ResumeThread(
          IN HANDLE hThread);
 
-typedef VOID (PALAPI *PAPCFUNC)(ULONG_PTR dwParam);
+typedef VOID (PALAPI_NOEXPORT *PAPCFUNC)(ULONG_PTR dwParam);
 
 PALIMPORT
 DWORD
@@ -1781,8 +1702,6 @@ typedef struct _CONTEXT {
     ULONG   SegSs;
 
     UCHAR   ExtendedRegisters[MAXIMUM_SUPPORTED_EXTENSION];
-
-    ULONG   ResumeEsp;
 } CONTEXT, *PCONTEXT, *LPCONTEXT;
 
 // To support saving and loading xmm register context we need to know the offset in the ExtendedRegisters
@@ -1793,6 +1712,15 @@ typedef struct _CONTEXT {
 // be either (as long as we're consistent across GetThreadContext() and SetThreadContext() and we don't
 // support any other values in the ExtendedRegisters) but we might as well be as accurate as we can.
 #define CONTEXT_EXREG_XMM_OFFSET 160
+
+typedef struct _KNONVOLATILE_CONTEXT {
+
+    DWORD Edi;
+    DWORD Esi;
+    DWORD Ebx;
+    DWORD Ebp;
+
+} KNONVOLATILE_CONTEXT, *PKNONVOLATILE_CONTEXT;
 
 typedef struct _KNONVOLATILE_CONTEXT_POINTERS {
 
@@ -2481,41 +2409,16 @@ GetThreadTimes(
         OUT LPFILETIME lpExitTime,
         OUT LPFILETIME lpKernelTime,
         OUT LPFILETIME lpUserTime);
-    
+
 #define TLS_OUT_OF_INDEXES ((DWORD)0xFFFFFFFF)
 
 PALIMPORT
-DWORD
-PALAPI
-TlsAlloc(
-     VOID);
-
-PALIMPORT
-LPVOID
-PALAPI
-TlsGetValue(
-        IN DWORD dwTlsIndex);
-
-PALIMPORT
-BOOL
-PALAPI
-TlsSetValue(
-        IN DWORD dwTlsIndex,
-        IN LPVOID lpTlsValue);
-
-PALIMPORT
-BOOL
-PALAPI
-TlsFree(
-    IN DWORD dwTlsIndex);
-
-PALIMPORT
-void *
+PVOID
 PALAPI
 PAL_GetStackBase(VOID);
 
 PALIMPORT
-void *
+PVOID
 PALAPI
 PAL_GetStackLimit(VOID);
 
@@ -2525,18 +2428,35 @@ PALAPI
 PAL_GetLogicalCpuCountFromOS(VOID);
 
 PALIMPORT
+DWORD
+PALAPI
+PAL_GetTotalCpuCount(VOID);
+
+PALIMPORT
+size_t
+PALAPI
+PAL_GetRestrictedPhysicalMemoryLimit(VOID);
+
+PALIMPORT
+BOOL
+PALAPI
+PAL_GetPhysicalMemoryUsed(size_t* val);
+
+PALIMPORT
+BOOL
+PALAPI
+PAL_GetCpuLimit(UINT* val);
+
+PALIMPORT
 size_t
 PALAPI
 PAL_GetLogicalProcessorCacheSizeFromOS(VOID);
 
-typedef BOOL (*ReadMemoryWordCallback)(SIZE_T address, SIZE_T *value);
+typedef BOOL(*UnwindReadMemoryCallback)(PVOID address, PVOID buffer, SIZE_T size);
 
 PALIMPORT BOOL PALAPI PAL_VirtualUnwind(CONTEXT *context, KNONVOLATILE_CONTEXT_POINTERS *contextPointers);
 
-PALIMPORT BOOL PALAPI PAL_VirtualUnwindOutOfProc(CONTEXT *context, 
-                                                 KNONVOLATILE_CONTEXT_POINTERS *contextPointers, 
-                                                 DWORD pid, 
-                                                 ReadMemoryWordCallback readMemCallback);
+PALIMPORT BOOL PALAPI PAL_VirtualUnwindOutOfProc(CONTEXT *context, KNONVOLATILE_CONTEXT_POINTERS *contextPointers, SIZE_T baseAddress, UnwindReadMemoryCallback readMemoryCallback);
 
 #define GetLogicalProcessorCacheSizeFromOS PAL_GetLogicalProcessorCacheSizeFromOS
 
@@ -2564,12 +2484,12 @@ PALIMPORT BOOL PALAPI PAL_VirtualUnwindOutOfProc(CONTEXT *context,
 #define PAL_CS_NATIVE_DATA_SIZE 56
 #elif defined(__NetBSD__) && defined(__i386__)
 #define PAL_CS_NATIVE_DATA_SIZE 56
-#else 
-#warning 
+#else
+#warning
 #error  PAL_CS_NATIVE_DATA_SIZE is not defined for this architecture
 #endif
-    
-// 
+
+//
 typedef struct _CRITICAL_SECTION {
     PVOID DebugInfo;
     LONG LockCount;
@@ -2582,9 +2502,9 @@ typedef struct _CRITICAL_SECTION {
     volatile DWORD dwInitState;
     union CSNativeDataStorage
     {
-        BYTE rgNativeDataStorage[PAL_CS_NATIVE_DATA_SIZE]; 
-        VOID * pvAlign; // make sure the storage is machine-pointer-size aligned
-    } csnds;    
+        BYTE rgNativeDataStorage[PAL_CS_NATIVE_DATA_SIZE];
+        PVOID pvAlign; // make sure the storage is machine-pointer-size aligned
+    } csnds;
 } CRITICAL_SECTION, *PCRITICAL_SECTION, *LPCRITICAL_SECTION;
 
 PALIMPORT VOID PALAPI EnterCriticalSection(IN OUT LPCRITICAL_SECTION lpCriticalSection);
@@ -2621,6 +2541,7 @@ SetErrorMode(
 #define MEM_MAPPED                      0x40000
 #define MEM_TOP_DOWN                    0x100000
 #define MEM_WRITE_WATCH                 0x200000
+#define MEM_LARGE_PAGES                 0x20000000
 #define MEM_RESERVE_EXECUTABLE          0x40000000 // reserve memory using executable memory allocator
 
 PALIMPORT
@@ -2664,6 +2585,8 @@ OpenFileMappingW(
 #define OpenFileMapping OpenFileMappingA
 #endif
 
+typedef INT_PTR (PALAPI_NOEXPORT *FARPROC)();
+
 PALIMPORT
 LPVOID
 PALAPI
@@ -2684,13 +2607,6 @@ MapViewOfFileEx(
           IN DWORD dwFileOffsetLow,
           IN SIZE_T dwNumberOfBytesToMap,
           IN LPVOID lpBaseAddress);
-          
-PALIMPORT
-BOOL
-PALAPI
-FlushViewOfFile(
-        IN LPVOID lpBaseAddress,
-        IN SIZE_T dwNumberOfBytesToFlush);
 
 PALIMPORT
 BOOL
@@ -2714,17 +2630,23 @@ LoadLibraryExW(
         IN DWORD dwFlags);
 
 PALIMPORT
-void *
+NATIVE_LIBRARY_HANDLE
 PALAPI
 PAL_LoadLibraryDirect(
         IN LPCWSTR lpLibFileName);
 
 PALIMPORT
-HMODULE
+BOOL
 PALAPI
-PAL_RegisterLibraryDirect(
-        IN void *dl_handle,
-        IN LPCWSTR lpLibFileName);
+PAL_FreeLibraryDirect(
+        IN NATIVE_LIBRARY_HANDLE dl_handle);
+
+PALIMPORT
+FARPROC
+PALAPI
+PAL_GetProcAddressDirect(
+        IN NATIVE_LIBRARY_HANDLE dl_handle,
+        IN LPCSTR lpProcName);
 
 /*++
 Function:
@@ -2741,7 +2663,8 @@ Return value:
     A valid base address if successful.
     0 if failure
 --*/
-void *
+PALIMPORT
+PVOID
 PALAPI
 PAL_LOADLoadPEFile(HANDLE hFile);
 
@@ -2757,9 +2680,26 @@ Return value:
     TRUE - success
     FALSE - failure (incorrect ptr, etc.)
 --*/
-BOOL 
+PALIMPORT
+BOOL
 PALAPI
-PAL_LOADUnloadPEFile(void * ptr);
+PAL_LOADUnloadPEFile(PVOID ptr);
+
+/*++
+    PAL_LOADMarkSectionAsNotNeeded
+
+    Mark a section as NotNeeded that was loaded by PAL_LOADLoadPEFile().
+
+Parameters:
+    IN ptr - the section address mapped by PAL_LOADLoadPEFile()
+
+Return value:
+    TRUE - success
+    FALSE - failure (incorrect ptr, etc.)
+--*/
+BOOL
+PALAPI
+PAL_LOADMarkSectionAsNotNeeded(void * ptr);
 
 #ifdef UNICODE
 #define LoadLibrary LoadLibraryW
@@ -2768,8 +2708,6 @@ PAL_LOADUnloadPEFile(void * ptr);
 #define LoadLibrary LoadLibraryA
 #define LoadLibraryEx LoadLibraryExA
 #endif
-
-typedef INT_PTR (PALAPI *FARPROC)();
 
 PALIMPORT
 FARPROC
@@ -2826,10 +2764,24 @@ GetModuleFileNameExW(
 #define GetModuleFileNameEx GetModuleFileNameExW
 #endif
 
-// Get base address of the module containing a given symbol 
-PALAPI
+// Get base address of the module containing a given symbol
+PALIMPORT
 LPCVOID
-PAL_GetSymbolModuleBase(void *symbol);
+PALAPI
+PAL_GetSymbolModuleBase(PVOID symbol);
+
+PALIMPORT
+LPCSTR
+PALAPI
+PAL_GetLoadLibraryError();
+
+PALIMPORT
+LPVOID
+PALAPI
+PAL_VirtualReserveFromExecutableMemoryAllocatorWithinRange(
+    IN LPCVOID lpBeginAddress,
+    IN LPCVOID lpEndAddress,
+    IN SIZE_T dwSize);
 
 PALIMPORT
 LPVOID
@@ -2869,7 +2821,7 @@ typedef struct _MEMORYSTATUSEX {
   DWORDLONG ullAvailExtendedVirtual;
 } MEMORYSTATUSEX, *LPMEMORYSTATUSEX;
 
-PALIMPORT 
+PALIMPORT
 BOOL
 PALAPI
 GlobalMemoryStatusEx(
@@ -2893,26 +2845,10 @@ VirtualQuery(
          OUT PMEMORY_BASIC_INFORMATION lpBuffer,
          IN SIZE_T dwLength);
 
-PALIMPORT
-VOID
-PALAPI
-RtlMoveMemory(
-          IN PVOID Destination,
-          IN CONST VOID *Source,
-          IN SIZE_T Length);
-
-PALIMPORT
-VOID
-PALAPI
-RtlZeroMemory(
-    IN PVOID Destination,
-    IN SIZE_T Length);
-
 #define MoveMemory memmove
 #define CopyMemory memcpy
 #define FillMemory(Destination,Length,Fill) memset((Destination),(Fill),(Length))
 #define ZeroMemory(Destination,Length) memset((Destination),0,(Length))
-
 
 PALIMPORT
 HANDLE
@@ -3004,84 +2940,6 @@ FlushInstructionCache(
               IN LPCVOID lpBaseAddress,
               IN SIZE_T dwSize);
 
-#if ENABLE_DOWNLEVEL_FOR_NLS
-
-PALIMPORT
-BOOL
-PALAPI
-GetStringTypeExW(
-         IN LCID Locale,
-         IN DWORD dwInfoType,
-         IN LPCWSTR lpSrcStr,
-         IN int cchSrc,
-         OUT LPWORD lpCharType);
-
-#ifdef UNICODE
-#define GetStringTypeEx GetStringTypeExW
-#endif
-
-#endif // ENABLE_DOWNLEVEL_FOR_NLS
-
-
-#define NORM_IGNORECASE           0x00000001  // ignore case
-#define NORM_IGNOREWIDTH          0x00020000  // ignore width
-
-#define NORM_LINGUISTIC_CASING    0x08000000  // use linguistic rules for casing
-
-#ifdef __APPLE__
-#define NORM_IGNORENONSPACE       0x00000002  // ignore nonspacing chars
-#define NORM_IGNORESYMBOLS        0x00000004  // ignore symbols
-#define NORM_IGNOREKANATYPE       0x00010000  // ignore kanatype
-#define SORT_STRINGSORT           0x00001000  // use string sort method
-#endif // __APPLE__
-
-
-typedef struct nlsversioninfo { 
-  DWORD     dwNLSVersionInfoSize; 
-  DWORD     dwNLSVersion; 
-  DWORD     dwDefinedVersion; 
-} NLSVERSIONINFO, *LPNLSVERSIONINFO; 
-
-#define CSTR_LESS_THAN     1
-#define CSTR_EQUAL         2
-#define CSTR_GREATER_THAN  3
-
-#if ENABLE_DOWNLEVEL_FOR_NLS
-
-
-PALIMPORT
-int
-PALAPI
-CompareStringW(
-    IN LCID     Locale,
-    IN DWORD    dwCmpFlags,
-    IN LPCWSTR  lpString1,
-    IN int      cchCount1,
-    IN LPCWSTR  lpString2,
-    IN int      cchCount2);
-
-#endif // ENABLE_DOWNLEVEL_FOR_NLS
-
-
-PALIMPORT
-int
-PALAPI
-CompareStringEx(
-    IN LPCWSTR lpLocaleName,
-    IN DWORD    dwCmpFlags,
-    IN LPCWSTR  lpString1,
-    IN int      cchCount1,
-    IN LPCWSTR  lpString2,
-    IN int      cchCount2,
-    IN LPNLSVERSIONINFO lpVersionInformation,
-    IN LPVOID lpReserved,
-    IN LPARAM lParam);
-
-
-#ifdef UNICODE
-#define CompareString  CompareStringW
-#endif
-
 #define MAX_LEADBYTES         12
 #define MAX_DEFAULTCHAR       2
 
@@ -3116,13 +2974,6 @@ PALAPI
 IsDBCSLeadByte(
         IN BYTE TestChar);
 
-PALIMPORT
-BOOL
-PALAPI
-IsValidCodePage(
-        IN UINT CodePage);
-        
-
 #define MB_PRECOMPOSED            0x00000001
 #define MB_ERR_INVALID_CHARS      0x00000008
 
@@ -3152,692 +3003,6 @@ WideCharToMultiByte(
             IN LPCSTR lpDefaultChar,
             OUT LPBOOL lpUsedDefaultChar);
 
-#if ENABLE_DOWNLEVEL_FOR_NLS
-
-PALIMPORT
-LANGID
-PALAPI
-GetSystemDefaultLangID(
-               void);
-
-PALIMPORT
-LANGID
-PALAPI
-GetUserDefaultLangID(
-             void);
-
-PALIMPORT
-BOOL
-PALAPI
-SetThreadLocale(
-        IN LCID Locale);
-
-PALIMPORT
-LCID
-PALAPI
-GetThreadLocale(
-        void);
-
-#endif //ENABLE_DOWNLEVEL_FOR_NLS
-
-//
-//  Locale Types.
-//
-//  These types are used for the GetLocaleInfo NLS API routine.
-//
-
-#ifdef __APPLE__
-
-//
-//  The following LCTypes may be used in combination with any other LCTypes.
-//
-//    LOCALE_NOUSEROVERRIDE is also used in GetTimeFormat and
-//    GetDateFormat.
-//
-//    LOCALE_RETURN_NUMBER will return the result from GetLocaleInfo as a
-//    number instead of a string.  This flag is only valid for the LCTypes
-//    beginning with LOCALE_I.
-//
-#define LOCALE_NOUSEROVERRIDE         0x80000000    /* do not use user overrides */
-#define LOCALE_RETURN_NUMBER          0x20000000    /* return number instead of string */
-#define LOCALE_RETURN_GENITIVE_NAMES  0x10000000   //Flag to return the Genitive forms of month names
-
-#define LOCALE_SLOCALIZEDDISPLAYNAME  0x00000002   // localized name of locale, eg "German (Germany)" in UI language
-#define LOCALE_SENGLISHDISPLAYNAME    0x00000072   // Display name (language + country usually) in English, eg "German (Germany)"
-#define LOCALE_SNATIVEDISPLAYNAME     0x00000073   // Display name in native locale language, eg "Deutsch (Deutschland)
-
-#define LOCALE_SLOCALIZEDLANGUAGENAME 0x0000006f   // Language Display Name for a language, eg "German" in UI language
-#define LOCALE_SENGLISHLANGUAGENAME   0x00001001   // English name of language, eg "German"
-#define LOCALE_SNATIVELANGUAGENAME    0x00000004   // native name of language, eg "Deutsch"
-
-#define LOCALE_SLOCALIZEDCOUNTRYNAME  0x00000006   // localized name of country, eg "Germany" in UI language
-#define LOCALE_SENGLISHCOUNTRYNAME    0x00001002   // English name of country, eg "Germany"
-#define LOCALE_SNATIVECOUNTRYNAME     0x00000008   // native name of country, eg "Deutschland"
-
-//
-//  The following LCTypes are mutually exclusive in that they may NOT
-//  be used in combination with each other.
-//
-#define LOCALE_ILANGUAGE              0x00000001    /* language id */
-#define LOCALE_SLANGUAGE              0x00000002    /* localized name of language */
-#define LOCALE_SENGLANGUAGE           0x00001001    /* English name of language */
-#define LOCALE_SABBREVLANGNAME        0x00000003    /* abbreviated language name */
-#define LOCALE_SNATIVELANGNAME        0x00000004    /* native name of language */
-#define LOCALE_ICOUNTRY               0x00000005    /* country code */
-#define LOCALE_SCOUNTRY               0x00000006    /* localized name of country */
-
-#define LOCALE_SENGCOUNTRY            0x00001002    /* English name of country */
-#define LOCALE_SABBREVCTRYNAME        0x00000007    /* abbreviated country name */
-#define LOCALE_SNATIVECTRYNAME        0x00000008    /* native name of country */
-
-#define LOCALE_SLIST                  0x0000000C    /* list item separator */
-#define LOCALE_IMEASURE               0x0000000D    /* 0 = metric, 1 = US */
-
-#define LOCALE_SDECIMAL               0x0000000E    /* decimal separator */
-#define LOCALE_STHOUSAND              0x0000000F    /* thousand separator */
-#define LOCALE_SGROUPING              0x00000010    /* digit grouping */
-#define LOCALE_IDIGITS                0x00000011    /* number of fractional digits */
-#define LOCALE_ILZERO                 0x00000012    /* leading zeros for decimal */
-#define LOCALE_INEGNUMBER             0x00001010    /* negative number mode */
-#define LOCALE_SNATIVEDIGITS          0x00000013    /* native ascii 0-9 */
-
-#define LOCALE_SCURRENCY              0x00000014    /* local monetary symbol */
-#define LOCALE_SINTLSYMBOL            0x00000015    /* intl monetary symbol */
-#define LOCALE_SMONDECIMALSEP         0x00000016    /* monetary decimal separator */
-#define LOCALE_SMONTHOUSANDSEP        0x00000017    /* monetary thousand separator */
-#define LOCALE_SMONGROUPING           0x00000018    /* monetary grouping */
-#define LOCALE_ICURRDIGITS            0x00000019    /* # local monetary digits */
-#define LOCALE_IINTLCURRDIGITS        0x0000001A    /* # intl monetary digits */
-#define LOCALE_ICURRENCY              0x0000001B    /* positive currency mode */
-#define LOCALE_INEGCURR               0x0000001C    /* negative currency mode */
-
-#define LOCALE_SSHORTDATE             0x0000001F    /* short date format string */
-#define LOCALE_SLONGDATE              0x00000020    /* long date format string */
-#define LOCALE_STIMEFORMAT            0x00001003    /* time format string */
-#define LOCALE_S1159                  0x00000028    /* AM designator */
-#define LOCALE_S2359                  0x00000029    /* PM designator */
-
-#define LOCALE_ICALENDARTYPE          0x00001009    /* type of calendar specifier */
-#define LOCALE_IFIRSTDAYOFWEEK        0x0000100C    /* first day of week specifier */
-#define LOCALE_IFIRSTWEEKOFYEAR       0x0000100D    /* first week of year specifier */
-
-#define LOCALE_SDAYNAME1              0x0000002A    /* long name for Monday */
-#define LOCALE_SDAYNAME2              0x0000002B    /* long name for Tuesday */
-#define LOCALE_SDAYNAME3              0x0000002C    /* long name for Wednesday */
-#define LOCALE_SDAYNAME4              0x0000002D    /* long name for Thursday */
-#define LOCALE_SDAYNAME5              0x0000002E    /* long name for Friday */
-#define LOCALE_SDAYNAME6              0x0000002F    /* long name for Saturday */
-#define LOCALE_SDAYNAME7              0x00000030    /* long name for Sunday */
-#define LOCALE_SABBREVDAYNAME1        0x00000031    /* abbreviated name for Monday */
-#define LOCALE_SABBREVDAYNAME2        0x00000032    /* abbreviated name for Tuesday */
-#define LOCALE_SABBREVDAYNAME3        0x00000033    /* abbreviated name for Wednesday */
-#define LOCALE_SABBREVDAYNAME4        0x00000034    /* abbreviated name for Thursday */
-#define LOCALE_SABBREVDAYNAME5        0x00000035    /* abbreviated name for Friday */
-#define LOCALE_SABBREVDAYNAME6        0x00000036    /* abbreviated name for Saturday */
-#define LOCALE_SABBREVDAYNAME7        0x00000037    /* abbreviated name for Sunday */
-#define LOCALE_SMONTHNAME1            0x00000038    /* long name for January */
-#define LOCALE_SMONTHNAME2            0x00000039    /* long name for February */
-#define LOCALE_SMONTHNAME3            0x0000003A    /* long name for March */
-#define LOCALE_SMONTHNAME4            0x0000003B    /* long name for April */
-#define LOCALE_SMONTHNAME5            0x0000003C    /* long name for May */
-#define LOCALE_SMONTHNAME6            0x0000003D    /* long name for June */
-#define LOCALE_SMONTHNAME7            0x0000003E    /* long name for July */
-#define LOCALE_SMONTHNAME8            0x0000003F    /* long name for August */
-#define LOCALE_SMONTHNAME9            0x00000040    /* long name for September */
-#define LOCALE_SMONTHNAME10           0x00000041    /* long name for October */
-#define LOCALE_SMONTHNAME11           0x00000042    /* long name for November */
-#define LOCALE_SMONTHNAME12           0x00000043    /* long name for December */
-#define LOCALE_SMONTHNAME13           0x0000100E    /* long name for 13th month (if exists) */
-#define LOCALE_SABBREVMONTHNAME1      0x00000044    /* abbreviated name for January */
-#define LOCALE_SABBREVMONTHNAME2      0x00000045    /* abbreviated name for February */
-#define LOCALE_SABBREVMONTHNAME3      0x00000046    /* abbreviated name for March */
-#define LOCALE_SABBREVMONTHNAME4      0x00000047    /* abbreviated name for April */
-#define LOCALE_SABBREVMONTHNAME5      0x00000048    /* abbreviated name for May */
-#define LOCALE_SABBREVMONTHNAME6      0x00000049    /* abbreviated name for June */
-#define LOCALE_SABBREVMONTHNAME7      0x0000004A    /* abbreviated name for July */
-#define LOCALE_SABBREVMONTHNAME8      0x0000004B    /* abbreviated name for August */
-#define LOCALE_SABBREVMONTHNAME9      0x0000004C    /* abbreviated name for September */
-#define LOCALE_SABBREVMONTHNAME10     0x0000004D    /* abbreviated name for October */
-#define LOCALE_SABBREVMONTHNAME11     0x0000004E    /* abbreviated name for November */
-#define LOCALE_SABBREVMONTHNAME12     0x0000004F    /* abbreviated name for December */
-#define LOCALE_SABBREVMONTHNAME13     0x0000100F    /* abbreviated name for 13th month (if exists) */
-
-#define LOCALE_SPOSITIVESIGN          0x00000050    /* positive sign */
-#define LOCALE_SNEGATIVESIGN          0x00000051    /* negative sign */
-
-#define LOCALE_FONTSIGNATURE          0x00000058    /* font signature */
-#define LOCALE_SISO639LANGNAME        0x00000059    /* ISO abbreviated language name */
-#define LOCALE_SISO3166CTRYNAME       0x0000005A    /* ISO abbreviated country name */
-
-#define LOCALE_SENGCURRNAME           0x00001007    /* english name of currency */
-#define LOCALE_SNATIVECURRNAME        0x00001008    /* native name of currency */
-#define LOCALE_SYEARMONTH             0x00001006    /* year month format string */
-#define LOCALE_IDIGITSUBSTITUTION     0x00001014    /* 0 = context, 1 = none, 2 = national */
-
-#define LOCALE_SNAME                  0x0000005C    /* locale name <language>[-<Script>][-<REGION>[_<sort order>]] */
-#define LOCALE_SDURATION              0x0000005d    /* time duration format */
-#define LOCALE_SKEYBOARDSTOINSTALL    0x0000005e    /* (windows only) keyboards to install */
-#define LOCALE_SSHORTESTDAYNAME1      0x00000060    /* Shortest day name for Monday */
-#define LOCALE_SSHORTESTDAYNAME2      0x00000061    /* Shortest day name for Tuesday */
-#define LOCALE_SSHORTESTDAYNAME3      0x00000062    /* Shortest day name for Wednesday */
-#define LOCALE_SSHORTESTDAYNAME4      0x00000063    /* Shortest day name for Thursday */
-#define LOCALE_SSHORTESTDAYNAME5      0x00000064    /* Shortest day name for Friday */
-#define LOCALE_SSHORTESTDAYNAME6      0x00000065    /* Shortest day name for Saturday */
-#define LOCALE_SSHORTESTDAYNAME7      0x00000066    /* Shortest day name for Sunday */
-#define LOCALE_SISO639LANGNAME2       0x00000067    /* 3 character ISO abbreviated language name */
-#define LOCALE_SISO3166CTRYNAME2      0x00000068    /* 3 character ISO country name */
-#define LOCALE_SNAN                   0x00000069    /* Not a Number */
-#define LOCALE_SPOSINFINITY           0x0000006a    /* + Infinity */
-#define LOCALE_SNEGINFINITY           0x0000006b    /* - Infinity */
-#define LOCALE_SSCRIPTS               0x0000006c    /* Typical scripts in the locale */
-#define LOCALE_SPARENT                0x0000006d    /* Fallback name for resources */
-#define LOCALE_SCONSOLEFALLBACKNAME   0x0000006e    /* Fallback name for within the console */
-#define LOCALE_SLANGDISPLAYNAME       0x0000006f    /* Language Display Name for a language */ 
-#define LOCALE_IREADINGLAYOUT         0x00000070   // Returns one of the following 4 reading layout values:
-                                                   // 0 - Left to right (eg en-US)
-                                                   // 1 - Right to left (eg arabic locales)
-                                                   // 2 - Vertical top to bottom with columns to the left and also left to right (ja-JP locales)
-                                                   // 3 - Vertical top to bottom with columns proceeding to the right
-#define LOCALE_INEUTRAL               0x00000071   // Returns 0 for specific cultures, 1 for neutral cultures.
-#define LOCALE_INEGATIVEPERCENT       0x00000074   // Returns 0-11 for the negative percent format
-#define LOCALE_IPOSITIVEPERCENT       0x00000075   // Returns 0-3 for the positive percent formatIPOSITIVEPERCENT
-#define LOCALE_SPERCENT               0x00000076   // Returns the percent symbol
-#define LOCALE_SPERMILLE              0x00000077   // Returns the permille (U+2030) symbol
-#define LOCALE_SMONTHDAY              0x00000078   // Returns the preferred month/day format
-#define LOCALE_SSHORTTIME             0x00000079   // Returns the preferred short time format (ie: no seconds, just h:mm)
-#define LOCALE_SOPENTYPELANGUAGETAG   0x0000007a   // Open type language tag, eg: "latn" or "dflt"
-#define LOCALE_SSORTLOCALE            0x0000007b   // Name of locale to use for sorting/collation/casing behavior.
-
-#define LCMAP_LINGUISTIC_CASING       0x01000000    /* Use linguistic casing */
-
-#define CAL_RETURN_GENITIVE_NAMES       LOCALE_RETURN_GENITIVE_NAMES  // return genitive forms of month names
-
-#define CAL_SSHORTESTDAYNAME1         0x00000031
-#define CAL_SSHORTESTDAYNAME2         0x00000032
-#define CAL_SSHORTESTDAYNAME3         0x00000033
-#define CAL_SSHORTESTDAYNAME4         0x00000034
-#define CAL_SSHORTESTDAYNAME5         0x00000035
-#define CAL_SSHORTESTDAYNAME6         0x00000036
-#define CAL_SSHORTESTDAYNAME7         0x00000037
-
-#define CAL_SMONTHDAY                   0x00000038  // Month/day pattern (reserve for potential inclusion in a future version)
-#define CAL_SERASTRING                  0x00000004  // era name for IYearOffsetRanges, eg A.D.
-#define CAL_SABBREVERASTRING            0x00000039  // Abbreviated era string (eg: AD)
-
-#define CAL_SSHORTDATE            0x00000005  /* short date format string */
-#define CAL_SLONGDATE             0x00000006  /* long date format string */
-#define CAL_SDAYNAME1             0x00000007  /* native name for Monday */
-#define CAL_SDAYNAME2             0x00000008  /* native name for Tuesday */
-#define CAL_SDAYNAME3             0x00000009  /* native name for Wednesday */
-#define CAL_SDAYNAME4             0x0000000a  /* native name for Thursday */
-#define CAL_SDAYNAME5             0x0000000b  /* native name for Friday */
-#define CAL_SDAYNAME6             0x0000000c  /* native name for Saturday */
-#define CAL_SDAYNAME7             0x0000000d  /* native name for Sunday */
-#define CAL_SABBREVDAYNAME1       0x0000000e  /* abbreviated name for Monday */
-#define CAL_SABBREVDAYNAME2       0x0000000f  /* abbreviated name for Tuesday */
-#define CAL_SABBREVDAYNAME3       0x00000010  /* abbreviated name for Wednesday */
-#define CAL_SABBREVDAYNAME4       0x00000011  /* abbreviated name for Thursday */
-#define CAL_SABBREVDAYNAME5       0x00000012  /* abbreviated name for Friday */
-#define CAL_SABBREVDAYNAME6       0x00000013  /* abbreviated name for Saturday */
-#define CAL_SABBREVDAYNAME7       0x00000014  /* abbreviated name for Sunday */
-#define CAL_SMONTHNAME1           0x00000015  /* native name for January */
-#define CAL_SMONTHNAME2           0x00000016  /* native name for February */
-#define CAL_SMONTHNAME3           0x00000017  /* native name for March */
-#define CAL_SMONTHNAME4           0x00000018  /* native name for April */
-#define CAL_SMONTHNAME5           0x00000019  /* native name for May */
-#define CAL_SMONTHNAME6           0x0000001a  /* native name for June */
-#define CAL_SMONTHNAME7           0x0000001b  /* native name for July */
-#define CAL_SMONTHNAME8           0x0000001c  /* native name for August */
-#define CAL_SMONTHNAME9           0x0000001d  /* native name for September */
-#define CAL_SMONTHNAME10          0x0000001e  /* native name for October */
-#define CAL_SMONTHNAME11          0x0000001f  /* native name for November */
-#define CAL_SMONTHNAME12          0x00000020  /* native name for December */
-#define CAL_SMONTHNAME13          0x00000021  /* native name for 13th month (if any) */
-#define CAL_SABBREVMONTHNAME1     0x00000022  /* abbreviated name for January */
-#define CAL_SABBREVMONTHNAME2     0x00000023  /* abbreviated name for February */
-#define CAL_SABBREVMONTHNAME3     0x00000024  /* abbreviated name for March */
-#define CAL_SABBREVMONTHNAME4     0x00000025  /* abbreviated name for April */
-#define CAL_SABBREVMONTHNAME5     0x00000026  /* abbreviated name for May */
-#define CAL_SABBREVMONTHNAME6     0x00000027  /* abbreviated name for June */
-#define CAL_SABBREVMONTHNAME7     0x00000028  /* abbreviated name for July */
-#define CAL_SABBREVMONTHNAME8     0x00000029  /* abbreviated name for August */
-#define CAL_SABBREVMONTHNAME9     0x0000002a  /* abbreviated name for September */
-#define CAL_SABBREVMONTHNAME10    0x0000002b  /* abbreviated name for October */
-#define CAL_SABBREVMONTHNAME11    0x0000002c  /* abbreviated name for November */
-#define CAL_SABBREVMONTHNAME12    0x0000002d  /* abbreviated name for December */
-#define CAL_SABBREVMONTHNAME13    0x0000002e  /* abbreviated name for 13th month (if any) */
-#define CAL_SYEARMONTH            0x0000002f  /* year month format string */
-
-
-#else // __APPLE__
-
-#define LOCALE_SDECIMAL               0x0000000E    /* decimal separator */
-#define LOCALE_STHOUSAND              0x0000000F    /* thousand separator */
-#define LOCALE_ILZERO                 0x00000012    /* leading zeros for decimal */
-#define LOCALE_SCURRENCY              0x00000014    /* local monetary symbol */
-#define LOCALE_SMONDECIMALSEP         0x00000016    /* monetary decimal separator */
-#define LOCALE_SMONTHOUSANDSEP        0x00000017    /* monetary thousand separator */
-
-#endif // __APPLE__
-
-
-#if ENABLE_DOWNLEVEL_FOR_NLS
-
-PALIMPORT
-int
-PALAPI
-GetLocaleInfoW(
-    IN LCID     Locale,
-    IN LCTYPE   LCType,
-    OUT LPWSTR  lpLCData,
-    IN int      cchData);
-
-#endif // ENABLE_DOWNLEVEL_FOR_NLS
-
-PALIMPORT
-int
-PALAPI
-GetLocaleInfoEx(
-    IN LPCWSTR  lpLocaleName,
-    IN LCTYPE   LCType,
-    OUT LPWSTR  lpLCData,
-    IN int      cchData);
-
-
-PALIMPORT
-int 
-PALAPI
-CompareStringOrdinal(
-    IN LPCWSTR lpString1, 
-  IN int cchCount1, 
-  IN LPCWSTR lpString2, 
-  IN int cchCount2, 
-  IN BOOL bIgnoreCase);
-
-typedef struct _nlsversioninfoex { 
-  DWORD  dwNLSVersionInfoSize; 
-  DWORD  dwNLSVersion; 
-  DWORD  dwDefinedVersion; 
-  DWORD  dwEffectiveId;   
-  GUID  guidCustomVersion; 
-  } NLSVERSIONINFOEX, *LPNLSVERSIONINFOEX; 
-
-PALIMPORT
-int 
-PALAPI
-FindNLSStringEx(
-    IN LPCWSTR lpLocaleName, 
-  IN DWORD dwFindNLSStringFlags, 
-  IN LPCWSTR lpStringSource, 
-  IN int cchSource, 
-    IN LPCWSTR lpStringValue, 
-  IN int cchValue, 
-  OUT LPINT pcchFound, 
-  IN LPNLSVERSIONINFOEX lpVersionInformation, 
-  IN LPVOID lpReserved, 
-  IN LPARAM lParam );
-
-typedef enum {
-    COMPARE_STRING = 0x0001,
-} NLS_FUNCTION;
-
-PALIMPORT
-BOOL 
-PALAPI
-IsNLSDefinedString(
-    IN NLS_FUNCTION Function, 
-  IN DWORD dwFlags, 
-  IN LPNLSVERSIONINFOEX lpVersionInfo, 
-  IN LPCWSTR lpString, 
-  IN int cchStr );
-
-
-PALIMPORT
-int
-PALAPI
-ResolveLocaleName(
-    IN LPCWSTR lpNameToResolve,
-        OUT LPWSTR lpLocaleName,
-        IN int cchLocaleName );
-
-PALIMPORT
-BOOL 
-PALAPI
-GetThreadPreferredUILanguages(
-    IN DWORD  dwFlags,
-    OUT PULONG  pulNumLanguages,
-    OUT PWSTR  pwszLanguagesBuffer,
-    IN OUT PULONG  pcchLanguagesBuffer);
-
-
-PALIMPORT
-int 
-PALAPI
-GetSystemDefaultLocaleName(
-    OUT LPWSTR lpLocaleName, 
-  IN int cchLocaleName);
-
-#ifdef UNICODE
-#define GetLocaleInfo GetLocaleInfoW
-#endif
-
-#if ENABLE_DOWNLEVEL_FOR_NLS
-PALIMPORT
-LCID
-PALAPI
-GetUserDefaultLCID(
-           void);
-#endif
-
-
-PALIMPORT
-int
-PALAPI
-GetUserDefaultLocaleName(
-           OUT LPWSTR lpLocaleName,
-           IN int cchLocaleName);
-
-
-#define LCID_INSTALLED            0x00000001  // installed locale ids
-#define LCID_SUPPORTED            0x00000002  // supported locale ids
-#ifdef __APPLE__
-#define LCID_ALTERNATE_SORTS      0x00000004  // alternate sort locale ids
-#endif // __APPLE__
-
-#if ENABLE_DOWNLEVEL_FOR_NLS
-PALIMPORT
-BOOL
-PALAPI
-IsValidLocale(
-          IN LCID Locale,
-          IN DWORD dwFlags);
-#endif // ENABLE_DOWNLEVEL_FOR_NLS
-
-
-typedef DWORD CALID;
-typedef DWORD CALTYPE;
-
-#define CAL_ITWODIGITYEARMAX 0x00000030 // two digit year max
-#define CAL_RETURN_NUMBER    0x20000000 // return number instead of string
-
-#define CAL_GREGORIAN                 1 // Gregorian (localized) calendar
-#define CAL_GREGORIAN_US              2 // Gregorian (U.S.) calendar
-#define CAL_JAPAN                     3 // Japanese Emperor Era calendar
-#define CAL_TAIWAN                    4 // Taiwan Era calendar
-#define CAL_KOREA                     5 // Korean Tangun Era calendar
-#define CAL_HIJRI                     6 // Hijri (Arabic Lunar) calendar
-#define CAL_THAI                      7 // Thai calendar
-#define CAL_HEBREW                    8 // Hebrew (Lunar) calendar
-#define CAL_GREGORIAN_ME_FRENCH       9 // Gregorian Middle East French calendar
-#define CAL_GREGORIAN_ARABIC         10 // Gregorian Arabic calendar
-#define CAL_GREGORIAN_XLIT_ENGLISH   11 // Gregorian Transliterated English calendar
-#define CAL_GREGORIAN_XLIT_FRENCH    12 // Gregorian Transliterated French calendar
-#define CAL_JULIAN                   13
-
-#if ENABLE_DOWNLEVEL_FOR_NLS
-PALIMPORT
-int
-PALAPI
-GetCalendarInfoW(
-         IN LCID Locale,
-         IN CALID Calendar,
-         IN CALTYPE CalType,
-         OUT LPWSTR lpCalData,
-         IN int cchData,
-         OUT LPDWORD lpValue);
-
-#ifdef UNICODE
-#define GetCalendarInfo GetCalendarInfoW
-#endif
-
-#endif // ENABLE_DOWNLEVEL_FOR_NLS
-
-
-PALIMPORT
-int
-PALAPI
-GetCalendarInfoEx(
-         IN LPCWSTR lpLocaleName,
-         IN CALID Calendar,
-         IN LPCWSTR lpReserved,
-         IN CALTYPE CalType,
-         OUT LPWSTR lpCalData,
-         IN int cchData,
-         OUT LPDWORD lpValue);
-
-#if ENABLE_DOWNLEVEL_FOR_NLS
-typedef BOOL (CALLBACK* LOCALE_ENUMPROCW)(LPWSTR);
-
-PALIMPORT
-BOOL
-PALAPI
-EnumSystemLocalesW(
-    IN LOCALE_ENUMPROCW lpLocaleEnumProc,
-    IN DWORD            dwFlags);
-#endif //  ENABLE_DOWNLEVEL_FOR_NLS
-
-#define DATE_SHORTDATE            0x00000001  // use short date picture
-#define DATE_LONGDATE             0x00000002  // use long date picture
-#define DATE_YEARMONTH            0x00000008  // use year month picture
-
-typedef BOOL (CALLBACK* DATEFMT_ENUMPROCEXW)(LPWSTR, CALID);
-
-#if ENABLE_DOWNLEVEL_FOR_NLS
-
-PALIMPORT
-BOOL
-PALAPI
-EnumDateFormatsExW(
-    IN DATEFMT_ENUMPROCEXW lpDateFmtEnumProcEx,
-    IN LCID                Locale,
-    IN DWORD               dwFlags);
-
-#else // ENABLE_DOWNLEVEL_FOR_NLS
-
-typedef BOOL (CALLBACK* DATEFMT_ENUMPROCEXEXW)(LPWSTR, CALID, LPARAM);
-
-PALIMPORT
-BOOL
-PALAPI
-EnumDateFormatsExEx(
-    IN DATEFMT_ENUMPROCEXEXW lpDateFmtEnumProcEx,
-    IN LPCWSTR          lpLocaleName,
-    IN DWORD               dwFlags,
-    IN LPARAM      lParam);
-
-#endif // ENABLE_DOWNLEVEL_FOR_NLS
-
-typedef BOOL (CALLBACK* TIMEFMT_ENUMPROCW)(LPWSTR);
-
-#if ENABLE_DOWNLEVEL_FOR_NLS
-
-PALIMPORT
-BOOL
-PALAPI
-EnumTimeFormatsW(
-    IN TIMEFMT_ENUMPROCW lpTimeFmtEnumProc,
-    IN LCID              Locale,
-    IN DWORD             dwFlags);
-
-#else // ENABLE_DOWNLEVEL_FOR_NLS
-
-typedef BOOL (CALLBACK* TIMEFMT_ENUMPROCEXW)(LPWSTR, LPARAM);
-
-PALIMPORT
-BOOL
-PALAPI
-EnumTimeFormatsEx(
-    IN TIMEFMT_ENUMPROCEXW lpTimeFmtEnumProc,
-    IN LPCWSTR          lpLocaleName,
-    IN DWORD             dwFlags,
-    IN LPARAM    lParam);
-
-#endif // ENABLE_DOWNLEVEL_FOR_NLS
-
-#define ENUM_ALL_CALENDARS        0xffffffff  // enumerate all calendars
-#define CAL_ICALINTVALUE          0x00000001  // calendar type
-#define CAL_NOUSEROVERRIDE        LOCALE_NOUSEROVERRIDE  // do not use user overrides
-#define CAL_SCALNAME              0x00000002  // native name of calendar
-
-typedef BOOL (CALLBACK* CALINFO_ENUMPROCEXW)(LPWSTR,CALID);
-
-#if ENABLE_DOWNLEVEL_FOR_NLS
-
-PALIMPORT
-BOOL
-PALAPI
-EnumCalendarInfoExW(
-    IN CALINFO_ENUMPROCEXW lpCalInfoEnumProc,
-    IN LCID              Locale,
-    IN CALID             Calendar,
-    IN CALTYPE           CalType);
-
-#else // ENABLE_DOWNLEVEL_FOR_NLS
-
-typedef BOOL (CALLBACK* CALINFO_ENUMPROCEXEXW)(LPWSTR, CALID, LPWSTR, LPARAM);
-
-PALIMPORT
-BOOL
-PALAPI
-EnumCalendarInfoExEx(
-    IN CALINFO_ENUMPROCEXEXW lpCalInfoEnumProc,
-    IN LPCWSTR          lpLocaleName,
-    IN CALID             Calendar,
-    IN LPCWSTR           lpReserved,
-    IN CALTYPE           CalType,
-    IN LPARAM        lParam);
-
-#endif // ENABLE_DOWNLEVEL_FOR_NLS
-
-#define LCMAP_LOWERCASE  0x00000100
-#define LCMAP_UPPERCASE  0x00000200
-
-#if ENABLE_DOWNLEVEL_FOR_NLS
-
-PALIMPORT
-int
-PALAPI
-LCMapStringW(
-    IN LCID    Locale,
-    IN DWORD   dwMapFlags,
-    IN LPCWSTR lpSrcStr,
-    IN int     cchSrc,
-    OUT LPWSTR lpDestStr,
-    IN int     cchDest);
-
-#ifdef UNICODE
-#define LCMapString LCMapStringW
-#endif
-
-
-#endif // ENABLE_DOWNLEVEL_FOR_NLS
-
-
-PALIMPORT
-int
-PALAPI
-LCMapStringEx(
-    IN LPCWSTR    lpLocaleName,
-    IN DWORD   dwMapFlags,
-    IN LPCWSTR lpSrcStr,
-    IN int     cchSrc,
-    OUT LPWSTR lpDestStr,
-    IN int     cchDest,
-    IN LPNLSVERSIONINFO lpVersionInformation, 
-    IN LPVOID lpReserved, 
-    IN LPARAM lParam );
-
-PALIMPORT
-int
-PALAPI
-PAL_LCMapCharW(
-    IN LPCWSTR    lpLocaleName,
-    IN DWORD   dwMapFlags,
-    IN WCHAR   srcChar,
-    OUT WCHAR  *destChar,
-    LPNLSVERSIONINFO lpVersionInformation,
-    LPVOID lpReserved,
-    LPARAM lParam );
-
-PALIMPORT
-int
-PALAPI
-PAL_NormalizeStringExW(
-    IN LPCWSTR    lpLocaleName,
-    IN DWORD   dwMapFlags,
-    IN LPCWSTR lpSrcStr,
-    IN int     cchSrc,
-    OUT LPWSTR lpDestStr,
-    IN int     cchDest);
-
-PALIMPORT
-int
-PALAPI
-PAL_ParseDateW(
-    IN LPCWSTR   lpLocaleName,
-    IN LPCWSTR   lpFormat,
-    IN LPCWSTR   lpString,
-    OUT LPSYSTEMTIME lpTime);
-
-PALIMPORT
-int
-PALAPI
-PAL_GetCalendar(
-    IN LPCWSTR   lpLocaleName,
-    OUT CALID*   pCalendar);
-
-#define GEOID_NOT_AVAILABLE -1
-
-#define DATE_USE_ALT_CALENDAR 0x00000004
-
-#if ENABLE_DOWNLEVEL_FOR_NLS
-
-PALIMPORT
-int
-PALAPI
-GetDateFormatW(
-           IN LCID Locale,
-           IN DWORD dwFlags,
-           IN CONST SYSTEMTIME *lpDate,
-           IN LPCWSTR lpFormat,
-           OUT LPWSTR lpDateStr,
-           IN int cchDate);
-
-#else
-
-PALIMPORT
-int
-PALAPI
-GetDateFormatEx(
-           IN LPCWSTR Locale,
-           IN DWORD dwFlags,
-           IN CONST SYSTEMTIME *lpDate,
-           IN LPCWSTR lpFormat,
-           OUT LPWSTR lpDateStr,
-           IN int cchDate,
-           IN LPCWSTR lpCalendar);
-
-
-#endif // ENABLE_DOWNLEVEL_FOR_NLS
-
-PALIMPORT
-int
-PALAPI
-GetDateFormatEx(
-           IN LPCWSTR lpLocaleName,
-           IN DWORD dwFlags,
-           IN CONST SYSTEMTIME *lpDate,
-           IN LPCWSTR lpFormat,
-           OUT LPWSTR lpDateStr,
-           IN int cchDate,
-           LPCWSTR lpCalendar);
-
-
-#ifdef UNICODE
-#define GetDateFormat GetDateFormatW
-#endif
-
-
 PALIMPORT
 int
 PALAPI
@@ -3855,8 +3020,6 @@ PAL_BindResources(IN LPCSTR lpDomain);
 #define EXCEPTION_NONCONTINUABLE 0x1
 #define EXCEPTION_UNWINDING 0x2
 
-#ifdef FEATURE_PAL_SXS
-
 #define EXCEPTION_EXIT_UNWIND 0x4       // Exit unwind is in progress (not used by PAL SEH)
 #define EXCEPTION_NESTED_CALL 0x10      // Nested exception handler call
 #define EXCEPTION_TARGET_UNWIND 0x20    // Target unwind in progress
@@ -3869,8 +3032,6 @@ PAL_BindResources(IN LPCSTR lpDomain);
 #define IS_DISPATCHING(Flag) ((Flag & EXCEPTION_UNWIND) == 0)
 #define IS_UNWINDING(Flag) ((Flag & EXCEPTION_UNWIND) != 0)
 #define IS_TARGET_UNWIND(Flag) (Flag & EXCEPTION_TARGET_UNWIND)
-
-#endif // FEATURE_PAL_SXS
 
 #define EXCEPTION_IS_SIGNAL 0x100
 
@@ -3895,8 +3056,6 @@ typedef struct _EXCEPTION_POINTERS {
     PCONTEXT ContextRecord;
 } EXCEPTION_POINTERS, *PEXCEPTION_POINTERS, *LPEXCEPTION_POINTERS;
 
-#ifdef FEATURE_PAL_SXS
-
 typedef LONG EXCEPTION_DISPOSITION;
 
 enum {
@@ -3905,8 +3064,6 @@ enum {
     ExceptionNestedException,
     ExceptionCollidedUnwind,
 };
-
-#endif // FEATURE_PAL_SXS
 
 //
 // A function table entry is generated for each frame function.
@@ -3922,32 +3079,30 @@ typedef struct _RUNTIME_FUNCTION {
 #define STANDARD_RIGHTS_REQUIRED  (0x000F0000L)
 #define SYNCHRONIZE               (0x00100000L)
 #define READ_CONTROL              (0x00020000L)
+#define MAXIMUM_ALLOWED           (0x02000000L)
 
 #define EVENT_MODIFY_STATE        (0x0002)
-#define EVENT_ALL_ACCESS          (STANDARD_RIGHTS_REQUIRED | SYNCHRONIZE | \
-                                   0x3) 
+#define EVENT_ALL_ACCESS          (STANDARD_RIGHTS_REQUIRED | SYNCHRONIZE | 0x3)
 
 #define MUTANT_QUERY_STATE        (0x0001)
-#define MUTANT_ALL_ACCESS         (STANDARD_RIGHTS_REQUIRED | SYNCHRONIZE | \
-                                   MUTANT_QUERY_STATE)
+#define MUTANT_ALL_ACCESS         (STANDARD_RIGHTS_REQUIRED | SYNCHRONIZE | MUTANT_QUERY_STATE)
 #define MUTEX_ALL_ACCESS          MUTANT_ALL_ACCESS
 
 #define SEMAPHORE_MODIFY_STATE    (0x0002)
-#define SEMAPHORE_ALL_ACCESS      (STANDARD_RIGHTS_REQUIRED | SYNCHRONIZE | \
-                                   0x3)
+#define SEMAPHORE_ALL_ACCESS      (STANDARD_RIGHTS_REQUIRED | SYNCHRONIZE | 0x3)
 
-#define PROCESS_TERMINATE         (0x0001)  
-#define PROCESS_CREATE_THREAD     (0x0002)  
-#define PROCESS_SET_SESSIONID     (0x0004)  
-#define PROCESS_VM_OPERATION      (0x0008)  
-#define PROCESS_VM_READ           (0x0010)  
-#define PROCESS_VM_WRITE          (0x0020)  
-#define PROCESS_DUP_HANDLE        (0x0040)  
-#define PROCESS_CREATE_PROCESS    (0x0080)  
-#define PROCESS_SET_QUOTA         (0x0100)  
-#define PROCESS_SET_INFORMATION   (0x0200)  
-#define PROCESS_QUERY_INFORMATION (0x0400)  
-#define PROCESS_SUSPEND_RESUME    (0x0800)  
+#define PROCESS_TERMINATE         (0x0001)
+#define PROCESS_CREATE_THREAD     (0x0002)
+#define PROCESS_SET_SESSIONID     (0x0004)
+#define PROCESS_VM_OPERATION      (0x0008)
+#define PROCESS_VM_READ           (0x0010)
+#define PROCESS_VM_WRITE          (0x0020)
+#define PROCESS_DUP_HANDLE        (0x0040)
+#define PROCESS_CREATE_PROCESS    (0x0080)
+#define PROCESS_SET_QUOTA         (0x0100)
+#define PROCESS_SET_INFORMATION   (0x0200)
+#define PROCESS_QUERY_INFORMATION (0x0400)
+#define PROCESS_SUSPEND_RESUME    (0x0800)
 #define PROCESS_ALL_ACCESS        (STANDARD_RIGHTS_REQUIRED | SYNCHRONIZE | \
                                    0xFFF)
 
@@ -3993,24 +3148,6 @@ VOID
 PALAPI
 DebugBreak(
        VOID);
-
-PALIMPORT
-int
-PALAPI
-lstrlenA(
-     IN LPCSTR lpString);
-
-PALIMPORT
-int
-PALAPI
-lstrlenW(
-     IN LPCWSTR lpString);
-
-#ifdef UNICODE
-#define lstrlen lstrlenW
-#else
-#define lstrlen lstrlenA
-#endif
 
 PALIMPORT
 DWORD
@@ -4078,14 +3215,13 @@ RaiseException(
            IN DWORD nNumberOfArguments,
            IN CONST ULONG_PTR *lpArguments);
 
-#ifdef FEATURE_PAL_SXS
 PALIMPORT
-PAL_NORETURN
 VOID
 PALAPI
-PAL_RaiseException(
-           IN PEXCEPTION_POINTERS ExceptionPointers);
-#endif // FEATURE_PAL_SXS
+RaiseFailFastException(
+    IN PEXCEPTION_RECORD pExceptionRecord,
+    IN PCONTEXT pContextRecord,
+    IN DWORD dwFlags);
 
 PALIMPORT
 DWORD
@@ -4119,31 +3255,21 @@ QueryThreadCycleTime(
     IN HANDLE ThreadHandle,
     OUT PULONG64 CycleTime);
 
-#ifndef FEATURE_PAL_SXS
-
-typedef LONG (PALAPI *PTOP_LEVEL_EXCEPTION_FILTER)(
-                           struct _EXCEPTION_POINTERS *ExceptionInfo);
-typedef PTOP_LEVEL_EXCEPTION_FILTER LPTOP_LEVEL_EXCEPTION_FILTER;
-
 PALIMPORT
-LPTOP_LEVEL_EXCEPTION_FILTER
+INT
 PALAPI
-SetUnhandledExceptionFilter(
-                IN LPTOP_LEVEL_EXCEPTION_FILTER lpTopLevelExceptionFilter);
+PAL_nanosleep(
+    IN long timeInNs);
 
-#else // FEATURE_PAL_SXS
-
-typedef EXCEPTION_DISPOSITION (PALAPI *PVECTORED_EXCEPTION_HANDLER)(
+typedef EXCEPTION_DISPOSITION (PALAPI_NOEXPORT *PVECTORED_EXCEPTION_HANDLER)(
                            struct _EXCEPTION_POINTERS *ExceptionPointers);
-
-#endif // FEATURE_PAL_SXS
 
 // Define BitScanForward64 and BitScanForward
 // Per MSDN, BitScanForward64 will search the mask data from LSB to MSB for a set bit.
-// If one is found, its bit position is returned in the out PDWORD argument and 1 is returned.
-// Otherwise, 0 is returned.
+// If one is found, its bit position is stored in the out PDWORD argument and 1 is returned;
+// otherwise, an undefined value is stored in the out PDWORD argument and 0 is returned.
 //
-// On GCC, the equivalent function is __builtin_ffsl. It returns 1+index of the least
+// On GCC, the equivalent function is __builtin_ffsll. It returns 1+index of the least
 // significant set bit, or 0 if if mask is zero.
 //
 // The same is true for BitScanForward, except that the GCC function is __builtin_ffs.
@@ -4156,16 +3282,12 @@ BitScanForward(
     IN OUT PDWORD Index,
     IN UINT qwMask)
 {
-    unsigned char bRet = FALSE;
-    int iIndex = __builtin_ffsl(qwMask);
-    if (iIndex != 0)
-    {
-        // Set the Index after deducting unity
-        *Index = (DWORD)(iIndex - 1);
-        bRet = TRUE;
-    }
-
-    return bRet;
+    int iIndex = __builtin_ffs(qwMask);
+    // Set the Index after deducting unity
+    *Index = (DWORD)(iIndex - 1);
+    // Both GCC and Clang generate better, smaller code if we check whether the
+    // mask was/is zero rather than the equivalent check that iIndex is zero.
+    return qwMask != 0 ? TRUE : FALSE;
 }
 
 EXTERN_C
@@ -4177,16 +3299,79 @@ BitScanForward64(
     IN OUT PDWORD Index,
     IN UINT64 qwMask)
 {
-    unsigned char bRet = FALSE;
-    int iIndex = __builtin_ffsl(qwMask);
-    if (iIndex != 0)
-    {
-        // Set the Index after deducting unity
-        *Index = (DWORD)(iIndex - 1);
-        bRet = TRUE;
-    }
+    int iIndex = __builtin_ffsll(qwMask);
+    // Set the Index after deducting unity
+    *Index = (DWORD)(iIndex - 1);
+    // Both GCC and Clang generate better, smaller code if we check whether the
+    // mask was/is zero rather than the equivalent check that iIndex is zero.
+    return qwMask != 0 ? TRUE : FALSE;
+}
 
-    return bRet;
+// Define BitScanReverse64 and BitScanReverse
+// Per MSDN, BitScanReverse64 will search the mask data from MSB to LSB for a set bit.
+// If one is found, its bit position is stored in the out PDWORD argument and 1 is returned.
+// Otherwise, an undefined value is stored in the out PDWORD argument and 0 is returned.
+//
+// GCC/clang don't have a directly equivalent intrinsic; they do provide the __builtin_clzll
+// intrinsic, which returns the number of leading 0-bits in x starting at the most significant
+// bit position (the result is undefined when x = 0).
+//
+// The same is true for BitScanReverse, except that the GCC function is __builtin_clzl.
+
+EXTERN_C
+PALIMPORT
+inline
+unsigned char
+PALAPI
+BitScanReverse(
+    IN OUT PDWORD Index,
+    IN UINT qwMask)
+{
+    // The result of __builtin_clzl is undefined when qwMask is zero,
+    // but it's still OK to call the intrinsic in that case (just don't use the output).
+    // Unconditionally calling the intrinsic in this way allows the compiler to
+    // emit branchless code for this function when possible (depending on how the
+    // intrinsic is implemented for the target platform).
+    int lzcount = __builtin_clzl(qwMask);
+    *Index = (DWORD)(31 - lzcount);
+    return qwMask != 0;
+}
+
+EXTERN_C
+PALIMPORT
+inline
+unsigned char
+PALAPI
+BitScanReverse64(
+    IN OUT PDWORD Index,
+    IN UINT64 qwMask)
+{
+    // The result of __builtin_clzll is undefined when qwMask is zero,
+    // but it's still OK to call the intrinsic in that case (just don't use the output).
+    // Unconditionally calling the intrinsic in this way allows the compiler to
+    // emit branchless code for this function when possible (depending on how the
+    // intrinsic is implemented for the target platform).
+    int lzcount = __builtin_clzll(qwMask);
+    *Index = (DWORD)(63 - lzcount);
+    return qwMask != 0;
+}
+
+FORCEINLINE void PAL_ArmInterlockedOperationBarrier()
+{
+#ifdef _ARM64_
+    // On arm64, most of the __sync* functions generate a code sequence like:
+    //   loop:
+    //     ldaxr (load acquire exclusive)
+    //     ...
+    //     stlxr (store release exclusive)
+    //     cbnz loop
+    //
+    // It is possible for a load following the code sequence above to be reordered to occur prior to the store above due to the
+    // release barrier, this is substantiated by https://github.com/dotnet/coreclr/pull/17508. Interlocked operations in the PAL
+    // require the load to occur after the store. This memory barrier should be used following a call to a __sync* function to
+    // prevent that reordering. Code generated for arm32 includes a 'dmb' after 'cbnz', so no issue there at the moment.
+    __sync_synchronize();
+#endif // _ARM64_
 }
 
 /*++
@@ -4200,12 +3385,12 @@ simultaneously.
 
 Parameters
 
-lpAddend 
-[in/out] Pointer to the variable to increment. 
+lpAddend
+[in/out] Pointer to the variable to increment.
 
 Return Values
 
-The return value is the resulting incremented value. 
+The return value is the resulting incremented value.
 
 --*/
 EXTERN_C
@@ -4216,7 +3401,9 @@ PALAPI
 InterlockedIncrement(
     IN OUT LONG volatile *lpAddend)
 {
-    return __sync_add_and_fetch(lpAddend, (LONG)1);
+    LONG result = __sync_add_and_fetch(lpAddend, (LONG)1);
+    PAL_ArmInterlockedOperationBarrier();
+    return result;
 }
 
 EXTERN_C
@@ -4227,7 +3414,9 @@ PALAPI
 InterlockedIncrement64(
     IN OUT LONGLONG volatile *lpAddend)
 {
-    return __sync_add_and_fetch(lpAddend, (LONGLONG)1);
+    LONGLONG result = __sync_add_and_fetch(lpAddend, (LONGLONG)1);
+    PAL_ArmInterlockedOperationBarrier();
+    return result;
 }
 
 /*++
@@ -4241,8 +3430,8 @@ simultaneously.
 
 Parameters
 
-lpAddend 
-[in/out] Pointer to the variable to decrement. 
+lpAddend
+[in/out] Pointer to the variable to decrement.
 
 Return Values
 
@@ -4257,8 +3446,13 @@ PALAPI
 InterlockedDecrement(
     IN OUT LONG volatile *lpAddend)
 {
-    return __sync_sub_and_fetch(lpAddend, (LONG)1);
+    LONG result = __sync_sub_and_fetch(lpAddend, (LONG)1);
+    PAL_ArmInterlockedOperationBarrier();
+    return result;
 }
+
+#define InterlockedDecrementAcquire InterlockedDecrement
+#define InterlockedDecrementRelease InterlockedDecrement
 
 EXTERN_C
 PALIMPORT
@@ -4268,7 +3462,9 @@ PALAPI
 InterlockedDecrement64(
     IN OUT LONGLONG volatile *lpAddend)
 {
-    return __sync_sub_and_fetch(lpAddend, (LONGLONG)1);
+    LONGLONG result = __sync_sub_and_fetch(lpAddend, (LONGLONG)1);
+    PAL_ArmInterlockedOperationBarrier();
+    return result;
 }
 
 /*++
@@ -4281,15 +3477,15 @@ variable simultaneously.
 
 Parameters
 
-Target 
+Target
 [in/out] Pointer to the value to exchange. The function sets
 this variable to Value, and returns its prior value.
-Value 
-[in] Specifies a new value for the variable pointed to by Target. 
+Value
+[in] Specifies a new value for the variable pointed to by Target.
 
 Return Values
 
-The function returns the initial value pointed to by Target. 
+The function returns the initial value pointed to by Target.
 
 --*/
 EXTERN_C
@@ -4301,7 +3497,9 @@ InterlockedExchange(
     IN OUT LONG volatile *Target,
     IN LONG Value)
 {
-    return __sync_swap(Target, Value);
+    LONG result = __atomic_exchange_n(Target, Value, __ATOMIC_ACQ_REL);
+    PAL_ArmInterlockedOperationBarrier();
+    return result;
 }
 
 EXTERN_C
@@ -4313,7 +3511,9 @@ InterlockedExchange64(
     IN OUT LONGLONG volatile *Target,
     IN LONGLONG Value)
 {
-    return __sync_swap(Target, Value);
+    LONGLONG result = __atomic_exchange_n(Target, Value, __ATOMIC_ACQ_REL);
+    PAL_ArmInterlockedOperationBarrier();
+    return result;
 }
 
 /*++
@@ -4349,45 +3549,17 @@ InterlockedCompareExchange(
     IN LONG Exchange,
     IN LONG Comperand)
 {
-    return __sync_val_compare_and_swap(
-        Destination, /* The pointer to a variable whose value is to be compared with. */
-        Comperand, /* The value to be compared */
-        Exchange /* The value to be stored */);
+    LONG result =
+        __sync_val_compare_and_swap(
+            Destination, /* The pointer to a variable whose value is to be compared with. */
+            Comperand, /* The value to be compared */
+            Exchange /* The value to be stored */);
+    PAL_ArmInterlockedOperationBarrier();
+    return result;
 }
 
-EXTERN_C
-PALIMPORT
-inline
-LONG
-PALAPI
-InterlockedCompareExchangeAcquire(
-    IN OUT LONG volatile *Destination,
-    IN LONG Exchange,
-    IN LONG Comperand)
-{
-    // TODO: implement the version with only the acquire semantics
-    return __sync_val_compare_and_swap(
-        Destination, /* The pointer to a variable whose value is to be compared with. */
-        Comperand, /* The value to be compared */
-        Exchange /* The value to be stored */);
-}
-
-EXTERN_C
-PALIMPORT
-inline
-LONG
-PALAPI
-InterlockedCompareExchangeRelease(
-    IN OUT LONG volatile *Destination,
-    IN LONG Exchange,
-    IN LONG Comperand)
-{
-    // TODO: implement the version with only the release semantics
-    return __sync_val_compare_and_swap(
-        Destination, /* The pointer to a variable whose value is to be compared with. */
-        Comperand, /* The value to be compared */
-        Exchange /* The value to be stored */);
-}
+#define InterlockedCompareExchangeAcquire InterlockedCompareExchange
+#define InterlockedCompareExchangeRelease InterlockedCompareExchange
 
 // See the 32-bit variant in interlock2.s
 EXTERN_C
@@ -4400,10 +3572,13 @@ InterlockedCompareExchange64(
     IN LONGLONG Exchange,
     IN LONGLONG Comperand)
 {
-    return __sync_val_compare_and_swap(
-        Destination, /* The pointer to a variable whose value is to be compared with. */
-        Comperand, /* The value to be compared */
-        Exchange /* The value to be stored */);
+    LONGLONG result =
+        __sync_val_compare_and_swap(
+            Destination, /* The pointer to a variable whose value is to be compared with. */
+            Comperand, /* The value to be compared */
+            Exchange /* The value to be stored */);
+    PAL_ArmInterlockedOperationBarrier();
+    return result;
 }
 
 /*++
@@ -4432,7 +3607,9 @@ InterlockedExchangeAdd(
     IN OUT LONG volatile *Addend,
     IN LONG Value)
 {
-    return __sync_fetch_and_add(Addend, Value);
+    LONG result = __sync_fetch_and_add(Addend, Value);
+    PAL_ArmInterlockedOperationBarrier();
+    return result;
 }
 
 EXTERN_C
@@ -4444,7 +3621,9 @@ InterlockedExchangeAdd64(
     IN OUT LONGLONG volatile *Addend,
     IN LONGLONG Value)
 {
-    return __sync_fetch_and_add(Addend, Value);
+    LONGLONG result = __sync_fetch_and_add(Addend, Value);
+    PAL_ArmInterlockedOperationBarrier();
+    return result;
 }
 
 EXTERN_C
@@ -4456,7 +3635,9 @@ InterlockedAnd(
     IN OUT LONG volatile *Destination,
     IN LONG Value)
 {
-    return __sync_fetch_and_and(Destination, Value);
+    LONG result = __sync_fetch_and_and(Destination, Value);
+    PAL_ArmInterlockedOperationBarrier();
+    return result;
 }
 
 EXTERN_C
@@ -4468,7 +3649,9 @@ InterlockedOr(
     IN OUT LONG volatile *Destination,
     IN LONG Value)
 {
-    return __sync_fetch_and_or(Destination, Value);
+    LONG result = __sync_fetch_and_or(Destination, Value);
+    PAL_ArmInterlockedOperationBarrier();
+    return result;
 }
 
 EXTERN_C
@@ -4527,11 +3710,24 @@ MemoryBarrier(
     __sync_synchronize();
 }
 
+EXTERN_C
 PALIMPORT
+inline
 VOID
 PALAPI
 YieldProcessor(
-    VOID);
+    VOID)
+{
+#if defined(_X86_) || defined(_AMD64_)
+    __asm__ __volatile__(
+        "rep\n"
+        "nop");
+#elif defined(_ARM64_)
+    __asm__ __volatile__( "yield");
+#else
+    return;
+#endif
+}
 
 PALIMPORT
 DWORD
@@ -4549,7 +3745,7 @@ PALIMPORT
 BOOL
 PALAPI
 PAL_HasGetCurrentProcessorNumber(VOID);
-    
+
 #define FORMAT_MESSAGE_ALLOCATE_BUFFER 0x00000100
 #define FORMAT_MESSAGE_IGNORE_INSERTS  0x00000200
 #define FORMAT_MESSAGE_FROM_STRING     0x00000400
@@ -4597,23 +3793,23 @@ GetCommandLineW(
 #endif
 
 PALIMPORT
-VOID 
-PALAPI 
+VOID
+PALAPI
 RtlRestoreContext(
   IN PCONTEXT ContextRecord,
   IN PEXCEPTION_RECORD ExceptionRecord
 );
 
 PALIMPORT
-VOID 
-PALAPI 
+VOID
+PALAPI
 RtlCaptureContext(
   OUT PCONTEXT ContextRecord
 );
 
 PALIMPORT
-UINT 
-PALAPI 
+UINT
+PALAPI
 GetWriteWatch(
   IN DWORD dwFlags,
   IN PVOID lpBaseAddress,
@@ -4624,16 +3820,16 @@ GetWriteWatch(
 );
 
 PALIMPORT
-UINT 
-PALAPI 
+UINT
+PALAPI
 ResetWriteWatch(
   IN LPVOID lpBaseAddress,
   IN SIZE_T dwRegionSize
 );
 
 PALIMPORT
-VOID 
-PALAPI 
+VOID
+PALAPI
 FlushProcessWriteBuffers(VOID);
 
 typedef void (*PAL_ActivationFunction)(CONTEXT *context);
@@ -4724,18 +3920,6 @@ typedef POSVERSIONINFOEXA POSVERSIONINFOEX;
 typedef LPOSVERSIONINFOEXA LPOSVERSIONINFOEX;
 #endif
 
-PALIMPORT
-BOOL
-PALAPI
-GetVersionExW(
-          IN OUT LPOSVERSIONINFOW lpVersionInformation);
-
-#ifdef UNICODE
-#define GetVersionEx GetVersionExW
-#else
-#define GetVersionEx GetVersionExA
-#endif
-
 #define IMAGE_FILE_MACHINE_I386              0x014c
 #define IMAGE_FILE_MACHINE_ARM64             0xAA64  // ARM64 Little-Endian
 
@@ -4762,20 +3946,6 @@ GetSystemInfo(
 PALIMPORT
 BOOL
 PALAPI
-GetDiskFreeSpaceW(
-          LPCWSTR lpDirectoryName,
-          LPDWORD lpSectorsPerCluster,
-          LPDWORD lpBytesPerSector,
-          LPDWORD lpNumberOfFreeClusters,
-          LPDWORD lpTotalNumberOfClusters);
-
-#ifdef UNICODE
-#define GetDiskFreeSpace GetDiskFreeSpaceW
-#endif
-
-PALIMPORT
-BOOL
-PALAPI
 CreatePipe(
     OUT PHANDLE hReadPipe,
     OUT PHANDLE hWritePipe,
@@ -4783,32 +3953,43 @@ CreatePipe(
     IN DWORD nSize
     );
 
+//
+// NUMA related APIs
+//
+
 PALIMPORT
 BOOL
 PALAPI
-DeregisterEventSource (
-    IN HANDLE hEventLog
-    );
+GetNumaHighestNodeNumber(
+  OUT PULONG HighestNodeNumber
+);
 
 PALIMPORT
-HANDLE
+BOOL
 PALAPI
-RegisterEventSourceA (
-    IN OPTIONAL LPCSTR lpUNCServerName,
-    IN     LPCSTR lpSourceName
-    );
+PAL_GetNumaProcessorNode(WORD procNo, WORD* node);
+
 PALIMPORT
-HANDLE
+LPVOID
 PALAPI
-RegisterEventSourceW (
-    IN OPTIONAL LPCWSTR lpUNCServerName,
-    IN     LPCWSTR lpSourceName
-    );
-#ifdef UNICODE
-#define RegisterEventSource  RegisterEventSourceW
-#else
-#define RegisterEventSource  RegisterEventSourceA
-#endif // !UNICODE
+VirtualAllocExNuma(
+  IN HANDLE hProcess,
+  IN OPTIONAL LPVOID lpAddress,
+  IN SIZE_T dwSize,
+  IN DWORD flAllocationType,
+  IN DWORD flProtect,
+  IN DWORD nndPreferred
+);
+
+PALIMPORT
+BOOL
+PALAPI
+PAL_SetCurrentThreadAffinity(WORD procNo);
+
+PALIMPORT
+BOOL
+PALAPI
+PAL_GetCurrentThreadAffinitySet(SIZE_T size, UINT_PTR* data);
 
 //
 // The types of events that can be logged.
@@ -4819,45 +4000,6 @@ RegisterEventSourceW (
 #define EVENTLOG_INFORMATION_TYPE       0x0004
 #define EVENTLOG_AUDIT_SUCCESS          0x0008
 #define EVENTLOG_AUDIT_FAILURE          0x0010
-
-PALIMPORT
-BOOL
-PALAPI
-ReportEventA (
-    IN     HANDLE     hEventLog,
-    IN     WORD       wType,
-    IN     WORD       wCategory,
-    IN     DWORD      dwEventID,
-    IN OPTIONAL PSID       lpUserSid,
-    IN     WORD       wNumStrings,
-    IN     DWORD      dwDataSize,
-    IN OPTIONAL LPCSTR *lpStrings,
-    IN OPTIONAL LPVOID lpRawData
-    );
-PALIMPORT
-BOOL
-PALAPI
-ReportEventW (
-    IN     HANDLE     hEventLog,
-    IN     WORD       wType,
-    IN     WORD       wCategory,
-    IN     DWORD      dwEventID,
-    IN OPTIONAL PSID       lpUserSid,
-    IN     WORD       wNumStrings,
-    IN     DWORD      dwDataSize,
-    IN OPTIONAL LPCWSTR *lpStrings,
-    IN OPTIONAL LPVOID lpRawData
-    );
-#ifdef UNICODE
-#define ReportEvent  ReportEventW
-#else
-#define ReportEvent  ReportEventA
-#endif // !UNICODE
-
-PALIMPORT
-HRESULT
-PALAPI
-CoCreateGuid(OUT GUID * pguid);
 
 #if defined FEATURE_PAL_ANSI
 #include "palprivate.h"
@@ -4873,9 +4015,7 @@ CoCreateGuid(OUT GUID * pguid);
 #define printf        PAL_printf
 #define vprintf       PAL_vprintf
 #define wprintf       PAL_wprintf
-#define wcsspn        PAL_wcsspn
 #define wcstod        PAL_wcstod
-#define wcstol        PAL_wcstol
 #define wcstoul       PAL_wcstoul
 #define wcscat        PAL_wcscat
 #define wcscpy        PAL_wcscpy
@@ -4887,18 +4027,9 @@ CoCreateGuid(OUT GUID * pguid);
 #define swscanf       PAL_swscanf
 #define wcspbrk       PAL_wcspbrk
 #define wcscmp        PAL_wcscmp
-#define wcsncat       PAL_wcsncat
 #define wcsncpy       PAL_wcsncpy
 #define wcstok        PAL_wcstok
 #define wcscspn       PAL_wcscspn
-#define iswprint      PAL_iswprint
-#define iswalpha      PAL_iswalpha
-#define iswdigit      PAL_iswdigit
-#define iswspace      PAL_iswspace
-#define iswupper      PAL_iswupper
-#define iswxdigit     PAL_iswxdigit
-#define towlower      PAL_towlower
-#define towupper      PAL_towupper
 #define realloc       PAL_realloc
 #define fopen         PAL_fopen
 #define strtok        PAL_strtok
@@ -4907,64 +4038,62 @@ CoCreateGuid(OUT GUID * pguid);
 #define fwprintf      PAL_fwprintf
 #define vfprintf      PAL_vfprintf
 #define vfwprintf     PAL_vfwprintf
-#define ctime         PAL_ctime
-#define localtime     PAL_localtime
-#define mktime        PAL_mktime
 #define rand          PAL_rand
 #define time          PAL_time
 #define getenv        PAL_getenv
 #define fgets         PAL_fgets
-#define fgetws        PAL_fgetws
-#define fputc         PAL_fputc
-#define putchar       PAL_putchar
 #define qsort         PAL_qsort
 #define bsearch       PAL_bsearch
 #define ferror        PAL_ferror
 #define fread         PAL_fread
 #define fwrite        PAL_fwrite
-#define feof          PAL_feof
 #define ftell         PAL_ftell
 #define fclose        PAL_fclose
-#define setbuf        PAL_setbuf
 #define fflush        PAL_fflush
 #define fputs         PAL_fputs
 #define fseek         PAL_fseek
 #define fgetpos       PAL_fgetpos
 #define fsetpos       PAL_fsetpos
-#define getc          PAL_getc
-#define fgetc         PAL_getc // not a typo
-#define ungetc        PAL_ungetc
 #define setvbuf       PAL_setvbuf
-#define atol          PAL_atol
-#define labs          PAL_labs
 #define acos          PAL_acos
+#define acosh         PAL_acosh
 #define asin          PAL_asin
+#define asinh         PAL_asinh
 #define atan2         PAL_atan2
 #define exp           PAL_exp
+#define fma           PAL_fma
+#define ilogb         PAL_ilogb
 #define log           PAL_log
+#define log2          PAL_log2
 #define log10         PAL_log10
 #define pow           PAL_pow
+#define scalbn        PAL_scalbn
 #define acosf         PAL_acosf
+#define acoshf        PAL_acoshf
 #define asinf         PAL_asinf
+#define asinhf        PAL_asinhf
 #define atan2f        PAL_atan2f
 #define expf          PAL_expf
+#define fmaf          PAL_fmaf
+#define ilogbf        PAL_ilogbf
 #define logf          PAL_logf
+#define log2f         PAL_log2f
 #define log10f        PAL_log10f
 #define powf          PAL_powf
+#define scalbnf       PAL_scalbnf
 #define malloc        PAL_malloc
 #define free          PAL_free
-#define mkstemp       PAL_mkstemp
-#define rename        PAL_rename
 #define _strdup       PAL__strdup
 #define _getcwd       PAL__getcwd
 #define _open         PAL__open
+#define _pread        PAL__pread
 #define _close        PAL__close
 #define _wcstoui64    PAL__wcstoui64
 #define _flushall     PAL__flushall
 #define strnlen       PAL_strnlen
 #define wcsnlen       PAL_wcsnlen
 
-#ifdef _AMD64_ 
+#ifdef _AMD64_
 #define _mm_getcsr    PAL__mm_getcsr
 #define _mm_setcsr    PAL__mm_setcsr
 #endif // _AMD64_
@@ -4987,6 +4116,12 @@ CoCreateGuid(OUT GUID * pguid);
 
 typedef int errno_t;
 
+#if defined(__WINT_TYPE__)
+typedef __WINT_TYPE__ wint_t;
+#else
+typedef unsigned int wint_t;
+#endif
+
 #ifndef PAL_STDCPP_COMPAT
 
 typedef struct {
@@ -5007,9 +4142,10 @@ See MSDN doc for memcpy
 --*/
 EXTERN_C
 PALIMPORT
-void *PAL_memcpy (void *dest, const void *src, size_t count);
+DLLEXPORT
+void *PAL_memcpy (void *dest, const void * src, size_t count);
 
-PALIMPORT void * __cdecl memcpy(void *, const void *, size_t);
+PALIMPORT void * __cdecl memcpy(void *, const void *, size_t) THROW_DECL;
 
 #define memcpy PAL_memcpy
 #define IS_PAL_memcpy 1
@@ -5022,7 +4158,7 @@ PALIMPORT int    __cdecl memcmp(const void *, const void *, size_t);
 PALIMPORT void * __cdecl memset(void *, int, size_t);
 PALIMPORT void * __cdecl memmove(void *, const void *, size_t);
 PALIMPORT void * __cdecl memchr(const void *, int, size_t);
-PALIMPORT long long int __cdecl atoll(const char *);
+PALIMPORT long long int __cdecl atoll(const char *) THROW_DECL;
 PALIMPORT size_t __cdecl strlen(const char *);
 PALIMPORT int __cdecl strcmp(const char*, const char *);
 PALIMPORT int __cdecl strncmp(const char*, const char *, size_t);
@@ -5039,7 +4175,6 @@ PALIMPORT char * __cdecl strtok(char *, const char *);
 PALIMPORT size_t __cdecl strspn(const char *, const char *);
 PALIMPORT size_t  __cdecl strcspn(const char *, const char *);
 PALIMPORT int __cdecl atoi(const char *);
-PALIMPORT LONG __cdecl atol(const char *);
 PALIMPORT ULONG __cdecl strtoul(const char *, char **, int);
 PALIMPORT double __cdecl atof(const char *);
 PALIMPORT double __cdecl strtod(const char *, char **);
@@ -5053,7 +4188,14 @@ PALIMPORT int __cdecl isupper(int);
 PALIMPORT int __cdecl islower(int);
 PALIMPORT int __cdecl tolower(int);
 PALIMPORT int __cdecl toupper(int);
-
+PALIMPORT int __cdecl iswalpha(wint_t);
+PALIMPORT int __cdecl iswdigit(wint_t);
+PALIMPORT int __cdecl iswupper(wint_t);
+PALIMPORT int __cdecl iswprint(wint_t);
+PALIMPORT int __cdecl iswspace(wint_t);
+PALIMPORT int __cdecl iswxdigit(wint_t);
+PALIMPORT wint_t __cdecl towupper(wint_t);
+PALIMPORT wint_t __cdecl towlower(wint_t);
 #endif // PAL_STDCPP_COMPAT
 
 /* _TRUNCATE */
@@ -5061,63 +4203,50 @@ PALIMPORT int __cdecl toupper(int);
 #define _TRUNCATE ((size_t)-1)
 #endif
 
-PALIMPORT errno_t __cdecl memcpy_s(void *, size_t, const void *, size_t);
+PALIMPORT DLLEXPORT errno_t __cdecl memcpy_s(void *, size_t, const void *, size_t) THROW_DECL;
 PALIMPORT errno_t __cdecl memmove_s(void *, size_t, const void *, size_t);
-PALIMPORT char * __cdecl _strlwr(char *);
-PALIMPORT int __cdecl _stricmp(const char *, const char *);
-PALIMPORT int __cdecl vsprintf_s(char *, size_t, const char *, va_list);
+PALIMPORT DLLEXPORT int __cdecl _stricmp(const char *, const char *);
+PALIMPORT DLLEXPORT int __cdecl vsprintf_s(char *, size_t, const char *, va_list);
 PALIMPORT char * __cdecl _gcvt_s(char *, int, double, int);
-PALIMPORT char * __cdecl _ecvt(double, int, int *, int *);
 PALIMPORT int __cdecl __iscsym(int);
 PALIMPORT unsigned char * __cdecl _mbsinc(const unsigned char *);
 PALIMPORT unsigned char * __cdecl _mbsninc(const unsigned char *, size_t);
 PALIMPORT unsigned char * __cdecl _mbsdec(const unsigned char *, const unsigned char *);
-PALIMPORT int __cdecl _wcsicmp(const WCHAR *, const WCHAR*);
+PALIMPORT DLLEXPORT int __cdecl _wcsicmp(const WCHAR *, const WCHAR*);
 PALIMPORT int __cdecl _wcsnicmp(const WCHAR *, const WCHAR *, size_t);
 PALIMPORT int __cdecl _vsnprintf(char *, size_t, const char *, va_list);
-PALIMPORT int __cdecl _vsnprintf_s(char *, size_t, size_t, const char *, va_list);
-PALIMPORT int __cdecl _vsnwprintf_s(WCHAR *, size_t, size_t, const WCHAR *, va_list);
-PALIMPORT int __cdecl _snwprintf_s(WCHAR *, size_t, size_t, const WCHAR *, ...);
-PALIMPORT int __cdecl _snprintf_s(char *, size_t, size_t, const char *, ...);
-PALIMPORT int __cdecl sprintf_s(char *, size_t, const char *, ... );
-PALIMPORT int __cdecl swprintf_s(WCHAR *, size_t, const WCHAR *, ... );
+PALIMPORT DLLEXPORT int __cdecl _vsnprintf_s(char *, size_t, size_t, const char *, va_list);
+PALIMPORT DLLEXPORT int __cdecl _vsnwprintf_s(WCHAR *, size_t, size_t, const WCHAR *, va_list);
+PALIMPORT DLLEXPORT int __cdecl _snwprintf_s(WCHAR *, size_t, size_t, const WCHAR *, ...);
+PALIMPORT DLLEXPORT int __cdecl _snprintf_s(char *, size_t, size_t, const char *, ...);
+PALIMPORT DLLEXPORT int __cdecl sprintf_s(char *, size_t, const char *, ... );
+PALIMPORT DLLEXPORT int __cdecl swprintf_s(WCHAR *, size_t, const WCHAR *, ... );
 PALIMPORT int __cdecl _snwprintf_s(WCHAR *, size_t, size_t, const WCHAR *, ...);
 PALIMPORT int __cdecl vswprintf_s( WCHAR *, size_t, const WCHAR *, va_list);
-PALIMPORT int __cdecl sscanf_s(const char *, const char *, ...);
-PALIMPORT errno_t __cdecl _itow_s(int, WCHAR *, size_t, int);
+PALIMPORT DLLEXPORT int __cdecl sscanf_s(const char *, const char *, ...);
+PALIMPORT DLLEXPORT errno_t __cdecl _itow_s(int, WCHAR *, size_t, int);
 
-PALIMPORT size_t __cdecl PAL_wcslen(const WCHAR *);
-PALIMPORT int __cdecl PAL_wcscmp(const WCHAR*, const WCHAR*);
-PALIMPORT int __cdecl PAL_wcsncmp(const WCHAR *, const WCHAR *, size_t);
-PALIMPORT WCHAR * __cdecl PAL_wcscat(WCHAR *, const WCHAR *);
-PALIMPORT WCHAR * __cdecl PAL_wcsncat(WCHAR *, const WCHAR *, size_t);
+PALIMPORT DLLEXPORT size_t __cdecl PAL_wcslen(const WCHAR *);
+PALIMPORT DLLEXPORT int __cdecl PAL_wcscmp(const WCHAR*, const WCHAR*);
+PALIMPORT DLLEXPORT int __cdecl PAL_wcsncmp(const WCHAR *, const WCHAR *, size_t);
+PALIMPORT DLLEXPORT WCHAR * __cdecl PAL_wcscat(WCHAR *, const WCHAR *);
 PALIMPORT WCHAR * __cdecl PAL_wcscpy(WCHAR *, const WCHAR *);
 PALIMPORT WCHAR * __cdecl PAL_wcsncpy(WCHAR *, const WCHAR *, size_t);
-PALIMPORT const WCHAR * __cdecl PAL_wcschr(const WCHAR *, WCHAR);
-PALIMPORT const WCHAR * __cdecl PAL_wcsrchr(const WCHAR *, WCHAR);
+PALIMPORT DLLEXPORT const WCHAR * __cdecl PAL_wcschr(const WCHAR *, WCHAR);
+PALIMPORT DLLEXPORT const WCHAR * __cdecl PAL_wcsrchr(const WCHAR *, WCHAR);
 PALIMPORT WCHAR _WConst_return * __cdecl PAL_wcspbrk(const WCHAR *, const WCHAR *);
-PALIMPORT WCHAR _WConst_return * __cdecl PAL_wcsstr(const WCHAR *, const WCHAR *);
+PALIMPORT DLLEXPORT WCHAR _WConst_return * __cdecl PAL_wcsstr(const WCHAR *, const WCHAR *);
 PALIMPORT WCHAR * __cdecl PAL_wcstok(WCHAR *, const WCHAR *);
-PALIMPORT size_t __cdecl PAL_wcscspn(const WCHAR *, const WCHAR *);
+PALIMPORT DLLEXPORT size_t __cdecl PAL_wcscspn(const WCHAR *, const WCHAR *);
 PALIMPORT int __cdecl PAL_swprintf(WCHAR *, const WCHAR *, ...);
 PALIMPORT int __cdecl PAL_vswprintf(WCHAR *, const WCHAR *, va_list);
 PALIMPORT int __cdecl PAL_swscanf(const WCHAR *, const WCHAR *, ...);
-PALIMPORT LONG __cdecl PAL_wcstol(const WCHAR *, WCHAR **, int);
-PALIMPORT ULONG __cdecl PAL_wcstoul(const WCHAR *, WCHAR **, int);
-PALIMPORT size_t __cdecl PAL_wcsspn (const WCHAR *, const WCHAR *);
+PALIMPORT DLLEXPORT ULONG __cdecl PAL_wcstoul(const WCHAR *, WCHAR **, int);
 PALIMPORT double __cdecl PAL_wcstod(const WCHAR *, WCHAR **);
-PALIMPORT int __cdecl PAL_iswalpha(WCHAR);
-PALIMPORT int __cdecl PAL_iswprint(WCHAR);
-PALIMPORT int __cdecl PAL_iswupper(WCHAR);
-PALIMPORT int __cdecl PAL_iswspace(WCHAR);
-PALIMPORT int __cdecl PAL_iswdigit(WCHAR);
-PALIMPORT int __cdecl PAL_iswxdigit(WCHAR);
-PALIMPORT WCHAR __cdecl PAL_towlower(WCHAR);
-PALIMPORT WCHAR __cdecl PAL_towupper(WCHAR);
 
 PALIMPORT WCHAR * __cdecl _wcslwr(WCHAR *);
-PALIMPORT ULONGLONG _wcstoui64(const WCHAR *, WCHAR **, int);
-PALIMPORT errno_t __cdecl _i64tow_s(long long, WCHAR *, size_t, int);
+PALIMPORT DLLEXPORT ULONGLONG _wcstoui64(const WCHAR *, WCHAR **, int);
+PALIMPORT DLLEXPORT errno_t __cdecl _i64tow_s(long long, WCHAR *, size_t, int);
 PALIMPORT int __cdecl _wtoi(const WCHAR *);
 
 #ifdef __cplusplus
@@ -5133,6 +4262,15 @@ inline WCHAR *PAL_wcsstr(WCHAR *_S, const WCHAR *_P)
 }
 #endif
 
+#if defined(__llvm__)
+#define HAS_ROTL __has_builtin(_rotl)
+#define HAS_ROTR __has_builtin(_rotr)
+#else
+#define HAS_ROTL 0
+#define HAS_ROTR 0
+#endif
+
+#if !HAS_ROTL
 /*++
 Function:
 _rotl
@@ -5150,11 +4288,14 @@ unsigned int __cdecl _rotl(unsigned int value, int shift)
     retval = (value << shift) | (value >> (sizeof(int) * CHAR_BIT - shift));
     return retval;
 }
+#endif // !HAS_ROTL
 
 // On 64 bit unix, make the long an int.
 #ifdef BIT64
 #define _lrotl _rotl
 #endif // BIT64
+
+#if !HAS_ROTR
 
 /*++
 Function:
@@ -5174,31 +4315,39 @@ unsigned int __cdecl _rotr(unsigned int value, int shift)
     return retval;
 }
 
+#endif // !HAS_ROTR
+
 PALIMPORT int __cdecl abs(int);
-#ifndef PAL_STDCPP_COMPAT
-PALIMPORT LONG __cdecl labs(LONG);
-#endif // !PAL_STDCPP_COMPAT
 // clang complains if this is declared with __int64
 PALIMPORT long long __cdecl llabs(long long);
+#ifndef PAL_STDCPP_COMPAT
 
 PALIMPORT int __cdecl _finite(double);
 PALIMPORT int __cdecl _isnan(double);
 PALIMPORT double __cdecl _copysign(double, double);
 PALIMPORT double __cdecl acos(double);
+PALIMPORT double __cdecl acosh(double);
 PALIMPORT double __cdecl asin(double);
-PALIMPORT double __cdecl atan(double);
+PALIMPORT double __cdecl asinh(double);
+PALIMPORT double __cdecl atan(double) THROW_DECL;
+PALIMPORT double __cdecl atanh(double) THROW_DECL;
 PALIMPORT double __cdecl atan2(double, double);
+PALIMPORT double __cdecl cbrt(double) THROW_DECL;
 PALIMPORT double __cdecl ceil(double);
 PALIMPORT double __cdecl cos(double);
 PALIMPORT double __cdecl cosh(double);
 PALIMPORT double __cdecl exp(double);
 PALIMPORT double __cdecl fabs(double);
 PALIMPORT double __cdecl floor(double);
-PALIMPORT double __cdecl fmod(double, double); 
+PALIMPORT double __cdecl fmod(double, double);
+PALIMPORT double __cdecl fma(double, double, double);
+PALIMPORT int __cdecl ilogb(double);
 PALIMPORT double __cdecl log(double);
+PALIMPORT double __cdecl log2(double);
 PALIMPORT double __cdecl log10(double);
 PALIMPORT double __cdecl modf(double, double*);
 PALIMPORT double __cdecl pow(double, double);
+PALIMPORT double __cdecl scalbn(double, int);
 PALIMPORT double __cdecl sin(double);
 PALIMPORT double __cdecl sinh(double);
 PALIMPORT double __cdecl sqrt(double);
@@ -5209,25 +4358,34 @@ PALIMPORT int __cdecl _finitef(float);
 PALIMPORT int __cdecl _isnanf(float);
 PALIMPORT float __cdecl _copysignf(float, float);
 PALIMPORT float __cdecl acosf(float);
+PALIMPORT float __cdecl acoshf(float);
 PALIMPORT float __cdecl asinf(float);
-PALIMPORT float __cdecl atanf(float);
+PALIMPORT float __cdecl asinhf(float);
+PALIMPORT float __cdecl atanf(float) THROW_DECL;
+PALIMPORT float __cdecl atanhf(float) THROW_DECL;
 PALIMPORT float __cdecl atan2f(float, float);
+PALIMPORT float __cdecl cbrtf(float) THROW_DECL;
 PALIMPORT float __cdecl ceilf(float);
 PALIMPORT float __cdecl cosf(float);
 PALIMPORT float __cdecl coshf(float);
 PALIMPORT float __cdecl expf(float);
 PALIMPORT float __cdecl fabsf(float);
 PALIMPORT float __cdecl floorf(float);
-PALIMPORT float __cdecl fmodf(float, float); 
+PALIMPORT float __cdecl fmodf(float, float);
+PALIMPORT float __cdecl fmaf(float, float, float);
+PALIMPORT int __cdecl ilogbf(float);
 PALIMPORT float __cdecl logf(float);
+PALIMPORT float __cdecl log2f(float);
 PALIMPORT float __cdecl log10f(float);
 PALIMPORT float __cdecl modff(float, float*);
 PALIMPORT float __cdecl powf(float, float);
+PALIMPORT float __cdecl scalbnf(float, int);
 PALIMPORT float __cdecl sinf(float);
 PALIMPORT float __cdecl sinhf(float);
 PALIMPORT float __cdecl sqrtf(float);
 PALIMPORT float __cdecl tanf(float);
 PALIMPORT float __cdecl tanhf(float);
+#endif // !PAL_STDCPP_COMPAT
 
 #ifndef PAL_STDCPP_COMPAT
 
@@ -5241,9 +4399,9 @@ inline __int64 abs(__int64 _X) {
 }
 #endif
 
-PALIMPORT void * __cdecl malloc(size_t);
-PALIMPORT void   __cdecl free(void *);
-PALIMPORT void * __cdecl realloc(void *, size_t);
+PALIMPORT DLLEXPORT void * __cdecl malloc(size_t);
+PALIMPORT DLLEXPORT void   __cdecl free(void *);
+PALIMPORT DLLEXPORT void * __cdecl realloc(void *, size_t);
 PALIMPORT char * __cdecl _strdup(const char *);
 
 #if defined(_MSC_VER)
@@ -5262,35 +4420,23 @@ PALIMPORT char * __cdecl _strdup(const char *);
 PALIMPORT PAL_NORETURN void __cdecl exit(int);
 int __cdecl atexit(void (__cdecl *function)(void));
 
-PALIMPORT void __cdecl qsort(void *, size_t, size_t, int (__cdecl *)(const void *, const void *));
-PALIMPORT void * __cdecl bsearch(const void *, const void *, size_t, size_t,
-int (__cdecl *)(const void *, const void *));
-
 PALIMPORT char * __cdecl _fullpath(char *, const char *, size_t);
 
 #ifndef PAL_STDCPP_COMPAT
+
+PALIMPORT DLLEXPORT void __cdecl qsort(void *, size_t, size_t, int(__cdecl *)(const void *, const void *));
+PALIMPORT DLLEXPORT void * __cdecl bsearch(const void *, const void *, size_t, size_t,
+    int(__cdecl *)(const void *, const void *));
+
 PALIMPORT time_t __cdecl time(time_t *);
 
-struct tm {
-        int tm_sec;     /* seconds after the minute - [0,59] */
-        int tm_min;     /* minutes after the hour - [0,59] */
-        int tm_hour;    /* hours since midnight - [0,23] */
-        int tm_mday;    /* day of the month - [1,31] */
-        int tm_mon;     /* months since January - [0,11] */
-        int tm_year;    /* years since 1900 */
-        int tm_wday;    /* days since Sunday - [0,6] */
-        int tm_yday;    /* days since January 1 - [0,365] */
-        int tm_isdst;   /* daylight savings time flag */
-        };
-
-PALIMPORT struct tm * __cdecl localtime(const time_t *);
-PALIMPORT time_t __cdecl mktime(struct tm *);
-PALIMPORT char * __cdecl ctime(const time_t *);
 #endif // !PAL_STDCPP_COMPAT
 
 PALIMPORT int __cdecl _open_osfhandle(INT_PTR, int);
-PALIMPORT int __cdecl _close(int);
-PALIMPORT int __cdecl _flushall();
+PALIMPORT DLLEXPORT int __cdecl _open(const char *szPath, int nFlags, ...);
+PALIMPORT DLLEXPORT size_t __cdecl _pread(int fd, void *buf, size_t nbytes, ULONG64 offset);
+PALIMPORT DLLEXPORT int __cdecl _close(int);
+PALIMPORT DLLEXPORT int __cdecl _flushall();
 
 #ifdef PAL_STDCPP_COMPAT
 
@@ -5322,27 +4468,19 @@ typedef struct _FILE PAL_FILE;
 #endif // PAL_STDCPP_COMPAT
 
 PALIMPORT int __cdecl PAL_fclose(PAL_FILE *);
-PALIMPORT void __cdecl PAL_setbuf(PAL_FILE *, char*);
-PALIMPORT int __cdecl PAL_fflush(PAL_FILE *);
+PALIMPORT DLLEXPORT int __cdecl PAL_fflush(PAL_FILE *);
 PALIMPORT size_t __cdecl PAL_fwrite(const void *, size_t, size_t, PAL_FILE *);
 PALIMPORT size_t __cdecl PAL_fread(void *, size_t, size_t, PAL_FILE *);
 PALIMPORT char * __cdecl PAL_fgets(char *, int, PAL_FILE *);
 PALIMPORT int __cdecl PAL_fputs(const char *, PAL_FILE *);
-PALIMPORT int __cdecl PAL_fputc(int c, PAL_FILE *stream);
-PALIMPORT int __cdecl PAL_putchar(int c);
-PALIMPORT int __cdecl PAL_fprintf(PAL_FILE *, const char *, ...);
+PALIMPORT DLLEXPORT int __cdecl PAL_fprintf(PAL_FILE *, const char *, ...);
 PALIMPORT int __cdecl PAL_vfprintf(PAL_FILE *, const char *, va_list);
 PALIMPORT int __cdecl PAL_fseek(PAL_FILE *, LONG, int);
 PALIMPORT LONG __cdecl PAL_ftell(PAL_FILE *);
-PALIMPORT int __cdecl PAL_feof(PAL_FILE *);
 PALIMPORT int __cdecl PAL_ferror(PAL_FILE *);
 PALIMPORT PAL_FILE * __cdecl PAL_fopen(const char *, const char *);
-PALIMPORT int __cdecl PAL_getc(PAL_FILE *stream);
-PALIMPORT int __cdecl PAL_fgetc(PAL_FILE *stream);
-PALIMPORT int __cdecl PAL_ungetc(int c, PAL_FILE *stream);
 PALIMPORT int __cdecl PAL_setvbuf(PAL_FILE *stream, char *, int, size_t);
-PALIMPORT WCHAR * __cdecl PAL_fgetws(WCHAR *, int, PAL_FILE *);
-PALIMPORT int __cdecl PAL_fwprintf(PAL_FILE *, const WCHAR *, ...);
+PALIMPORT DLLEXPORT int __cdecl PAL_fwprintf(PAL_FILE *, const WCHAR *, ...);
 PALIMPORT int __cdecl PAL_vfwprintf(PAL_FILE *, const WCHAR *, va_list);
 PALIMPORT int __cdecl PAL_wprintf(const WCHAR*, ...);
 
@@ -5350,7 +4488,6 @@ PALIMPORT int __cdecl _getw(PAL_FILE *);
 PALIMPORT int __cdecl _putw(int, PAL_FILE *);
 PALIMPORT PAL_FILE * __cdecl _fdopen(int, const char *);
 PALIMPORT PAL_FILE * __cdecl _wfopen(const WCHAR *, const WCHAR *);
-PALIMPORT PAL_FILE * __cdecl _wfsopen(const WCHAR *, const WCHAR *, int);
 
 /* Maximum value that can be returned by the rand function. */
 
@@ -5361,7 +4498,7 @@ PALIMPORT PAL_FILE * __cdecl _wfsopen(const WCHAR *, const WCHAR *, int);
 PALIMPORT int __cdecl rand(void);
 PALIMPORT void __cdecl srand(unsigned int);
 
-PALIMPORT int __cdecl printf(const char *, ...);
+PALIMPORT DLLEXPORT int __cdecl printf(const char *, ...);
 PALIMPORT int __cdecl vprintf(const char *, va_list);
 
 #ifdef _MSC_VER
@@ -5370,10 +4507,10 @@ PALIMPORT int __cdecl vprintf(const char *, va_list);
 #define PAL_get_caller 0
 #endif
 
-PALIMPORT PAL_FILE * __cdecl PAL_get_stdout(int caller);
+PALIMPORT DLLEXPORT PAL_FILE * __cdecl PAL_get_stdout(int caller);
 PALIMPORT PAL_FILE * __cdecl PAL_get_stdin(int caller);
-PALIMPORT PAL_FILE * __cdecl PAL_get_stderr(int caller);
-PALIMPORT int * __cdecl PAL_errno(int caller);
+PALIMPORT DLLEXPORT PAL_FILE * __cdecl PAL_get_stderr(int caller);
+PALIMPORT DLLEXPORT int * __cdecl PAL_errno(int caller);
 
 #ifdef PAL_STDCPP_COMPAT
 #define PAL_stdout (PAL_get_stdout(PAL_get_caller))
@@ -5387,10 +4524,13 @@ PALIMPORT int * __cdecl PAL_errno(int caller);
 #define errno  (*PAL_errno(PAL_get_caller))
 #endif // PAL_STDCPP_COMPAT
 
-PALIMPORT char * __cdecl getenv(const char *);
-PALIMPORT int __cdecl _putenv(const char *);
+PALIMPORT DLLEXPORT char * __cdecl getenv(const char *);
+PALIMPORT DLLEXPORT int __cdecl _putenv(const char *);
 
 #define ERANGE          34
+
+PALIMPORT WCHAR __cdecl PAL_ToUpperInvariant(WCHAR);
+PALIMPORT WCHAR __cdecl PAL_ToLowerInvariant(WCHAR);
 
 /******************* PAL-specific I/O completion port *****************/
 
@@ -5440,179 +4580,18 @@ unsigned int _mm_getcsr(void);
 PALIMPORT
 void _mm_setcsr(unsigned int i);
 
-/******************* PAL side-by-side support  ************************/
-
-#ifdef FEATURE_PAL_SXS
-//
-// Some versions of the PAL support several PALs side-by-side
-// in the process.  To avoid those PALs interfering with one
-// another, they need to be told by clients when they are active
-// and when they are not.
-//
-
-// To avoid performance problems incurred by swapping thread
-// exception ports every time we leave the PAL, there's also
-// the concept of entering/leaving the PAL at its top boundary
-// (entering down/leaving up) or at the bottom boundary
-// (leaving down/entering up).
-
-typedef enum _PAL_Boundary {
-    PAL_BoundaryTop,            // closer to main()
-    PAL_BoundaryBottom,         // closer to execution
-    PAL_BoundaryEH,             // out-of-band during EH
-    
-    PAL_BoundaryMax = PAL_BoundaryEH
-} PAL_Boundary;
-
-// This function needs to be called on a thread when it enters
-// a region of code that depends on this instance of the PAL
-// in the process, and the current thread may or may not be
-// known to the PAL.  This function can fail (for something else
-// than an internal error) if this is the first time that the
-// current thread entered this PAL.  Note that PAL_Initialize
-// implies a call to this function.  Does not modify LastError.
-PALIMPORT
-DWORD
-PALAPI
-PAL_Enter(PAL_Boundary boundary);
-
-// Returns TRUE if we this thread has already entered the PAL,
-// returns FALSE if we have not entered the PAL.
-PALIMPORT
-BOOL
-PALAPI
-PAL_HasEntered(VOID);
-
-// Equivalent to PAL_Enter(PAL_BoundaryTop) and is for stub
-// code generation use.
-PALIMPORT
-DWORD
-PALAPI
-PAL_EnterTop(VOID);
-
-// This function needs to be called on a thread when it enters
-// a region of code that depends on this instance of the PAL
-// in the process, and the current thread is already known to
-// the PAL.  Does not modify LastError.
-PALIMPORT
-VOID
-PALAPI
-PAL_Reenter(PAL_Boundary boundary);
-
-// This function needs to be called on a thread when it enters
-// a region of code that depends on this instance of the PAL
-// in the process, and it is unknown whether the current thread
-// is already running in the PAL.  Returns TRUE if and only if
-// the thread was not running in the PAL previously.  Does not
-// modify LastError.
-PALIMPORT
-BOOL
-PALAPI
-PAL_ReenterForEH(VOID);
-
-// This function needs to be called on a thread when it leaves
-// a region of code that depends on this instance of the PAL
-// in the process.  Does not modify LastError.
-PALIMPORT
-VOID
-PALAPI
-PAL_Leave(PAL_Boundary boundary);
-
-// This function is equivalent to PAL_Leave(PAL_BoundaryBottom)
-// and is available to limit the creation of stub code.
-PALIMPORT
-VOID
-PALAPI
-PAL_LeaveBottom(VOID);
-
-// This function is equivalent to PAL_Leave(PAL_BoundaryTop)
-// and is available to limit the creation of stub code.
-PALIMPORT
-VOID
-PALAPI
-PAL_LeaveTop(VOID);
+/******************* PAL functions for CPU capability detection *******/
 
 #ifdef  __cplusplus
-//
-// A holder to enter the PAL for a specific region of code.
-// Previously, we must have been executing outside the PAL
-// (unless fEnter is set to FALSE).
-//
-class PAL_EnterHolder
-{
-private:
-    BOOL m_fEntered;
-    DWORD m_palError;
-public:
-    PAL_EnterHolder(BOOL fEnter = TRUE) : m_palError(ERROR_SUCCESS)
-    {
-        if (fEnter)
-        {
-            m_palError = PAL_Enter(PAL_BoundaryTop);
-            m_fEntered = m_palError == ERROR_SUCCESS;
-        }
-        else
-        {
-            m_fEntered = FALSE;
-        }
-    }
 
-    ~PAL_EnterHolder()
-    {
-        if (m_fEntered)
-        {
-            PAL_Leave(PAL_BoundaryTop);
-        }
-    }
+class CORJIT_FLAGS;
 
-    DWORD GetError()
-    {
-        return m_palError;
-    }
-    
-    void SuppressRelease()
-    {
-        // Used to avoid calling PAL_Leave() when 
-        // another code path will explicitly do so.
-        m_fEntered = FALSE;
-    }
-};
+PALIMPORT
+VOID
+PALAPI
+PAL_GetJitCpuCapabilityFlags(CORJIT_FLAGS *flags);
 
-class PAL_LeaveHolder
-{
-public:
-    PAL_LeaveHolder()
-    {
-        PAL_Leave(PAL_BoundaryBottom);
-    }
-
-    ~PAL_LeaveHolder()
-    {
-        PAL_Reenter(PAL_BoundaryBottom);
-    }
-};
-#endif // __cplusplus
-
-#else // FEATURE_PAL_SXS
-
-#define PAL_Enter(boundary) ERROR_SUCCESS
-#define PAL_Reenter(boundary)
-#define PAL_Leave(boundary)
-
-#ifdef __cplusplus
-class PAL_EnterHolder {
-public:
-    // using constructor to suppress the "unused variable" warnings
-    PAL_EnterHolder() {}
-};
-class PAL_LeaveHolder {
-public:
-    // using constructor to suppress the "unused variable" warnings
-    PAL_LeaveHolder() {}
-};
-#endif // __cplusplus
-
-#endif // FEATURE_PAL_SXS
+#endif
 
 #ifdef __cplusplus
 
@@ -5622,7 +4601,7 @@ PALIMPORT
 VOID
 PALAPI
 PAL_FreeExceptionRecords(
-  IN EXCEPTION_RECORD *exceptionRecord, 
+  IN EXCEPTION_RECORD *exceptionRecord,
   IN CONTEXT *contextRecord);
 
 #define EXCEPTION_CONTINUE_SEARCH   0
@@ -5632,20 +4611,21 @@ PAL_FreeExceptionRecords(
 struct PAL_SEHException
 {
 private:
-    static const SIZE_T NoTargetFrameSp = SIZE_MAX;
+    static const SIZE_T NoTargetFrameSp = (SIZE_T)SIZE_MAX;
 
     void Move(PAL_SEHException& ex)
     {
         ExceptionPointers.ExceptionRecord = ex.ExceptionPointers.ExceptionRecord;
         ExceptionPointers.ContextRecord = ex.ExceptionPointers.ContextRecord;
         TargetFrameSp = ex.TargetFrameSp;
+        RecordsOnStack = ex.RecordsOnStack;
 
         ex.Clear();
     }
 
     void FreeRecords()
     {
-        if (ExceptionPointers.ExceptionRecord != NULL)
+        if (ExceptionPointers.ExceptionRecord != NULL && !RecordsOnStack )
         {
             PAL_FreeExceptionRecords(ExceptionPointers.ExceptionRecord, ExceptionPointers.ContextRecord);
             ExceptionPointers.ExceptionRecord = NULL;
@@ -5657,18 +4637,20 @@ public:
     EXCEPTION_POINTERS ExceptionPointers;
     // Target frame stack pointer set before the 2nd pass.
     SIZE_T TargetFrameSp;
+    bool RecordsOnStack;
 
-    PAL_SEHException(EXCEPTION_RECORD *pExceptionRecord, CONTEXT *pContextRecord)
+    PAL_SEHException(EXCEPTION_RECORD *pExceptionRecord, CONTEXT *pContextRecord, bool onStack = false)
     {
         ExceptionPointers.ExceptionRecord = pExceptionRecord;
         ExceptionPointers.ContextRecord = pContextRecord;
         TargetFrameSp = NoTargetFrameSp;
+        RecordsOnStack = onStack;
     }
 
     PAL_SEHException()
     {
         Clear();
-    }    
+    }
 
     // The copy constructor and copy assignment operators are deleted so that the PAL_SEHException
     // can never be copied, only moved. This enables simple lifetime management of the exception and
@@ -5679,7 +4661,7 @@ public:
     PAL_SEHException(PAL_SEHException&& ex)
     {
         Move(ex);
-    }    
+    }
 
     PAL_SEHException& operator=(PAL_SEHException&& ex)
     {
@@ -5698,6 +4680,7 @@ public:
         ExceptionPointers.ExceptionRecord = NULL;
         ExceptionPointers.ContextRecord = NULL;
         TargetFrameSp = NoTargetFrameSp;
+        RecordsOnStack = false;
     }
 
     CONTEXT* GetContextRecord()
@@ -5723,7 +4706,7 @@ public:
 
 typedef BOOL (*PHARDWARE_EXCEPTION_HANDLER)(PAL_SEHException* ex);
 typedef BOOL (*PHARDWARE_EXCEPTION_SAFETY_CHECK_FUNCTION)(PCONTEXT contextRecord, PEXCEPTION_RECORD exceptionRecord);
-typedef VOID (*PTERMINATION_REQUEST_HANDLER)();
+typedef VOID (*PTERMINATION_REQUEST_HANDLER)(int terminationExitCode);
 typedef DWORD (*PGET_GCMARKER_EXCEPTION_CODE)(LPVOID ip);
 
 PALIMPORT
@@ -5752,6 +4735,16 @@ PALAPI
 PAL_SetTerminationRequestHandler(
     IN PTERMINATION_REQUEST_HANDLER terminationRequestHandler);
 
+PALIMPORT
+VOID
+PALAPI
+PAL_CatchHardwareExceptionHolderEnter();
+
+PALIMPORT
+VOID
+PALAPI
+PAL_CatchHardwareExceptionHolderExit();
+
 //
 // This holder is used to indicate that a hardware
 // exception should be raised as a C++ exception
@@ -5760,17 +4753,21 @@ PAL_SetTerminationRequestHandler(
 class CatchHardwareExceptionHolder
 {
 public:
-    CatchHardwareExceptionHolder();
+    CatchHardwareExceptionHolder()
+    {
+        PAL_CatchHardwareExceptionHolderEnter();
+    }
 
-    ~CatchHardwareExceptionHolder();
+    ~CatchHardwareExceptionHolder()
+    {
+        PAL_CatchHardwareExceptionHolderExit();
+    }
 
     static bool IsEnabled();
 };
 
 //
-// NOTE: Catching hardware exceptions are only enabled in the DAC and SOS 
-// builds. A hardware exception in coreclr code will fail fast/terminate
-// the process.
+// NOTE: This is only defined in one PAL test.
 //
 #ifdef FEATURE_ENABLE_HARDWARE_EXCEPTIONS
 #define HardwareExceptionHolder CatchHardwareExceptionHolder __catchHardwareException;
@@ -5778,19 +4775,24 @@ public:
 #define HardwareExceptionHolder
 #endif // FEATURE_ENABLE_HARDWARE_EXCEPTIONS
 
-#ifdef FEATURE_PAL_SXS
+class NativeExceptionHolderBase;
+
+PALIMPORT
+PALAPI
+NativeExceptionHolderBase **
+PAL_GetNativeExceptionHolderHead();
 
 extern "C++" {
 
 //
-// This is the base class of native exception holder used to provide 
+// This is the base class of native exception holder used to provide
 // the filter function to the exception dispatcher. This allows the
 // filter to be called during the first pass to better emulate SEH
 // the xplat platforms that only have C++ exception support.
 //
 class NativeExceptionHolderBase
 {
-    // Save the address of the holder head so the destructor 
+    // Save the address of the holder head so the destructor
     // doesn't have access the slow (on Linux) TLS value again.
     NativeExceptionHolderBase **m_head;
 
@@ -5798,9 +4800,22 @@ class NativeExceptionHolderBase
     NativeExceptionHolderBase *m_next;
 
 protected:
-    NativeExceptionHolderBase();
+    NativeExceptionHolderBase()
+    {
+        m_head = nullptr;
+        m_next = nullptr;
+    }
 
-    ~NativeExceptionHolderBase();
+    ~NativeExceptionHolderBase()
+    {
+        // Only destroy if Push was called
+        if (m_head != nullptr)
+        {
+            *m_head = m_next;
+            m_head = nullptr;
+            m_next = nullptr;
+        }
+    }
 
 public:
     // Calls the holder's filter handler.
@@ -5809,17 +4824,23 @@ public:
     // Adds the holder to the "stack" of holders. This is done explicitly instead
     // of in the constructor was to avoid the mess of move constructors combined
     // with return value optimization (in CreateHolder).
-    void Push();
+    void Push()
+    {
+        NativeExceptionHolderBase **head = PAL_GetNativeExceptionHolderHead();
+        m_head = head;
+        m_next = *head;
+        *head = this;
+    }
 
     // Given the currentHolder and locals stack range find the next holder starting with this one
     // To find the first holder, pass nullptr as the currentHolder.
-    static NativeExceptionHolderBase *FindNextHolder(NativeExceptionHolderBase *currentHolder, void *frameLowAddress, void *frameHighAddress);
+    static NativeExceptionHolderBase *FindNextHolder(NativeExceptionHolderBase *currentHolder, PVOID frameLowAddress, PVOID frameHighAddress);
 };
 
 //
 // This is the second part of the native exception filter holder. It is
 // templated because the lambda used to wrap the exception filter is a
-// unknown type. 
+// unknown type.
 //
 template<class FilterType>
 class NativeExceptionHolder : public NativeExceptionHolderBase
@@ -5896,8 +4917,8 @@ public:
     auto tryBlock = [](__ParamType __paramDef)                                  \
     {
 
-// Start of an exception handler. If an exception raised by the RaiseException 
-// occurs in the try block and the disposition is EXCEPTION_EXECUTE_HANDLER, 
+// Start of an exception handler. If an exception raised by the RaiseException
+// occurs in the try block and the disposition is EXCEPTION_EXECUTE_HANDLER,
 // the handler code is executed. If the disposition is EXCEPTION_CONTINUE_SEARCH,
 // the exception is rethrown. The EXCEPTION_CONTINUE_EXECUTION disposition is
 // not supported.
@@ -5908,6 +4929,7 @@ public:
     EXCEPTION_DISPOSITION disposition = EXCEPTION_CONTINUE_EXECUTION;           \
     auto exceptionFilter = [&disposition, &__param](PAL_SEHException& ex)       \
     {                                                                           \
+        (void)__param;                                                          \
         disposition = dispositionExpression;                                    \
         _ASSERTE(disposition != EXCEPTION_CONTINUE_EXECUTION);                  \
         return disposition;                                                     \
@@ -5941,7 +4963,7 @@ public:
     };                                  \
     const bool isFinally = true;        \
     auto finallyBlock = [&]()           \
-    {                       
+    {
 
 // End of an except or a finally block.
 #define PAL_ENDTRY                      \
@@ -5963,16 +4985,13 @@ public:
 
 } // extern "C++"
 
-#endif // FEATURE_PAL_SXS
-
 #define PAL_CPP_THROW(type, obj) { throw obj; }
 #define PAL_CPP_RETHROW { throw; }
 #define PAL_CPP_TRY                     try { HardwareExceptionHolder
-#define PAL_CPP_CATCH_EXCEPTION(ident)  } catch (Exception *ident) { PAL_Reenter(PAL_BoundaryBottom);
-#define PAL_CPP_CATCH_EXCEPTION_NOARG   } catch (Exception *) { PAL_Reenter(PAL_BoundaryBottom);
-#define PAL_CPP_CATCH_DERIVED(type, ident) } catch (type *ident) { PAL_Reenter(PAL_BoundaryBottom);
+#define PAL_CPP_CATCH_EXCEPTION(ident)  } catch (Exception *ident) {
+#define PAL_CPP_CATCH_EXCEPTION_NOARG   } catch (Exception *) {
+#define PAL_CPP_CATCH_DERIVED(type, ident) } catch (type *ident) {
 #define PAL_CPP_CATCH_ALL               } catch (...) {                                           \
-                                            PAL_Reenter(PAL_BoundaryBottom);                      \
                                             try { throw; }                                        \
                                             catch (PAL_SEHException& ex) { ex.SecondPassDone(); } \
                                             catch (...) {}
@@ -5983,36 +5002,12 @@ public:
 #pragma warning(disable:4611) // interaction between '_setjmp' and C++ object destruction is non-portable
 #endif
 
-#ifdef FEATURE_PAL_SXS
-
 #define PAL_TRY_FOR_DLLMAIN(ParamType, paramDef, paramRef, _reason) PAL_TRY(ParamType, paramDef, paramRef)
-
-#else // FEATURE_PAL_SXS
-
-#define PAL_TRY(ParamType, paramDef, paramRef)                          \
-    {                                                                   \
-        ParamType __param = paramRef;                                   \
-        ParamType paramDef; paramDef = __param;                         \
-        try {                                                           \
-            HardwareExceptionHolder
-
-#define PAL_TRY_FOR_DLLMAIN(ParamType, paramDef, paramRef, _reason)     \
-    {                                                                   \
-        ParamType __param = paramRef;                                   \
-        ParamType paramDef; paramDef = __param;                         \
-        try {                                                           \
-            HardwareExceptionHolder
-
-#define PAL_ENDTRY                                                      \
-        }                                                               \
-    }
-
-#endif // FEATURE_PAL_SXS
 
 #endif // __cplusplus
 
 // Platform-specific library naming
-// 
+//
 #ifdef __APPLE__
 #define MAKEDLLNAME_W(name) u"lib" name u".dylib"
 #define MAKEDLLNAME_A(name)  "lib" name  ".dylib"
@@ -6027,24 +5022,27 @@ public:
 #define MAKEDLLNAME(x) MAKEDLLNAME_A(x)
 #endif
 
-#define PAL_SHLIB_PREFIX "lib"
+#define PAL_SHLIB_PREFIX    "lib"
+#define PAL_SHLIB_PREFIX_W  u"lib"
 
 #if __APPLE__
-#define PAL_SHLIB_SUFFIX ".dylib"
+#define PAL_SHLIB_SUFFIX    ".dylib"
+#define PAL_SHLIB_SUFFIX_W  u".dylib"
 #else
-#define PAL_SHLIB_SUFFIX ".so"
+#define PAL_SHLIB_SUFFIX    ".so"
+#define PAL_SHLIB_SUFFIX_W  u".so"
 #endif
 
-#define DBG_EXCEPTION_HANDLED            ((DWORD   )0x00010001L)    
-#define DBG_CONTINUE                     ((DWORD   )0x00010002L)    
-#define DBG_EXCEPTION_NOT_HANDLED        ((DWORD   )0x80010001L)    
+#define DBG_EXCEPTION_HANDLED            ((DWORD   )0x00010001L)
+#define DBG_CONTINUE                     ((DWORD   )0x00010002L)
+#define DBG_EXCEPTION_NOT_HANDLED        ((DWORD   )0x80010001L)
 
-#define DBG_TERMINATE_THREAD             ((DWORD   )0x40010003L)    
-#define DBG_TERMINATE_PROCESS            ((DWORD   )0x40010004L)    
-#define DBG_CONTROL_C                    ((DWORD   )0x40010005L)    
-#define DBG_RIPEXCEPTION                 ((DWORD   )0x40010007L)    
-#define DBG_CONTROL_BREAK                ((DWORD   )0x40010008L)    
-#define DBG_COMMAND_EXCEPTION            ((DWORD   )0x40010009L)    
+#define DBG_TERMINATE_THREAD             ((DWORD   )0x40010003L)
+#define DBG_TERMINATE_PROCESS            ((DWORD   )0x40010004L)
+#define DBG_CONTROL_C                    ((DWORD   )0x40010005L)
+#define DBG_RIPEXCEPTION                 ((DWORD   )0x40010007L)
+#define DBG_CONTROL_BREAK                ((DWORD   )0x40010008L)
+#define DBG_COMMAND_EXCEPTION            ((DWORD   )0x40010009L)
 
 #define STATUS_USER_APC                  ((DWORD   )0x000000C0L)
 #define STATUS_GUARD_PAGE_VIOLATION      ((DWORD   )0x80000001L)

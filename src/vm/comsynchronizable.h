@@ -61,14 +61,9 @@ public:
         ApartmentUnknown = 2
     };
 
-    static LPVOID F_CALL_CONV FastGetCurrentThread();
-    static LPVOID F_CALL_CONV FastGetDomain();
+    static void StartInner(ThreadBaseObject* pThisUNSAFE);
 
-    static void StartInner(ThreadBaseObject* pThisUNSAFE, StackCrawlMark* pStackMark);
-
-    static FCDECL1(void, Abort, ThreadBaseObject* pThis);
-    static FCDECL1(void, ResetAbort, ThreadBaseObject* pThis);
-    static FCDECL2(void,    Start,             ThreadBaseObject* pThisUNSAFE, StackCrawlMark* pStackMark);
+    static FCDECL1(void,    Start,             ThreadBaseObject* pThisUNSAFE);
     static FCDECL1(INT32,   GetPriority,       ThreadBaseObject* pThisUNSAFE);
     static FCDECL2(void,    SetPriority,       ThreadBaseObject* pThisUNSAFE, INT32 iPriority);
     static FCDECL1(void,    Interrupt,         ThreadBaseObject* pThisUNSAFE);
@@ -87,8 +82,6 @@ public:
     static FCDECL3(INT32,   SetApartmentState, ThreadBaseObject* pThisUNSAFE, INT32 iState, CLR_BOOL fireMDAOnMismatch);
     static FCDECL1(void,    StartupSetApartmentState, ThreadBaseObject* pThis);
 #endif // FEATURE_COMINTEROP_APARTMENT_SUPPORT
-    static FCDECL0(Object*, GetDomain);
-    static void QCALLTYPE nativeInitCultureAccessors();
 
     static
     void QCALLTYPE InformThreadNameChange(QCall::ThreadHandle thread, LPCWSTR name, INT32 len);
@@ -97,20 +90,19 @@ public:
     UINT64 QCALLTYPE GetProcessDefaultStackSize();
 
     static FCDECL1(INT32,   GetManagedThreadId, ThreadBaseObject* th);
+    static INT32 QCALLTYPE GetOptimalMaxSpinWaitsPerSpinIteration();
     static FCDECL1(void,    SpinWait,                       int iterations);
     static BOOL QCALLTYPE YieldThread();
     static FCDECL0(Object*, GetCurrentThread);
+    static UINT64 QCALLTYPE GetCurrentOSThreadId();
     static FCDECL1(void,    Finalize,                       ThreadBaseObject* pThis);
 #ifdef FEATURE_COMINTEROP
     static FCDECL1(void,    DisableComObjectEagerCleanup,   ThreadBaseObject* pThis);
 #endif //FEATURE_COMINTEROP
     static FCDECL1(FC_BOOL_RET,IsThreadpoolThread,             ThreadBaseObject* thread);
+    static FCDECL1(Object*, GetThreadDeserializationTracker, StackCrawlMark* stackMark);
 
-    static FCDECL0(void, FCMemoryBarrier);
-    static FCDECL1(void, SetIsThreadStaticsArray, Object* pObject);
-
-    static FCDECL2(void,    SetAbortReason, ThreadBaseObject* pThisUNSAFE, Object* pObject);
-    static FCDECL1(void,    ClearAbortReason, ThreadBaseObject* pThisUNSAFE);
+    static FCDECL0(INT32,   GetCurrentProcessorNumber);
 
 private:
 
@@ -121,7 +113,7 @@ private:
     };
 
     static void KickOffThread_Worker(LPVOID /* KickOffThread_Args* */);
-    static ULONG __stdcall KickOffThread(void *pass);
+    static ULONG WINAPI KickOffThread(void *pass);
     static BOOL DoJoin(THREADBASEREF DyingThread, INT32 timeout);
 };
 

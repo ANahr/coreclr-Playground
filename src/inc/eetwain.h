@@ -40,11 +40,7 @@
 #define HAS_QUICKUNWIND
 #endif
 
-#if CHECK_APP_DOMAIN_LEAKS
-#define CHECK_APP_DOMAIN    GC_CALL_CHECK_APP_DOMAIN
-#else
 #define CHECK_APP_DOMAIN    0
-#endif
 
 #define NO_OVERRIDE_OFFSET (DWORD)-1
 
@@ -164,7 +160,7 @@ enum
 };
 
 #ifndef DACCESS_COMPILE
-#ifndef WIN64EXCEPTIONS
+#ifndef FEATURE_EH_FUNCLETS
 virtual void FixContext(ContextType     ctxType,
                         EHContext      *ctx,
                         EECodeInfo     *pCodeInfo,
@@ -174,7 +170,7 @@ virtual void FixContext(ContextType     ctxType,
                         CodeManState   *pState,
                         size_t       ** ppShadowSP,             // OUT
                         size_t       ** ppEndRegion) = 0;       // OUT
-#endif // !WIN64EXCEPTIONS
+#endif // !FEATURE_EH_FUNCLETS
 #endif // #ifndef DACCESS_COMPILE
 
 #ifdef _TARGET_X86_
@@ -217,6 +213,10 @@ virtual bool UnwindStackFrame(PREGDISPLAY     pContext,
 */
 virtual bool IsGcSafe(EECodeInfo     *pCodeInfo,
                       DWORD           dwRelOffset) = 0;
+
+#if defined(_TARGET_ARM_) || defined(_TARGET_ARM64_)
+virtual bool HasTailCalls(EECodeInfo *pCodeInfo) = 0;
+#endif // _TARGET_ARM_ || _TARGET_ARM64_
 
 #if defined(_TARGET_AMD64_) && defined(_DEBUG)
 /*
@@ -332,7 +332,7 @@ virtual unsigned int GetFrameSize(GCInfoToken gcInfoToken) = 0;
 
 /* Debugger API */
 
-#ifndef WIN64EXCEPTIONS
+#ifndef FEATURE_EH_FUNCLETS
 virtual const BYTE*     GetFinallyReturnAddr(PREGDISPLAY pReg)=0;
 
 virtual BOOL            IsInFilter(GCInfoToken gcInfoToken,
@@ -347,7 +347,7 @@ virtual BOOL            LeaveFinally(GCInfoToken gcInfoToken,
 virtual void            LeaveCatch(GCInfoToken gcInfoToken,
                                    unsigned offset,
                                    PCONTEXT pCtx)=0;
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 
 #ifdef EnC_SUPPORTED
 
@@ -391,7 +391,7 @@ public:
 
 
 #ifndef DACCESS_COMPILE
-#ifndef WIN64EXCEPTIONS
+#ifndef FEATURE_EH_FUNCLETS
 /*
     Last chance for the runtime support to do fixups in the context
     before execution continues inside a filter, catch handler, or finally
@@ -406,7 +406,7 @@ void FixContext(ContextType     ctxType,
                 CodeManState   *pState,
                 size_t       ** ppShadowSP,             // OUT
                 size_t       ** ppEndRegion);           // OUT
-#endif // !WIN64EXCEPTIONS
+#endif // !FEATURE_EH_FUNCLETS
 #endif // #ifndef DACCESS_COMPILE
 
 #ifdef _TARGET_X86_
@@ -473,6 +473,11 @@ void QuickUnwindStackFrame(
 virtual
 bool IsGcSafe(  EECodeInfo     *pCodeInfo,
                 DWORD           dwRelOffset);
+
+#if defined(_TARGET_ARM_) || defined(_TARGET_ARM64_)
+virtual
+bool HasTailCalls(EECodeInfo *pCodeInfo);
+#endif // _TARGET_ARM_ || _TARGET_ARM64_
 
 #if defined(_TARGET_AMD64_) && defined(_DEBUG)
 /*
@@ -550,7 +555,7 @@ PTR_VOID GetParamTypeArg(PREGDISPLAY     pContext,
 virtual GenericParamContextType GetParamContextType(PREGDISPLAY     pContext,
                                                     EECodeInfo *    pCodeInfo);
 
-#if defined(WIN64EXCEPTIONS) && defined(USE_GC_INFO_DECODER) && !defined(CROSSGEN_COMPILE)
+#if defined(FEATURE_EH_FUNCLETS) && defined(USE_GC_INFO_DECODER) && !defined(CROSSGEN_COMPILE)
 /*
     Returns the generics token.  This is used by GetInstance() and GetParamTypeArg() on WIN64.
 */
@@ -563,7 +568,7 @@ PTR_VOID GetExactGenericsToken(SIZE_T          baseStackSlot,
                                EECodeInfo *    pCodeInfo);
 
 
-#endif // WIN64EXCEPTIONS && USE_GC_INFO_DECODER && !CROSSGEN_COMPILE
+#endif // FEATURE_EH_FUNCLETS && USE_GC_INFO_DECODER && !CROSSGEN_COMPILE
 
 #ifndef CROSSGEN_COMPILE
 /*
@@ -618,7 +623,7 @@ unsigned int GetFrameSize(GCInfoToken gcInfoToken);
 
 #ifndef DACCESS_COMPILE
 
-#ifndef WIN64EXCEPTIONS
+#ifndef FEATURE_EH_FUNCLETS
 virtual const BYTE* GetFinallyReturnAddr(PREGDISPLAY pReg);
 virtual BOOL IsInFilter(GCInfoToken gcInfoToken,
                         unsigned offset,
@@ -630,7 +635,7 @@ virtual BOOL LeaveFinally(GCInfoToken gcInfoToken,
 virtual void LeaveCatch(GCInfoToken gcInfoToken,
                          unsigned offset,
                          PCONTEXT pCtx);
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 
 #ifdef EnC_SUPPORTED
 /*
@@ -649,10 +654,13 @@ HRESULT FixContextForEnC(PCONTEXT        pCtx,
 
 #endif // #ifndef DACCESS_COMPILE
 
-#ifdef WIN64EXCEPTIONS
+#ifdef FEATURE_EH_FUNCLETS
     static void EnsureCallerContextIsValid( PREGDISPLAY pRD, StackwalkCacheEntry* pCacheEntry, EECodeInfo * pCodeInfo = NULL );
     static size_t GetCallerSp( PREGDISPLAY  pRD );
-#endif
+#ifdef _TARGET_X86_
+    static size_t GetResumeSp( PCONTEXT  pContext );
+#endif // _TARGET_X86_
+#endif // FEATURE_EH_FUNCLETS
 
 #ifdef DACCESS_COMPILE
     virtual void EnumMemoryRegions(CLRDataEnumMemoryFlags flags);

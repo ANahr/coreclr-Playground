@@ -7,14 +7,12 @@
 
 #include "stdafx.h"
 
-#include "unsafe.h"
 #include "clrhost.h"
 #include "utilcode.h"
 #include "ex.h"
 #include "hostimpl.h"
 #include "clrnt.h"
 #include "contract.h"
-#include "tls.h"
 
 CoreClrCallbacks g_CoreClrCallbacks;
 
@@ -224,7 +222,6 @@ HMODULE GetCLRModule ()
     //! So don't put in a runtime contract and don't invoke other functions in the CLR (not even _ASSERTE!) 
 
     STATIC_CONTRACT_NOTHROW;
-    STATIC_CONTRACT_SO_TOLERANT;
     STATIC_CONTRACT_SUPPORTS_DAC; // DAC can call in here since we initialize the SxS callbacks in ClrDataAccess::Initialize.
 
 #ifdef DACCESS_COMPILE
@@ -314,7 +311,7 @@ BOOL CLRFreeLibrary(HMODULE hModule)
 //     The holder withholds the assert if a LoadsTypeViolation suppress is in effect (but
 //     still sets up the new limit.)
 //
-//     As with other contract annoations, however, the violation suppression is *lifted*
+//     As with other contract annotations, however, the violation suppression is *lifted*
 //     within the scope guarded by the holder itself.
 //-----------------------------------------------------------------------------------------------
 LoadsTypeHolder::LoadsTypeHolder(BOOL       fConditional,

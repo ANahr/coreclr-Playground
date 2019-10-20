@@ -21,12 +21,14 @@ public:
             MethodName* m_next;
             int         m_methodNameStart;
             int         m_methodNameLen;
+            bool        m_methodNameWildcardAtEnd;
             int         m_classNameStart;
             int         m_classNameLen;
+            bool        m_classNameWildcardAtEnd;
             int         m_numArgs;
         };
 
-        const char* m_list;
+        char*       m_list;
         MethodName* m_names;
 
         MethodSet(const MethodSet& other) = delete;
@@ -36,12 +38,13 @@ public:
         MethodSet()
         {
         }
+
         inline const char* list() const
         {
-            return m_list;
+            return const_cast<const char*>(m_list);
         }
 
-        void initialize(const wchar_t* list, ICorJitHost* host);
+        void initialize(const WCHAR* list, ICorJitHost* host);
         void destroy(ICorJitHost* host);
 
         inline bool isEmpty() const
@@ -53,8 +56,8 @@ public:
 
 private:
 #define CONFIG_INTEGER(name, key, defaultValue) int m_##name;
-#define CONFIG_STRING(name, key) const wchar_t* m_##name;
-#define CONFIG_METHODSET(name, key) MethodSet   m_##name;
+#define CONFIG_STRING(name, key) const WCHAR* m_##name;
+#define CONFIG_METHODSET(name, key) MethodSet m_##name;
 #include "jitconfigvalues.h"
 
 public:
@@ -64,7 +67,7 @@ public:
         return m_##name;                                                                                               \
     }
 #define CONFIG_STRING(name, key)                                                                                       \
-    inline const wchar_t* name() const                                                                                 \
+    inline const WCHAR* name() const                                                                                   \
     {                                                                                                                  \
         return m_##name;                                                                                               \
     }

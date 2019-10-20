@@ -54,9 +54,9 @@ EXTERN_C void FastCallFinalizeWorker(Object *obj, PCODE funcPtr);
 #define USE_INDIRECT_CODEHEADER                 // use CodeHeader, RealCodeHeader construct
 
 #define HAS_NDIRECT_IMPORT_PRECODE              1
-//#define HAS_REMOTING_PRECODE                  1    // TODO: Implement
 #define HAS_FIXUP_PRECODE                       1
 #define HAS_FIXUP_PRECODE_CHUNKS                1
+#define FIXUP_PRECODE_PREALLOCATE_DYNAMIC_METHOD_JUMP_STUBS 1
 
 // ThisPtrRetBufPrecode one is necessary for closed delegates over static methods with return buffer
 #define HAS_THISPTR_RETBUF_PRECODE              1
@@ -103,13 +103,6 @@ EXTERN_C void FastCallFinalizeWorker(Object *obj, PCODE funcPtr);
 #define X86RegFromAMD64Reg(extended_reg) \
             ((X86Reg)(((int)extended_reg) & X86_REGISTER_MASK))
 
-// Max size of optimized TLS helpers
-#ifdef _DEBUG
-// Debug build needs extra space for last error trashing
-#define TLS_GETTER_MAX_SIZE 0x30
-#else
-#define TLS_GETTER_MAX_SIZE 0x18
-#endif
 
 //=======================================================================
 // IMPORTANT: This value is used to figure out how much to allocate
@@ -262,9 +255,15 @@ struct CalleeSavedRegistersPointers {
 #ifdef UNIX_AMD64_ABI
 #define THIS_REG RDI
 #define THIS_kREG kRDI
+
+#define ARGUMENT_kREG1 kRDI
+#define ARGUMENT_kREG2 kRSI
 #else
 #define THIS_REG RCX
 #define THIS_kREG kRCX
+
+#define ARGUMENT_kREG1 kRCX
+#define ARGUMENT_kREG2 kRDX
 #endif
 
 #ifdef UNIX_AMD64_ABI
@@ -302,7 +301,6 @@ inline PCODE GetIP(const CONTEXT * context)
 {
     CONTRACTL
     {
-        SO_TOLERANT;
         NOTHROW;
         GC_NOTRIGGER;
         SUPPORTS_DAC;
@@ -318,7 +316,6 @@ inline void SetIP(CONTEXT* context, PCODE rip)
 {
     CONTRACTL
     {
-        SO_TOLERANT;
         NOTHROW;
         GC_NOTRIGGER;
         SUPPORTS_DAC;
@@ -334,7 +331,6 @@ inline TADDR GetSP(const CONTEXT * context)
 {
     CONTRACTL
     {
-        SO_TOLERANT;
         NOTHROW;
         GC_NOTRIGGER;
         SUPPORTS_DAC;
@@ -349,7 +345,6 @@ inline void SetSP(CONTEXT *context, TADDR rsp)
 {
     CONTRACTL
     {
-        SO_TOLERANT;
         NOTHROW;
         GC_NOTRIGGER;
         SUPPORTS_DAC;
@@ -379,7 +374,11 @@ void EncodeLoadAndJumpThunk (LPBYTE pBuffer, LPVOID pv, LPVOID pTarget);
 
 
 // Get Rel32 destination, emit jumpStub if necessary
-INT32 rel32UsingJumpStub(INT32 UNALIGNED * pRel32, PCODE target, MethodDesc *pMethod, LoaderAllocator *pLoaderAllocator = NULL);
+INT32 rel32UsingJumpStub(INT32 UNALIGNED * pRel32, PCODE target, MethodDesc *pMethod, 
+    LoaderAllocator *pLoaderAllocator = NULL, bool throwOnOutOfMemoryWithinRange = true);
+
+// Get Rel32 destination, emit jumpStub if necessary into a preallocated location
+INT32 rel32UsingPreallocatedJumpStub(INT32 UNALIGNED * pRel32, PCODE target, PCODE jumpStubAddr, bool emitJump);
 
 void emitCOMStubCall (ComCallMethodDesc *pCOMMethod, PCODE target);
 
@@ -462,6 +461,7 @@ struct DECLSPEC_ALIGN(8) UMEntryThunkCode
     BYTE            m_padding2[5];
 
     void Encode(BYTE* pTargetCode, void* pvSecretParam);
+    void Poison();
 
     LPCBYTE GetEntryPoint() const
     {
@@ -527,36 +527,22 @@ inline BOOL ClrFlushInstructionCache(LPCVOID pCodeAddr, size_t sizeOfCode)
     return TRUE;
 }
 
-#ifndef FEATURE_IMPLICIT_TLS
 //
 // JIT HELPER ALIASING FOR PORTABILITY.
 //
 // Create alias for optimized implementations of helpers provided on this platform
 //
-#define JIT_MonEnter         JIT_MonEnter
-#define JIT_MonEnterWorker   JIT_MonEnterWorker_InlineGetThread
-#define JIT_MonReliableEnter JIT_MonEnterWorker
-#define JIT_MonTryEnter      JIT_MonTryEnter_InlineGetThread
-#define JIT_MonExit          JIT_MonExit
-#define JIT_MonExitWorker    JIT_MonExitWorker_InlineGetThread
-#define JIT_MonEnterStatic   JIT_MonEnterStatic_InlineGetThread
-#define JIT_MonExitStatic    JIT_MonExitStatic_InlineGetThread
-
-#define JIT_GetSharedGCStaticBase           JIT_GetSharedGCStaticBase_InlineGetAppDomain
-#define JIT_GetSharedNonGCStaticBase        JIT_GetSharedNonGCStaticBase_InlineGetAppDomain
-#define JIT_GetSharedGCStaticBaseNoCtor     JIT_GetSharedGCStaticBaseNoCtor_InlineGetAppDomain
-#define JIT_GetSharedNonGCStaticBaseNoCtor  JIT_GetSharedNonGCStaticBaseNoCtor_InlineGetAppDomain
-
-#endif // FEATURE_IMPLICIT_TLS
+#define JIT_GetSharedGCStaticBase           JIT_GetSharedGCStaticBase_SingleAppDomain
+#define JIT_GetSharedNonGCStaticBase        JIT_GetSharedNonGCStaticBase_SingleAppDomain
+#define JIT_GetSharedGCStaticBaseNoCtor     JIT_GetSharedGCStaticBaseNoCtor_SingleAppDomain
+#define JIT_GetSharedNonGCStaticBaseNoCtor  JIT_GetSharedNonGCStaticBaseNoCtor_SingleAppDomain
 
 #ifndef FEATURE_PAL
-
 #define JIT_ChkCastClass            JIT_ChkCastClass
 #define JIT_ChkCastClassSpecial     JIT_ChkCastClassSpecial
 #define JIT_IsInstanceOfClass       JIT_IsInstanceOfClass
 #define JIT_ChkCastInterface        JIT_ChkCastInterface
 #define JIT_IsInstanceOfInterface   JIT_IsInstanceOfInterface
-
 #endif // FEATURE_PAL
 
 #define JIT_Stelem_Ref              JIT_Stelem_Ref

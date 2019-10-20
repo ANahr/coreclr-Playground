@@ -16,12 +16,33 @@ endif(CLR_CMAKE_TARGET_ARCH_I386)
 
 convert_to_absolute_path(GCINFO_SOURCES ${GCINFO_SOURCES})
 
-if(CLR_CMAKE_PLATFORM_UNIX)
-    add_compile_options(-fPIC)
-endif(CLR_CMAKE_PLATFORM_UNIX)
+add_library_clr(gcinfo
+    STATIC
+    ${GCINFO_SOURCES}
+)
 
-add_subdirectory(lib)
-add_subdirectory(crossgen)
+add_library_clr(gcinfo_crossgen
+    STATIC
+    ${GCINFO_SOURCES}
+)
+
+set_target_properties(gcinfo_crossgen PROPERTIES CROSSGEN_COMPONENT TRUE)
+
+
+if (CLR_CMAKE_PLATFORM_ARCH_I386)
+    # On x86, build RyuJIT/ARM32 cross-compiling altjit.
+    add_subdirectory(gcinfo_arm)
+endif ()
+
+if (CLR_CMAKE_PLATFORM_ARCH_I386 AND WIN32)
+    # On x86, build Linux x86 cross-compiling altjit.
+    add_subdirectory(gcinfo_linuxx86)
+endif ()
+
+if (CLR_CMAKE_PLATFORM_ARCH_AMD64)
+    # On amd64, build RyuJIT/ARM64 cross-compiling altjit.
+    add_subdirectory(gcinfo_arm64)
+endif ()
 
 _install (FILES gcinfoencoder.cpp
                DESTINATION gcinfo)

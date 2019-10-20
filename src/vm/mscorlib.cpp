@@ -26,26 +26,22 @@
 //
 #include "arraynative.h"
 #include "stringnative.h"
-#include "stringbuffer.h"
 #include "objectnative.h"
 #include "comdelegate.h"
 #include "customattribute.h"
 #include "comdynamic.h"
 #include "excep.h"
 #include "fcall.h"
-#include "nlsinfo.h"
-#include "calendardata.h"
+#include "clrconfignative.h"
 #include "commodule.h"
 #include "marshalnative.h"
+#include "nativelibrarynative.h"
 #include "system.h"
 #include "comutilnative.h"
 #include "comsynchronizable.h"
 #include "floatdouble.h"
 #include "floatsingle.h"
-#include "decimal.h"
-#include "currency.h"
 #include "comdatetime.h"
-#include "number.h"
 #include "compatibilityswitch.h"
 #include "debugdebugger.h"
 #include "assemblyname.hpp"
@@ -62,22 +58,15 @@
 #include "reflectioninvocation.h"
 #include "managedmdimport.hpp"
 #include "synchronizationcontextnative.h"
-#include "commemoryfailpoint.h"
 #include "typestring.h"
 #include "comdependenthandle.h"
 #include "weakreferencenative.h"
 #include "varargsnative.h"
-
-#ifdef MDA_SUPPORTED 
-#include "mdaassistants.h"
-#endif
-
-#include "coverage.h"
+#include "mlinfo.h"
 
 #ifdef FEATURE_COMINTEROP
 #include "variant.h"
 #include "oavariant.h"
-#include "registration.h"
 #include "mngstdinterfaces.h"
 #include "extensibleclassfactory.h"
 #endif // FEATURE_COMINTEROP
@@ -89,13 +78,16 @@
 #include "multicorejit.h"
 #endif
 
-#ifdef FEATURE_COMINTEROP
-#include "windowsruntimebufferhelper.h"
-#endif
-
 #if defined(FEATURE_EVENTSOURCE_XPLAT)
 #include "nativeeventsource.h"
+#include "eventpipe.h"
+#include "eventpipeinternal.h"
 #endif //defined(FEATURE_EVENTSOURCE_XPLAT)
+
+#ifdef FEATURE_PERFTRACING
+#include "eventpipe.h"
+#include "eventpipeinternal.h"
+#endif //FEATURE_PERFTRACING
 
 #endif // CROSSGEN_MSCORLIB
 
@@ -303,6 +295,7 @@ enum _gsigc {
 #define METASIG_RECURSE                 1
 #define C(x)                            1+
 #define g(x)                            1+
+#define Q(x)                            1+
 #include "metasig.h"
 
 //
@@ -318,6 +311,7 @@ enum _gsigc {
 #define METASIG_RECURSE                 1
 #define C(x)                            1+
 #define g(x)                            1+
+#define Q(x)                            1+
 #include "metasig.h"
 
 #endif

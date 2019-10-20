@@ -2,6 +2,10 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
+// ===================================================================================================
+// Portions of the code implemented below are based on the 'Berkeley SoftFloat Release 3e' algorithms.
+// ===================================================================================================
+
 /*XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 XX                                                                           XX
@@ -25,13 +29,13 @@ XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 // same code for all platforms, hence it is here instead of in the targetXXX.cpp
 // files.
 
-#ifdef PLATFORM_UNIX
+#ifdef _TARGET_UNIX_
 // Should we distinguish Mac? Can we?
 // Should we distinguish flavors of Unix? Can we?
 const char* Target::g_tgtPlatformName = "Unix";
-#else  // !PLATFORM_UNIX
+#else  // !_TARGET_UNIX_
 const char* Target::g_tgtPlatformName = "Windows";
-#endif // !PLATFORM_UNIX
+#endif // !_TARGET_UNIX_
 
 /*****************************************************************************/
 
@@ -120,7 +124,7 @@ const char* varTypeName(var_types vt)
 #undef DEF_TP
     };
 
-    assert((unsigned)vt < sizeof(varTypeNames) / sizeof(varTypeNames[0]));
+    assert((unsigned)vt < _countof(varTypeNames));
 
     return varTypeNames[vt];
 }
@@ -138,27 +142,8 @@ const char* getRegName(regNumber reg, bool isFloat)
     {
         return "NA";
     }
-#if defined(_TARGET_X86_) && defined(LEGACY_BACKEND)
-    static const char* const regNames[] = {
-#define REGDEF(name, rnum, mask, sname) sname,
-#include "register.h"
-    };
 
-    static const char* const floatRegNames[] = {
-#define REGDEF(name, rnum, mask, sname) sname,
-#include "registerxmm.h"
-    };
-    if (isFloat)
-    {
-        assert(reg < ArrLen(floatRegNames));
-        return floatRegNames[reg];
-    }
-    else
-    {
-        assert(reg < ArrLen(regNames));
-        return regNames[reg];
-    }
-#elif defined(_TARGET_ARM64_)
+#if defined(_TARGET_ARM64_)
     static const char* const regNames[] = {
 #define REGDEF(name, rnum, mask, xname, wname) xname,
 #include "register.h"
@@ -252,16 +237,6 @@ const char* getRegNameFloat(regNumber reg, var_types type)
         return regName;
     }
 
-#elif defined(_TARGET_X86_) && defined(LEGACY_BACKEND)
-
-    static const char* regNamesFloat[] = {
-#define REGDEF(name, rnum, mask, sname) sname,
-#include "registerxmm.h"
-    };
-    assert((unsigned)reg < ArrLen(regNamesFloat));
-
-    return regNamesFloat[reg];
-
 #elif defined(_TARGET_ARM64_)
 
     static const char* regNamesFloat[] = {
@@ -277,20 +252,20 @@ const char* getRegNameFloat(regNumber reg, var_types type)
 #define REGDEF(name, rnum, mask, sname) "x" sname,
 #include "register.h"
     };
-#ifdef FEATURE_AVX_SUPPORT
+#ifdef FEATURE_SIMD
     static const char* regNamesYMM[] = {
 #define REGDEF(name, rnum, mask, sname) "y" sname,
 #include "register.h"
     };
-#endif // FEATURE_AVX_SUPPORT
+#endif // FEATURE_SIMD
     assert((unsigned)reg < ArrLen(regNamesFloat));
 
-#ifdef FEATURE_AVX_SUPPORT
+#ifdef FEATURE_SIMD
     if (type == TYP_SIMD32)
     {
         return regNamesYMM[reg];
     }
-#endif // FEATURE_AVX_SUPPORT
+#endif // FEATURE_SIMD
 
     return regNamesFloat[reg];
 #endif
@@ -409,16 +384,6 @@ void dspRegMask(regMaskTP regMask, size_t minSiz)
         regPrev = regNum;
     }
 
-#if CPU_HAS_BYTE_REGS
-    if (regMask & RBM_BYTE_REG_FLAG)
-    {
-        const char* nam = "BYTE";
-        printf("%s%s", sep, nam);
-        minSiz -= (strlen(sep) + strlen(nam));
-    }
-#endif
-
-#if !FEATURE_STACK_FP_X87
     if (strlen(sep) > 0)
     {
         // We've already printed something.
@@ -465,7 +430,6 @@ void dspRegMask(regMaskTP regMask, size_t minSiz)
 
         regPrev = regNum;
     }
-#endif
 
     printf("]");
 
@@ -698,18 +662,24 @@ const char* refCntWtd2str(unsigned refCntWtd)
 
     nump = (nump == num1) ? num2 : num1;
 
-    unsigned valueInt  = refCntWtd / BB_UNITY_WEIGHT;
-    unsigned valueFrac = refCntWtd % BB_UNITY_WEIGHT;
-
-    if (valueFrac == 0)
+    if (refCntWtd == BB_MAX_WEIGHT)
     {
-        sprintf_s(temp, bufSize, "%2u  ", valueInt);
+        sprintf_s(temp, bufSize, "MAX   ");
     }
     else
     {
-        sprintf_s(temp, bufSize, "%2u.%1u", valueInt, (valueFrac * 10 / BB_UNITY_WEIGHT));
-    }
+        unsigned valueInt  = refCntWtd / BB_UNITY_WEIGHT;
+        unsigned valueFrac = refCntWtd % BB_UNITY_WEIGHT;
 
+        if (valueFrac == 0)
+        {
+            sprintf_s(temp, bufSize, "%u   ", valueInt);
+        }
+        else
+        {
+            sprintf_s(temp, bufSize, "%u.%02u", valueInt, (valueFrac * 100 / BB_UNITY_WEIGHT));
+        }
+    }
     return temp;
 }
 
@@ -762,7 +732,7 @@ bool ConfigMethodRange::Contains(ICorJitInfo* info, CORINFO_METHOD_HANDLE method
 //    because of bad characters or too many entries, or had values
 //    that were too large to represent.
 
-void ConfigMethodRange::InitRanges(const wchar_t* rangeStr, unsigned capacity)
+void ConfigMethodRange::InitRanges(const WCHAR* rangeStr, unsigned capacity)
 {
     // Make sure that the memory was zero initialized
     assert(m_inited == 0 || m_inited == 1);
@@ -770,7 +740,7 @@ void ConfigMethodRange::InitRanges(const wchar_t* rangeStr, unsigned capacity)
     assert(m_ranges == nullptr);
     assert(m_lastRange == 0);
 
-    // Flag any crazy-looking requests
+    // Flag any strange-looking requests
     assert(capacity < 100000);
 
     if (rangeStr == nullptr)
@@ -780,13 +750,13 @@ void ConfigMethodRange::InitRanges(const wchar_t* rangeStr, unsigned capacity)
     }
 
     // Allocate some persistent memory
-    ICorJitHost* jitHost = JitHost::getJitHost();
+    ICorJitHost* jitHost = g_jitHost;
     m_ranges             = (Range*)jitHost->allocateMemory(capacity * sizeof(Range));
     m_entries            = capacity;
 
-    const wchar_t* p           = rangeStr;
-    unsigned       lastRange   = 0;
-    bool           setHighPart = false;
+    const WCHAR* p           = rangeStr;
+    unsigned     lastRange   = 0;
+    bool         setHighPart = false;
 
     while ((*p != 0) && (lastRange < m_entries))
     {
@@ -876,8 +846,7 @@ void ConfigMethodRange::InitRanges(const wchar_t* rangeStr, unsigned capacity)
  *  Histogram class.
  */
 
-Histogram::Histogram(IAllocator* allocator, const unsigned* const sizeTable)
-    : m_allocator(allocator), m_sizeTable(sizeTable), m_counts(nullptr)
+Histogram::Histogram(const unsigned* const sizeTable) : m_sizeTable(sizeTable)
 {
     unsigned sizeCount = 0;
     do
@@ -885,32 +854,15 @@ Histogram::Histogram(IAllocator* allocator, const unsigned* const sizeTable)
         sizeCount++;
     } while ((sizeTable[sizeCount] != 0) && (sizeCount < 1000));
 
+    assert(sizeCount < HISTOGRAM_MAX_SIZE_COUNT - 1);
+
     m_sizeCount = sizeCount;
-}
 
-Histogram::~Histogram()
-{
-    if (m_counts != nullptr)
-    {
-        m_allocator->Free(m_counts);
-    }
-}
-
-// We need to lazy allocate the histogram data so static `Histogram` variables don't try to
-// call the host memory allocator in the loader lock, which doesn't work.
-void Histogram::ensureAllocated()
-{
-    if (m_counts == nullptr)
-    {
-        m_counts = new (m_allocator) unsigned[m_sizeCount + 1];
-        memset(m_counts, 0, (m_sizeCount + 1) * sizeof(*m_counts));
-    }
+    memset(m_counts, 0, (m_sizeCount + 1) * sizeof(*m_counts));
 }
 
 void Histogram::dump(FILE* output)
 {
-    ensureAllocated();
-
     unsigned t = 0;
     for (unsigned i = 0; i < m_sizeCount; i++)
     {
@@ -950,8 +902,6 @@ void Histogram::dump(FILE* output)
 
 void Histogram::record(unsigned size)
 {
-    ensureAllocated();
-
     unsigned i;
     for (i = 0; i < m_sizeCount; i++)
     {
@@ -998,7 +948,7 @@ FixedBitVect* FixedBitVect::bitVectInit(UINT size, Compiler* comp)
 
     assert(bitVectMemSize * bitChunkSize() >= size);
 
-    bv = (FixedBitVect*)comp->compGetMemA(sizeof(FixedBitVect) + bitVectMemSize, CMK_FixedBitVect);
+    bv = (FixedBitVect*)comp->getAllocator(CMK_FixedBitVect).allocate<char>(sizeof(FixedBitVect) + bitVectMemSize);
     memset(bv->bitVect, 0, bitVectMemSize);
 
     bv->bitVectSize = size;
@@ -1224,7 +1174,6 @@ void HelperCallProperties::init()
         bool isAllocator   = false; // true if the result is usually a newly created heap item, or may throw OutOfMemory
         bool mutatesHeap   = false; // true if any previous heap objects [are|can be] modified
         bool mayRunCctor   = false; // true if the helper call may cause a static constructor to be run.
-        bool mayFinalize   = false; // true if the helper call allocates an object that may need to run a finalizer
 
         switch (helper)
         {
@@ -1252,6 +1201,8 @@ void HelperCallProperties::init()
 
             // This (or these) are not pure, in that they have "VM side effects"...but they don't mutate the heap.
             case CORINFO_HELP_ENDCATCH:
+
+                noThrow = true;
                 break;
 
             // Arithmetic helpers that may throw
@@ -1279,17 +1230,14 @@ void HelperCallProperties::init()
             // Heap Allocation helpers, these all never return null
             case CORINFO_HELP_NEWSFAST:
             case CORINFO_HELP_NEWSFAST_ALIGN8:
-
-                isAllocator   = true;
-                nonNullReturn = true;
-                noThrow       = true; // only can throw OutOfMemory
-                break;
-
+            case CORINFO_HELP_NEWSFAST_ALIGN8_VC:
             case CORINFO_HELP_NEW_CROSSCONTEXT:
             case CORINFO_HELP_NEWFAST:
+            case CORINFO_HELP_NEWSFAST_FINALIZE:
+            case CORINFO_HELP_NEWSFAST_ALIGN8_FINALIZE:
             case CORINFO_HELP_READYTORUN_NEW:
+            case CORINFO_HELP_BOX:
 
-                mayFinalize   = true; // These may run a finalizer
                 isAllocator   = true;
                 nonNullReturn = true;
                 noThrow       = true; // only can throw OutOfMemory
@@ -1299,19 +1247,12 @@ void HelperCallProperties::init()
             // and can throw exceptions other than OOM.
             case CORINFO_HELP_NEWARR_1_VC:
             case CORINFO_HELP_NEWARR_1_ALIGN8:
-
-                isAllocator   = true;
-                nonNullReturn = true;
-                break;
-
-            // These allocation helpers do some checks on the size (and lower bound) inputs,
-            // and can throw exceptions other than OOM.
             case CORINFO_HELP_NEW_MDARR:
             case CORINFO_HELP_NEWARR_1_DIRECT:
             case CORINFO_HELP_NEWARR_1_OBJ:
+            case CORINFO_HELP_NEWARR_1_R2R_DIRECT:
             case CORINFO_HELP_READYTORUN_NEWARR_1:
 
-                mayFinalize   = true; // These may run a finalizer
                 isAllocator   = true;
                 nonNullReturn = true;
                 break;
@@ -1322,12 +1263,6 @@ void HelperCallProperties::init()
                 isPure        = true;
                 isAllocator   = true;
                 nonNullReturn = true;
-                noThrow       = true; // only can throw OutOfMemory
-                break;
-
-            case CORINFO_HELP_BOX:
-                nonNullReturn = true;
-                isAllocator   = true;
                 noThrow       = true; // only can throw OutOfMemory
                 break;
 
@@ -1359,9 +1294,16 @@ void HelperCallProperties::init()
             case CORINFO_HELP_ISINSTANCEOFANY:
             case CORINFO_HELP_READYTORUN_ISINSTANCEOF:
             case CORINFO_HELP_TYPEHANDLE_TO_RUNTIMETYPE:
+            case CORINFO_HELP_TYPEHANDLE_TO_RUNTIMETYPEHANDLE:
 
                 isPure  = true;
                 noThrow = true; // These return null for a failing cast
+                break;
+
+            case CORINFO_HELP_ARE_TYPES_EQUIVALENT:
+
+                isPure  = true;
+                noThrow = true;
                 break;
 
             // type casting helpers that throw
@@ -1386,11 +1328,11 @@ void HelperCallProperties::init()
                 break;
 
             // helpers that return internal handle
-            // TODO-ARM64-Bug?: Can these throw or not?
             case CORINFO_HELP_GETCLASSFROMMETHODPARAM:
             case CORINFO_HELP_GETSYNCFROMCLASSHANDLE:
 
-                isPure = true;
+                isPure  = true;
+                noThrow = true;
                 break;
 
             // Helpers that load the base address for static variables.
@@ -1412,9 +1354,7 @@ void HelperCallProperties::init()
             case CORINFO_HELP_GETGENERICS_GCSTATIC_BASE:
             case CORINFO_HELP_GETGENERICS_NONGCSTATIC_BASE:
             case CORINFO_HELP_READYTORUN_STATIC_BASE:
-#if COR_JIT_EE_VERSION > 460
             case CORINFO_HELP_READYTORUN_GENERIC_STATIC_BASE:
-#endif // COR_JIT_EE_VERSION > 460
 
                 // These may invoke static class constructors
                 // These can throw InvalidProgram exception if the class can not be constructed
@@ -1464,11 +1404,14 @@ void HelperCallProperties::init()
             case CORINFO_HELP_VERIFICATION:
             case CORINFO_HELP_RNGCHKFAIL:
             case CORINFO_HELP_THROWDIVZERO:
-#if COR_JIT_EE_VERSION > 460
             case CORINFO_HELP_THROWNULLREF:
-#endif // COR_JIT_EE_VERSION
             case CORINFO_HELP_THROW:
             case CORINFO_HELP_RETHROW:
+            case CORINFO_HELP_THROW_ARGUMENTEXCEPTION:
+            case CORINFO_HELP_THROW_ARGUMENTOUTOFRANGEEXCEPTION:
+            case CORINFO_HELP_THROW_NOT_IMPLEMENTED:
+            case CORINFO_HELP_THROW_PLATFORM_NOT_SUPPORTED:
+            case CORINFO_HELP_THROW_TYPE_NOT_SUPPORTED:
 
                 break;
 
@@ -1477,12 +1420,33 @@ void HelperCallProperties::init()
             case CORINFO_HELP_FIELD_ACCESS_CHECK:
             case CORINFO_HELP_CLASS_ACCESS_CHECK:
             case CORINFO_HELP_DELEGATE_SECURITY_CHECK:
+            case CORINFO_HELP_MON_EXIT_STATIC:
 
                 break;
 
             // This is a debugging aid; it simply returns a constant address.
             case CORINFO_HELP_LOOP_CLONE_CHOICE_ADDR:
                 isPure  = true;
+                noThrow = true;
+                break;
+
+            case CORINFO_HELP_DBG_IS_JUST_MY_CODE:
+            case CORINFO_HELP_BBT_FCN_ENTER:
+            case CORINFO_HELP_POLL_GC:
+            case CORINFO_HELP_MON_ENTER:
+            case CORINFO_HELP_MON_EXIT:
+            case CORINFO_HELP_MON_ENTER_STATIC:
+            case CORINFO_HELP_JIT_REVERSE_PINVOKE_ENTER:
+            case CORINFO_HELP_JIT_REVERSE_PINVOKE_EXIT:
+            case CORINFO_HELP_SECURITY_PROLOG:
+            case CORINFO_HELP_SECURITY_PROLOG_FRAMED:
+            case CORINFO_HELP_VERIFICATION_RUNTIME_CHECK:
+            case CORINFO_HELP_GETFIELDADDR:
+            case CORINFO_HELP_INIT_PINVOKE_FRAME:
+            case CORINFO_HELP_JIT_PINVOKE_BEGIN:
+            case CORINFO_HELP_JIT_PINVOKE_END:
+            case CORINFO_HELP_GETCURRENTMANAGEDTHREADID:
+
                 noThrow = true;
                 break;
 
@@ -1500,7 +1464,6 @@ void HelperCallProperties::init()
         m_isAllocator[helper]   = isAllocator;
         m_mutatesHeap[helper]   = mutatesHeap;
         m_mayRunCctor[helper]   = mayRunCctor;
-        m_mayFinalize[helper]   = mayFinalize;
     }
 }
 
@@ -1510,12 +1473,11 @@ void HelperCallProperties::init()
 // The string should be of the form
 // MyAssembly
 // MyAssembly;mscorlib;System
-// MyAssembly;mscorlib System
+//
+// You must use ';' as a separator; whitespace no longer works
 
-AssemblyNamesList2::AssemblyNamesList2(const wchar_t* list, IAllocator* alloc) : m_alloc(alloc)
+AssemblyNamesList2::AssemblyNamesList2(const WCHAR* list, HostAllocator alloc) : m_alloc(alloc)
 {
-    assert(m_alloc != nullptr);
-
     WCHAR          prevChar   = '?';     // dummy
     LPWSTR         nameStart  = nullptr; // start of the name currently being processed. nullptr if no current name
     AssemblyName** ppPrevLink = &m_pNames;
@@ -1524,12 +1486,9 @@ AssemblyNamesList2::AssemblyNamesList2(const wchar_t* list, IAllocator* alloc) :
     {
         WCHAR curChar = *listWalk;
 
-        if (iswspace(curChar) || curChar == W(';') || curChar == W('\0'))
+        if (curChar == W(';') || curChar == W('\0'))
         {
-            //
-            // Found white-space
-            //
-
+            // Found separator or end of string
             if (nameStart)
             {
                 // Found the end of the current name; add a new assembly name to the list.
@@ -1582,8 +1541,8 @@ AssemblyNamesList2::~AssemblyNamesList2()
         AssemblyName* cur = pName;
         pName             = pName->m_next;
 
-        m_alloc->Free(cur->m_assemblyName);
-        m_alloc->Free(cur);
+        m_alloc.deallocate(cur->m_assemblyName);
+        m_alloc.deallocate(cur);
     }
 }
 
@@ -1595,6 +1554,194 @@ bool AssemblyNamesList2::IsInList(const char* assemblyName)
         {
             return true;
         }
+    }
+
+    return false;
+}
+
+//=============================================================================
+// MethodSet
+//=============================================================================
+
+MethodSet::MethodSet(const WCHAR* filename, HostAllocator alloc) : m_pInfos(nullptr), m_alloc(alloc)
+{
+    FILE* methodSetFile = _wfopen(filename, W("r"));
+    if (methodSetFile == nullptr)
+    {
+        return;
+    }
+
+    MethodInfo* lastInfo = m_pInfos;
+    char        buffer[1024];
+
+    while (true)
+    {
+        // Get next line
+        if (fgets(buffer, sizeof(buffer), methodSetFile) == nullptr)
+        {
+            break;
+        }
+
+        // Ignore lines starting with leading ";" "#" "//".
+        if ((0 == _strnicmp(buffer, ";", 1)) || (0 == _strnicmp(buffer, "#", 1)) || (0 == _strnicmp(buffer, "//", 2)))
+        {
+            continue;
+        }
+
+        // Remove trailing newline, if any.
+        char* p = strpbrk(buffer, "\r\n");
+        if (p != nullptr)
+        {
+            *p = '\0';
+        }
+
+        char*    methodName;
+        unsigned methodHash = 0;
+
+        // Parse the line. Very simple. One of:
+        //
+        //    <method-name>
+        //    <method-name><whitespace>(MethodHash=<hash>)
+
+        const char methodHashPattern[] = " (MethodHash=";
+        p                              = strstr(buffer, methodHashPattern);
+        if (p == nullptr)
+        {
+            // Just use it without the hash.
+            methodName = _strdup(buffer);
+        }
+        else
+        {
+            // There's a method hash; use that.
+
+            // First, get the method name.
+            char* p2 = p;
+            *p       = '\0';
+
+            // Null terminate method at first whitespace. (Don't have any leading whitespace!)
+            p = strpbrk(buffer, " \t");
+            if (p != nullptr)
+            {
+                *p = '\0';
+            }
+            methodName = _strdup(buffer);
+
+            // Now get the method hash.
+            p2 += strlen(methodHashPattern);
+            char* p3 = strchr(p2, ')');
+            if (p3 == nullptr)
+            {
+                // Malformed line: no trailing slash.
+                JITDUMP("Couldn't parse: %s\n", p2);
+                // We can still just use the method name.
+            }
+            else
+            {
+                // Convert the slash to null.
+                *p3 = '\0';
+
+                // Now parse it as hex.
+                int count = sscanf_s(p2, "%x", &methodHash);
+                if (count != 1)
+                {
+                    JITDUMP("Couldn't parse: %s\n", p2);
+                    // Still, use the method name.
+                }
+            }
+        }
+
+        MethodInfo* newInfo = new (m_alloc) MethodInfo(methodName, methodHash);
+        if (m_pInfos == nullptr)
+        {
+            m_pInfos = lastInfo = newInfo;
+        }
+        else
+        {
+            lastInfo->m_next = newInfo;
+            lastInfo         = newInfo;
+        }
+    }
+
+    if (m_pInfos == nullptr)
+    {
+        JITDUMP("No methods read from %ws\n", filename);
+    }
+    else
+    {
+        JITDUMP("Methods read from %ws:\n", filename);
+
+        int methodCount = 0;
+        for (MethodInfo* pInfo = m_pInfos; pInfo != nullptr; pInfo = pInfo->m_next)
+        {
+            JITDUMP("  %s (MethodHash: %x)\n", pInfo->m_MethodName, pInfo->m_MethodHash);
+            ++methodCount;
+        }
+
+        if (methodCount > 100)
+        {
+            JITDUMP("Warning: high method count (%d) for MethodSet with linear search lookups might be slow\n",
+                    methodCount);
+        }
+    }
+}
+
+MethodSet::~MethodSet()
+{
+    for (MethodInfo* pInfo = m_pInfos; pInfo != nullptr; /**/)
+    {
+        MethodInfo* cur = pInfo;
+        pInfo           = pInfo->m_next;
+
+        m_alloc.deallocate(cur->m_MethodName);
+        m_alloc.deallocate(cur);
+    }
+}
+
+// TODO: make this more like JitConfigValues::MethodSet::contains()?
+bool MethodSet::IsInSet(const char* methodName)
+{
+    for (MethodInfo* pInfo = m_pInfos; pInfo != nullptr; pInfo = pInfo->m_next)
+    {
+        if (_stricmp(pInfo->m_MethodName, methodName) == 0)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool MethodSet::IsInSet(int methodHash)
+{
+    for (MethodInfo* pInfo = m_pInfos; pInfo != nullptr; pInfo = pInfo->m_next)
+    {
+        if (pInfo->m_MethodHash == methodHash)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool MethodSet::IsActiveMethod(const char* methodName, int methodHash)
+{
+    if (methodHash != 0)
+    {
+        // Use the method hash.
+        if (IsInSet(methodHash))
+        {
+            JITDUMP("Method active in MethodSet (hash match): %s Hash: %x\n", methodName, methodHash);
+            return true;
+        }
+    }
+
+    // Else, fall back and use the method name.
+    assert(methodName != nullptr);
+    if (IsInSet(methodName))
+    {
+        JITDUMP("Method active in MethodSet (name match): %s Hash: %x\n", methodName, methodHash);
+        return true;
     }
 
     return false;
@@ -1741,30 +1888,72 @@ unsigned __int64 FloatingPointUtils::convertDoubleToUInt64(double d)
 
 // Rounds a double-precision floating-point value to the nearest integer,
 // and rounds midpoint values to the nearest even number.
-// Note this should align with classlib in floatdouble.cpp
-// Specializing for x86 using a x87 instruction is optional since
-// this outcome is identical across targets.
 double FloatingPointUtils::round(double x)
 {
-    // If the number has no fractional part do nothing
-    // This shortcut is necessary to workaround precision loss in borderline cases on some platforms
-    if (x == (double)((INT64)x))
+    // ************************************************************************************
+    // IMPORTANT: Do not change this implementation without also updating Math.Round(double),
+    //            MathF.Round(float), and FloatingPointUtils::round(float)
+    // ************************************************************************************
+
+    // This is based on the 'Berkeley SoftFloat Release 3e' algorithm
+
+    uint64_t bits     = *reinterpret_cast<uint64_t*>(&x);
+    int32_t  exponent = (int32_t)(bits >> 52) & 0x07FF;
+
+    if (exponent <= 0x03FE)
     {
+        if ((bits << 1) == 0)
+        {
+            // Exactly +/- zero should return the original value
+            return x;
+        }
+
+        // Any value less than or equal to 0.5 will always round to exactly zero
+        // and any value greater than 0.5 will always round to exactly one. However,
+        // we need to preserve the original sign for IEEE compliance.
+
+        double result = ((exponent == 0x03FE) && ((bits & UI64(0x000FFFFFFFFFFFFF)) != 0)) ? 1.0 : 0.0;
+        return _copysign(result, x);
+    }
+
+    if (exponent >= 0x0433)
+    {
+        // Any value greater than or equal to 2^52 cannot have a fractional part,
+        // So it will always round to exactly itself.
+
         return x;
     }
 
-    // We had a number that was equally close to 2 integers.
-    // We need to return the even one.
+    // The absolute value should be greater than or equal to 1.0 and less than 2^52
+    assert((0x03FF <= exponent) && (exponent <= 0x0432));
 
-    double tempVal    = (x + 0.5);
-    double flrTempVal = floor(tempVal);
+    // Determine the last bit that represents the integral portion of the value
+    // and the bits representing the fractional portion
 
-    if ((flrTempVal == tempVal) && (fmod(tempVal, 2.0) != 0))
+    uint64_t lastBitMask   = UI64(1) << (0x0433 - exponent);
+    uint64_t roundBitsMask = lastBitMask - 1;
+
+    // Increment the first fractional bit, which represents the midpoint between
+    // two integral values in the current window.
+
+    bits += lastBitMask >> 1;
+
+    if ((bits & roundBitsMask) == 0)
     {
-        flrTempVal -= 1.0;
+        // If that overflowed and the rest of the fractional bits are zero
+        // then we were exactly x.5 and we want to round to the even result
+
+        bits &= ~lastBitMask;
+    }
+    else
+    {
+        // Otherwise, we just want to strip the fractional bits off, truncating
+        // to the current integer value.
+
+        bits &= ~roundBitsMask;
     }
 
-    return _copysign(flrTempVal, x);
+    return *reinterpret_cast<double*>(&bits);
 }
 
 // Windows x86 and Windows ARM/ARM64 may not define _copysignf() but they do define _copysign().
@@ -1781,28 +1970,465 @@ double FloatingPointUtils::round(double x)
 
 // Rounds a single-precision floating-point value to the nearest integer,
 // and rounds midpoint values to the nearest even number.
-// Note this should align with classlib in floatsingle.cpp
-// Specializing for x86 using a x87 instruction is optional since
-// this outcome is identical across targets.
 float FloatingPointUtils::round(float x)
 {
-    // If the number has no fractional part do nothing
-    // This shortcut is necessary to workaround precision loss in borderline cases on some platforms
-    if (x == (float)((INT32)x))
+    // ************************************************************************************
+    // IMPORTANT: Do not change this implementation without also updating MathF.Round(float),
+    //            Math.Round(double), and FloatingPointUtils::round(double)
+    // ************************************************************************************
+
+    // This is based on the 'Berkeley SoftFloat Release 3e' algorithm
+
+    uint32_t bits     = *reinterpret_cast<uint32_t*>(&x);
+    int32_t  exponent = (int32_t)(bits >> 23) & 0xFF;
+
+    if (exponent <= 0x7E)
     {
+        if ((bits << 1) == 0)
+        {
+            // Exactly +/- zero should return the original value
+            return x;
+        }
+
+        // Any value less than or equal to 0.5 will always round to exactly zero
+        // and any value greater than 0.5 will always round to exactly one. However,
+        // we need to preserve the original sign for IEEE compliance.
+
+        float result = ((exponent == 0x7E) && ((bits & 0x007FFFFF) != 0)) ? 1.0f : 0.0f;
+        return _copysignf(result, x);
+    }
+
+    if (exponent >= 0x96)
+    {
+        // Any value greater than or equal to 2^52 cannot have a fractional part,
+        // So it will always round to exactly itself.
+
         return x;
     }
 
-    // We had a number that was equally close to 2 integers.
-    // We need to return the even one.
+    // The absolute value should be greater than or equal to 1.0 and less than 2^52
+    assert((0x7F <= exponent) && (exponent <= 0x95));
 
-    float tempVal    = (x + 0.5f);
-    float flrTempVal = floorf(tempVal);
+    // Determine the last bit that represents the integral portion of the value
+    // and the bits representing the fractional portion
 
-    if ((flrTempVal == tempVal) && (fmodf(tempVal, 2.0f) != 0))
+    uint32_t lastBitMask   = 1U << (0x96 - exponent);
+    uint32_t roundBitsMask = lastBitMask - 1;
+
+    // Increment the first fractional bit, which represents the midpoint between
+    // two integral values in the current window.
+
+    bits += lastBitMask >> 1;
+
+    if ((bits & roundBitsMask) == 0)
     {
-        flrTempVal -= 1.0f;
+        // If that overflowed and the rest of the fractional bits are zero
+        // then we were exactly x.5 and we want to round to the even result
+
+        bits &= ~lastBitMask;
+    }
+    else
+    {
+        // Otherwise, we just want to strip the fractional bits off, truncating
+        // to the current integer value.
+
+        bits &= ~roundBitsMask;
     }
 
-    return _copysignf(flrTempVal, x);
+    return *reinterpret_cast<float*>(&bits);
+}
+
+bool FloatingPointUtils::isNormal(double x)
+{
+    int64_t bits = reinterpret_cast<int64_t&>(x);
+    bits &= 0x7FFFFFFFFFFFFFFF;
+    return (bits < 0x7FF0000000000000) && (bits != 0) && ((bits & 0x7FF0000000000000) != 0);
+}
+
+bool FloatingPointUtils::isNormal(float x)
+{
+    int32_t bits = reinterpret_cast<int32_t&>(x);
+    bits &= 0x7FFFFFFF;
+    return (bits < 0x7F800000) && (bits != 0) && ((bits & 0x7F800000) != 0);
+}
+
+//------------------------------------------------------------------------
+// hasPreciseReciprocal: check double for precise reciprocal. E.g. 2.0 <--> 0.5
+//
+// Arguments:
+//    x - value to check for precise reciprocal
+//
+// Return Value:
+//    True if 'x' is a power of two value and is not denormal (denormals may not be well-defined
+//    on some platforms such as if the user modified the floating-point environment via a P/Invoke)
+//
+
+bool FloatingPointUtils::hasPreciseReciprocal(double x)
+{
+    if (!isNormal(x))
+    {
+        return false;
+    }
+
+    uint64_t i        = reinterpret_cast<uint64_t&>(x);
+    uint64_t exponent = (i >> 52) & 0x7FFul;   // 0x7FF mask drops the sign bit
+    uint64_t mantissa = i & 0xFFFFFFFFFFFFFul; // 0xFFFFFFFFFFFFF mask drops the sign + exponent bits
+    return mantissa == 0 && exponent != 0 && exponent != 1023;
+}
+
+//------------------------------------------------------------------------
+// hasPreciseReciprocal: check float for precise reciprocal. E.g. 2.0f <--> 0.5f
+//
+// Arguments:
+//    x - value to check for precise reciprocal
+//
+// Return Value:
+//    True if 'x' is a power of two value and is not denormal (denormals may not be well-defined
+//    on some platforms such as if the user modified the floating-point environment via a P/Invoke)
+//
+
+bool FloatingPointUtils::hasPreciseReciprocal(float x)
+{
+    if (!isNormal(x))
+    {
+        return false;
+    }
+
+    uint32_t i        = reinterpret_cast<uint32_t&>(x);
+    uint32_t exponent = (i >> 23) & 0xFFu; // 0xFF mask drops the sign bit
+    uint32_t mantissa = i & 0x7FFFFFu;     // 0x7FFFFF mask drops the sign + exponent bits
+    return mantissa == 0 && exponent != 0 && exponent != 127;
+}
+
+namespace MagicDivide
+{
+template <int TableBase = 0, int TableSize, typename Magic>
+static const Magic* TryGetMagic(const Magic (&table)[TableSize], typename Magic::DivisorType index)
+{
+    if ((index < TableBase) || (TableBase + TableSize <= index))
+    {
+        return nullptr;
+    }
+
+    const Magic* p = &table[index - TableBase];
+
+    if (p->magic == 0)
+    {
+        return nullptr;
+    }
+
+    return p;
+};
+
+template <typename T>
+struct UnsignedMagic
+{
+    typedef T DivisorType;
+
+    T    magic;
+    bool add;
+    int  shift;
+};
+
+template <typename T>
+const UnsignedMagic<T>* TryGetUnsignedMagic(T divisor)
+{
+    return nullptr;
+}
+
+template <>
+const UnsignedMagic<uint32_t>* TryGetUnsignedMagic(uint32_t divisor)
+{
+    static const UnsignedMagic<uint32_t> table[]{
+        {0xaaaaaaab, false, 1}, // 3
+        {},
+        {0xcccccccd, false, 2}, // 5
+        {0xaaaaaaab, false, 2}, // 6
+        {0x24924925, true, 3},  // 7
+        {},
+        {0x38e38e39, false, 1}, // 9
+        {0xcccccccd, false, 3}, // 10
+        {0xba2e8ba3, false, 3}, // 11
+        {0xaaaaaaab, false, 3}, // 12
+    };
+
+    return TryGetMagic<3>(table, divisor);
+}
+
+template <>
+const UnsignedMagic<uint64_t>* TryGetUnsignedMagic(uint64_t divisor)
+{
+    static const UnsignedMagic<uint64_t> table[]{
+        {0xaaaaaaaaaaaaaaab, false, 1}, // 3
+        {},
+        {0xcccccccccccccccd, false, 2}, // 5
+        {0xaaaaaaaaaaaaaaab, false, 2}, // 6
+        {0x2492492492492493, true, 3},  // 7
+        {},
+        {0xe38e38e38e38e38f, false, 3}, // 9
+        {0xcccccccccccccccd, false, 3}, // 10
+        {0x2e8ba2e8ba2e8ba3, false, 1}, // 11
+        {0xaaaaaaaaaaaaaaab, false, 3}, // 12
+    };
+
+    return TryGetMagic<3>(table, divisor);
+}
+
+//------------------------------------------------------------------------
+// GetUnsignedMagic: Generates a magic number and shift amount for the magic
+// number unsigned division optimization.
+//
+// Arguments:
+//    d     - The divisor
+//    add   - Pointer to a flag indicating the kind of code to generate
+//    shift - Pointer to the shift value to be returned
+//
+// Returns:
+//    The magic number.
+//
+// Notes:
+//    This code is adapted from _The_PowerPC_Compiler_Writer's_Guide_, pages 57-58.
+//    The paper is based on "Division by invariant integers using multiplication"
+//    by Torbjorn Granlund and Peter L. Montgomery in PLDI 94
+
+template <typename T>
+T GetUnsignedMagic(T d, bool* add /*out*/, int* shift /*out*/)
+{
+    assert((d >= 3) && !isPow2(d));
+
+    const UnsignedMagic<T>* magic = TryGetUnsignedMagic(d);
+
+    if (magic != nullptr)
+    {
+        *shift = magic->shift;
+        *add   = magic->add;
+        return magic->magic;
+    }
+
+    typedef typename jitstd::make_signed<T>::type ST;
+
+    const unsigned bits       = sizeof(T) * 8;
+    const unsigned bitsMinus1 = bits - 1;
+    const T        twoNMinus1 = T(1) << bitsMinus1;
+
+    *add        = false;
+    const T  nc = -ST(1) - -ST(d) % ST(d);
+    unsigned p  = bitsMinus1;
+    T        q1 = twoNMinus1 / nc;
+    T        r1 = twoNMinus1 - (q1 * nc);
+    T        q2 = (twoNMinus1 - 1) / d;
+    T        r2 = (twoNMinus1 - 1) - (q2 * d);
+    T        delta;
+
+    do
+    {
+        p++;
+
+        if (r1 >= (nc - r1))
+        {
+            q1 = 2 * q1 + 1;
+            r1 = 2 * r1 - nc;
+        }
+        else
+        {
+            q1 = 2 * q1;
+            r1 = 2 * r1;
+        }
+
+        if ((r2 + 1) >= (d - r2))
+        {
+            if (q2 >= (twoNMinus1 - 1))
+            {
+                *add = true;
+            }
+
+            q2 = 2 * q2 + 1;
+            r2 = 2 * r2 + 1 - d;
+        }
+        else
+        {
+            if (q2 >= twoNMinus1)
+            {
+                *add = true;
+            }
+
+            q2 = 2 * q2;
+            r2 = 2 * r2 + 1;
+        }
+
+        delta = d - 1 - r2;
+
+    } while ((p < (bits * 2)) && ((q1 < delta) || ((q1 == delta) && (r1 == 0))));
+
+    *shift = p - bits; // resulting shift
+    return q2 + 1;     // resulting magic number
+}
+
+uint32_t GetUnsigned32Magic(uint32_t d, bool* add /*out*/, int* shift /*out*/)
+{
+    return GetUnsignedMagic<uint32_t>(d, add, shift);
+}
+
+#ifdef _TARGET_64BIT_
+uint64_t GetUnsigned64Magic(uint64_t d, bool* add /*out*/, int* shift /*out*/)
+{
+    return GetUnsignedMagic<uint64_t>(d, add, shift);
+}
+#endif
+
+template <typename T>
+struct SignedMagic
+{
+    typedef T DivisorType;
+
+    T   magic;
+    int shift;
+};
+
+template <typename T>
+const SignedMagic<T>* TryGetSignedMagic(T divisor)
+{
+    return nullptr;
+}
+
+template <>
+const SignedMagic<int32_t>* TryGetSignedMagic(int32_t divisor)
+{
+    static const SignedMagic<int32_t> table[]{
+        {0x55555556, 0}, // 3
+        {},
+        {0x66666667, 1},          // 5
+        {0x2aaaaaab, 0},          // 6
+        {(int32_t)0x92492493, 2}, // 7
+        {},
+        {0x38e38e39, 1}, // 9
+        {0x66666667, 2}, // 10
+        {0x2e8ba2e9, 1}, // 11
+        {0x2aaaaaab, 1}, // 12
+    };
+
+    return TryGetMagic<3>(table, divisor);
+}
+
+template <>
+const SignedMagic<int64_t>* TryGetSignedMagic(int64_t divisor)
+{
+    static const SignedMagic<int64_t> table[]{
+        {0x5555555555555556, 0}, // 3
+        {},
+        {0x6666666666666667, 1}, // 5
+        {0x2aaaaaaaaaaaaaab, 0}, // 6
+        {0x4924924924924925, 1}, // 7
+        {},
+        {0x1c71c71c71c71c72, 0}, // 9
+        {0x6666666666666667, 2}, // 10
+        {0x2e8ba2e8ba2e8ba3, 1}, // 11
+        {0x2aaaaaaaaaaaaaab, 1}, // 12
+    };
+
+    return TryGetMagic<3>(table, divisor);
+}
+
+//------------------------------------------------------------------------
+// GetSignedMagic: Generates a magic number and shift amount for
+// the magic number division optimization.
+//
+// Arguments:
+//    denom - The denominator
+//    shift - Pointer to the shift value to be returned
+//
+// Returns:
+//    The magic number.
+//
+// Notes:
+//    This code is previously from UTC where it notes it was taken from
+//   _The_PowerPC_Compiler_Writer's_Guide_, pages 57-58. The paper is based on
+//   is "Division by invariant integers using multiplication" by Torbjorn Granlund
+//   and Peter L. Montgomery in PLDI 94
+
+template <typename T>
+T GetSignedMagic(T denom, int* shift /*out*/)
+{
+    const SignedMagic<T>* magic = TryGetSignedMagic(denom);
+
+    if (magic != nullptr)
+    {
+        *shift = magic->shift;
+        return magic->magic;
+    }
+
+    const int bits         = sizeof(T) * 8;
+    const int bits_minus_1 = bits - 1;
+
+    typedef typename jitstd::make_unsigned<T>::type UT;
+
+    const UT two_nminus1 = UT(1) << bits_minus_1;
+
+    int p;
+    UT  absDenom;
+    UT  absNc;
+    UT  delta;
+    UT  q1;
+    UT  r1;
+    UT  r2;
+    UT  q2;
+    UT  t;
+    T   result_magic;
+    int iters = 0;
+
+    absDenom = abs(denom);
+    t        = two_nminus1 + ((unsigned int)denom >> 31);
+    absNc    = t - 1 - (t % absDenom);        // absolute value of nc
+    p        = bits_minus_1;                  // initialize p
+    q1       = two_nminus1 / absNc;           // initialize q1 = 2^p / abs(nc)
+    r1       = two_nminus1 - (q1 * absNc);    // initialize r1 = rem(2^p, abs(nc))
+    q2       = two_nminus1 / absDenom;        // initialize q1 = 2^p / abs(denom)
+    r2       = two_nminus1 - (q2 * absDenom); // initialize r1 = rem(2^p, abs(denom))
+
+    do
+    {
+        iters++;
+        p++;
+        q1 *= 2; // update q1 = 2^p / abs(nc)
+        r1 *= 2; // update r1 = rem(2^p / abs(nc))
+
+        if (r1 >= absNc)
+        { // must be unsigned comparison
+            q1++;
+            r1 -= absNc;
+        }
+
+        q2 *= 2; // update q2 = 2^p / abs(denom)
+        r2 *= 2; // update r2 = rem(2^p / abs(denom))
+
+        if (r2 >= absDenom)
+        { // must be unsigned comparison
+            q2++;
+            r2 -= absDenom;
+        }
+
+        delta = absDenom - r2;
+    } while (q1 < delta || (q1 == delta && r1 == 0));
+
+    result_magic = q2 + 1; // resulting magic number
+    if (denom < 0)
+    {
+        result_magic = -result_magic;
+    }
+    *shift = p - bits; // resulting shift
+
+    return result_magic;
+}
+
+int32_t GetSigned32Magic(int32_t d, int* shift /*out*/)
+{
+    return GetSignedMagic<int32_t>(d, shift);
+}
+
+#ifdef _TARGET_64BIT_
+int64_t GetSigned64Magic(int64_t d, int* shift /*out*/)
+{
+    return GetSignedMagic<int64_t>(d, shift);
+}
+#endif
 }

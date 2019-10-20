@@ -15,16 +15,16 @@
 ///////////////////////////////////////////////////////////////////////////////
 
 // static
-IAllocator* CompAllocBitSetTraits::GetAllocator(Compiler* comp)
+void* CompAllocBitSetTraits::Alloc(Compiler* comp, size_t byteSize)
 {
-    return comp->getAllocatorBitset();
+    return comp->getAllocator(CMK_bitset).allocate<char>(byteSize);
 }
 
 #ifdef DEBUG
 // static
-IAllocator* CompAllocBitSetTraits::GetDebugOnlyAllocator(Compiler* comp)
+void* CompAllocBitSetTraits::DebugAlloc(Compiler* comp, size_t byteSize)
 {
-    return comp->getAllocatorDebugOnly();
+    return comp->getAllocator(CMK_DebugOnly).allocate<char>(byteSize);
 }
 #endif // DEBUG
 
@@ -78,7 +78,7 @@ unsigned AllVarBitSetTraits::GetSize(Compiler* comp)
 // static
 unsigned AllVarBitSetTraits::GetArrSize(Compiler* comp, unsigned elemSize)
 {
-    return unsigned(roundUp(GetSize(comp), elemSize));
+    return roundUp(GetSize(comp), elemSize);
 }
 
 // static
@@ -139,16 +139,16 @@ BitSetSupport::BitSetOpCounter* BasicBlockBitSetTraits::GetOpCounter(Compiler* c
 ///////////////////////////////////////////////////////////////////////////////
 
 // static
-IAllocator* BitVecTraits::GetAllocator(BitVecTraits* b)
+void* BitVecTraits::Alloc(BitVecTraits* b, size_t byteSize)
 {
-    return b->comp->getAllocatorBitset();
+    return b->comp->getAllocator(CMK_bitset).allocate<char>(byteSize);
 }
 
 #ifdef DEBUG
 // static
-IAllocator* BitVecTraits::GetDebugOnlyAllocator(BitVecTraits* b)
+void* BitVecTraits::DebugAlloc(BitVecTraits* b, size_t byteSize)
 {
-    return b->comp->getAllocatorDebugOnly();
+    return b->comp->getAllocator(CMK_DebugOnly).allocate<char>(byteSize);
 }
 #endif // DEBUG
 
@@ -163,7 +163,7 @@ unsigned BitVecTraits::GetArrSize(BitVecTraits* b, unsigned elemSize)
 {
     assert(elemSize == sizeof(size_t));
     unsigned elemBits = 8 * elemSize;
-    return (unsigned)roundUp(b->size, elemBits) / elemBits;
+    return roundUp(b->size, elemBits) / elemBits;
 }
 
 // static

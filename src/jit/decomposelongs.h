@@ -45,6 +45,7 @@ private:
     GenTree* DecomposeStoreLclFld(LIR::Use& use);
     GenTree* DecomposeCast(LIR::Use& use);
     GenTree* DecomposeCnsLng(LIR::Use& use);
+    GenTree* DecomposeFieldList(GenTreeFieldList* fieldList, GenTreeOp* longNode);
     GenTree* DecomposeCall(LIR::Use& use);
     GenTree* DecomposeInd(LIR::Use& use);
     GenTree* DecomposeStoreInd(LIR::Use& use);
@@ -61,6 +62,7 @@ private:
     // Helper functions
     GenTree* FinalizeDecomposition(LIR::Use& use, GenTree* loResult, GenTree* hiResult, GenTree* insertResultAfter);
     GenTree* RepresentOpAsLocalVar(GenTree* op, GenTree* user, GenTree** edge);
+    GenTree* EnsureIntSized(GenTree* node, bool signExtend);
 
     GenTree* StoreNodeToVar(LIR::Use& use);
     static genTreeOps GetHiOper(genTreeOps oper);

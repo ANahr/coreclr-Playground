@@ -5,7 +5,6 @@
 #include "common.h"
 #include "assemblybinder.hpp"
 #include "clrprivbindercoreclr.h"
-#include "clrprivbinderutil.h"
 
 using namespace BINDER_SPACE;
 
@@ -80,18 +79,18 @@ HRESULT CLRPrivBinderCoreCLR::BindAssemblyByName(IAssemblyName     *pIAssemblyNa
             INT_PTR pManagedAssemblyLoadContext = GetManagedAssemblyLoadContext();
             if (pManagedAssemblyLoadContext != NULL)
             {
-              hr = AssemblyBinder::BindUsingHostAssemblyResolver(pManagedAssemblyLoadContext, pAssemblyName, pIAssemblyName, 
-              NULL, &pCoreCLRFoundAssembly);
-              if (SUCCEEDED(hr))
-              {
-                  // We maybe returned an assembly that was bound to a different AssemblyLoadContext instance.
-                  // In such a case, we will not overwrite the binding context (which would be wrong since it would not
-                  // be present in the cache of the current binding context).
-                  if (pCoreCLRFoundAssembly->GetBinder() == NULL)
-                  {
-                      pCoreCLRFoundAssembly->SetBinder(this);
-                  }
-              }
+                hr = AssemblyBinder::BindUsingHostAssemblyResolver(pManagedAssemblyLoadContext, pAssemblyName, pIAssemblyName, 
+                                                                   NULL, &pCoreCLRFoundAssembly);
+                if (SUCCEEDED(hr))
+                {
+                    // We maybe returned an assembly that was bound to a different AssemblyLoadContext instance.
+                    // In such a case, we will not overwrite the binding context (which would be wrong since it would not
+                    // be present in the cache of the current binding context).
+                    if (pCoreCLRFoundAssembly->GetBinder() == NULL)
+                    {
+                        pCoreCLRFoundAssembly->SetBinder(this);
+                    }
+                }
             }
         }
 #endif // !defined(DACCESS_COMPILE) && !defined(CROSSGEN_COMPILE)
@@ -109,8 +108,8 @@ Exit:;
 
 #if !defined(DACCESS_COMPILE) && !defined(CROSSGEN_COMPILE)
 HRESULT CLRPrivBinderCoreCLR::BindUsingPEImage( /* in */ PEImage *pPEImage, 
-                                                            /* in */ BOOL fIsNativeImage, 
-                                                            /* [retval][out] */ ICLRPrivAssembly **ppAssembly)
+                                                /* in */ BOOL fIsNativeImage, 
+                                                /* [retval][out] */ ICLRPrivAssembly **ppAssembly)
 {
     HRESULT hr = S_OK;
 
@@ -159,8 +158,8 @@ HRESULT CLRPrivBinderCoreCLR::BindUsingPEImage( /* in */ PEImage *pPEImage,
                 {
                     if (pCoreCLRFoundAssembly->GetIsInGAC())
                     {
-                        // If we were able to bind to a TPA assembly, then fail the load
-                        IF_FAIL_GO(HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND));
+                        *ppAssembly = pCoreCLRFoundAssembly.Extract();
+                        goto Exit;                        
                     }
                 }
             }
@@ -181,21 +180,6 @@ Exit:;
 }
 #endif // !defined(DACCESS_COMPILE) && !defined(CROSSGEN_COMPILE)
 
-HRESULT CLRPrivBinderCoreCLR::VerifyBind(IAssemblyName        *AssemblyName,
-                                         ICLRPrivAssembly     *pAssembly,
-                                         ICLRPrivAssemblyInfo *pAssemblyInfo)
-{
-    return E_FAIL;
-}
-         
-HRESULT CLRPrivBinderCoreCLR::GetBinderFlags(DWORD *pBinderFlags)
-{
-    if (pBinderFlags == NULL)
-        return E_INVALIDARG;
-    *pBinderFlags = BINDER_NONE;
-    return S_OK;
-}
-         
 HRESULT CLRPrivBinderCoreCLR::GetBinderID( 
         UINT_PTR *pBinderId)
 {
@@ -203,18 +187,6 @@ HRESULT CLRPrivBinderCoreCLR::GetBinderID(
     return S_OK;
 }
          
-HRESULT CLRPrivBinderCoreCLR::FindAssemblyBySpec( 
-            LPVOID pvAppDomain,
-            LPVOID pvAssemblySpec,
-            HRESULT *pResult,
-            ICLRPrivAssembly **ppAssembly)
-{
-    // We are not using a cache at this level
-    // However, assemblies bound by the CoreCLR binder is already cached in the
-    // AppDomain and will be resolved from there if required
-    return E_FAIL;
-}
-
 HRESULT CLRPrivBinderCoreCLR::SetupBindingPaths(SString  &sTrustedPlatformAssemblies,
                                                 SString  &sPlatformResourceRoots,
                                                 SString  &sAppPaths,
@@ -228,20 +200,6 @@ HRESULT CLRPrivBinderCoreCLR::SetupBindingPaths(SString  &sTrustedPlatformAssemb
     }
     EX_CATCH_HRESULT(hr);
     return hr;
-}
-
-bool CLRPrivBinderCoreCLR::IsInTpaList(const SString &sFileName)
-{
-    bool fIsFileOnTpaList = false;
-    
-    TpaFileNameHash * tpaFileNameMap = m_appContext.GetTpaFileNameList();
-    if (tpaFileNameMap != nullptr)
-    {
-        const FileNameMapEntry *pTpaEntry = tpaFileNameMap->LookupPtr(sFileName.GetUnicode());
-        fIsFileOnTpaList = (pTpaEntry != nullptr);
-    }
-    
-    return fIsFileOnTpaList;
 }
 
 // See code:BINDER_SPACE::AssemblyBinder::GetAssembly for info on fNgenExplicitBind
@@ -292,18 +250,8 @@ Exit:
     return hr;
 }
 
-#ifndef CROSSGEN_COMPILE
-HRESULT CLRPrivBinderCoreCLR::PreBindByteArray(PEImage  *pPEImage, BOOL fInspectionOnly)
+HRESULT CLRPrivBinderCoreCLR::GetLoaderAllocator(LPVOID* pLoaderAllocator)
 {
-    HRESULT hr = S_OK;
-    VALIDATE_ARG_RET(pPEImage != NULL);
-
-    EX_TRY
-    {
-        hr = AssemblyBinder::PreBindByteArray(&m_appContext, pPEImage, fInspectionOnly);
-    }
-    EX_CATCH_HRESULT(hr);
-    
-    return hr;
+    // Not supported by this binder
+    return E_FAIL;
 }
-#endif // CROSSGEN_COMPILE

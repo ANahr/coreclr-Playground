@@ -25,7 +25,6 @@ BOOL SimpleRWLock::TryEnterRead()
         _ASSERTE (RWLock >= 0);
     } while( RWLock != InterlockedCompareExchange( &m_RWLock, RWLock+1, RWLock ));
 
-    INCTHREADLOCKCOUNT();
     EE_LOCK_TAKEN(this);
 
 #ifdef _DEBUG
@@ -61,9 +60,8 @@ void SimpleRWLock::EnterRead()
         while (IsWriterWaiting())
         {
             int spinCount = m_spinCount;
-            while (spinCount > 0) {
-                spinCount--;
-                YieldProcessor();
+            if (spinCount > 0) {
+                YieldProcessorNormalizedForPreSkylakeCount(spinCount);
             }
             __SwitchToThread(0, ++dwSwitchCount);
         }
@@ -85,15 +83,9 @@ void SimpleRWLock::EnterRead()
             {
                 break;
             }
+
             // Delay by approximately 2*i clock cycles (Pentium III).
-            // This is brittle code - future processors may of course execute this
-            // faster or slower, and future code generators may eliminate the loop altogether.
-            // The precise value of the delay is not critical, however, and I can't think
-            // of a better way that isn't machine-dependent.
-            for (int delayCount = i; --delayCount; ) 
-            {
-                YieldProcessor();           // indicate to the processor that we are spining 
-            }
+            YieldProcessorNormalizedForPreSkylakeCount(i);
 
             // exponential backoff: wait a factor longer in the next iteration
             i *= g_SpinConstants.dwBackoffFactor;
@@ -121,8 +113,7 @@ BOOL SimpleRWLock::TryEnterWrite()
     if( RWLock ) {
         return FALSE;
     }
-    
-    INCTHREADLOCKCOUNT();
+
     EE_LOCK_TAKEN(this);
 
 #ifdef _DEBUG
@@ -182,15 +173,9 @@ void SimpleRWLock::EnterWrite()
             {
                 break;
             }
+
             // Delay by approximately 2*i clock cycles (Pentium III).
-            // This is brittle code - future processors may of course execute this
-            // faster or slower, and future code generators may eliminate the loop altogether.
-            // The precise value of the delay is not critical, however, and I can't think
-            // of a better way that isn't machine-dependent.
-            for (int delayCount = i; --delayCount; ) 
-            {
-                YieldProcessor();           // indicate to the processor that we are spining 
-            }
+            YieldProcessorNormalizedForPreSkylakeCount(i);
 
             // exponential backoff: wait a factor longer in the next iteration
             i *= g_SpinConstants.dwBackoffFactor;
@@ -241,7 +226,7 @@ void SimpleRWLock::CheckGCNoTrigger()
 
 #ifdef _DEBUG
 //=====================================================================        
-// GC mode assertions before acquringing a lock based on its mode.
+// GC mode assertions before acquiring a lock based on its mode.
 //=====================================================================        
 void SimpleRWLock::PreEnter()
 {

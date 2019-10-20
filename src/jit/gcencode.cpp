@@ -44,7 +44,6 @@ ReturnKind GCInfo::getReturnKind()
     switch (compiler->info.compRetType)
     {
         case TYP_REF:
-        case TYP_ARRAY:
             return RT_Object;
         case TYP_BYREF:
             return RT_ByRef;
@@ -55,9 +54,6 @@ ReturnKind GCInfo::getReturnKind()
 
             switch (retType)
             {
-                case TYP_ARRAY:
-                    _ASSERTE(false && "TYP_ARRAY unexpected from getReturnTypeForStruct()");
-                // fall through
                 case TYP_REF:
                     return RT_Object;
 
@@ -105,6 +101,299 @@ ReturnKind GCInfo::getReturnKind()
             return RT_Scalar;
     }
 }
+
+#if !defined(JIT32_GCENCODER) || defined(FEATURE_EH_FUNCLETS)
+
+// gcMarkFilterVarsPinned - Walk all lifetimes and make it so that anything
+//     live in a filter is marked as pinned (often by splitting the lifetime
+//     so that *only* the filter region is pinned).  This should only be
+//     called once (after generating all lifetimes, but before slot ids are
+//     finalized.
+//
+// DevDiv 376329 - The VM has to double report filters and their parent frame
+// because they occur during the 1st pass and the parent frame doesn't go dead
+// until we start unwinding in the 2nd pass.
+//
+// Untracked locals will only be reported in non-filter funclets and the
+// parent.
+// Registers can't be double reported by 2 frames since they're different.
+// That just leaves stack variables which might be double reported.
+//
+// Technically double reporting is only a problem when the GC has to relocate a
+// reference. So we avoid that problem by marking all live tracked stack
+// variables as pinned inside the filter.  Thus if they are double reported, it
+// won't be a problem since they won't be double relocated.
+//
+void GCInfo::gcMarkFilterVarsPinned()
+{
+    assert(compiler->ehAnyFunclets());
+    const EHblkDsc* endHBtab = &(compiler->compHndBBtab[compiler->compHndBBtabCount]);
+
+    for (EHblkDsc* HBtab = compiler->compHndBBtab; HBtab < endHBtab; HBtab++)
+    {
+        if (HBtab->HasFilter())
+        {
+            const UNATIVE_OFFSET filterBeg = compiler->ehCodeOffset(HBtab->ebdFilter);
+            const UNATIVE_OFFSET filterEnd = compiler->ehCodeOffset(HBtab->ebdHndBeg);
+
+            for (varPtrDsc* varTmp = gcVarPtrList; varTmp != nullptr; varTmp = varTmp->vpdNext)
+            {
+                // Get hold of the variable's flags.
+                const unsigned lowBits = varTmp->vpdVarNum & OFFSET_MASK;
+
+                // Compute the actual lifetime offsets.
+                const unsigned begOffs = varTmp->vpdBegOfs;
+                const unsigned endOffs = varTmp->vpdEndOfs;
+
+                // Special case: skip any 0-length lifetimes.
+                if (endOffs == begOffs)
+                {
+                    continue;
+                }
+
+                // Skip lifetimes with no overlap with the filter
+                if ((endOffs <= filterBeg) || (begOffs >= filterEnd))
+                {
+                    continue;
+                }
+
+#ifndef JIT32_GCENCODER
+                // Because there is no nesting within filters, nothing
+                // should be already pinned.
+                // For JIT32_GCENCODER, we should not do this check as gcVarPtrList are always sorted by vpdBegOfs
+                // which means that we could see some varPtrDsc that were already pinned by previous splitting.
+                assert((lowBits & pinned_OFFSET_FLAG) == 0);
+#endif // JIT32_GCENCODER
+
+                if (begOffs < filterBeg)
+                {
+                    if (endOffs > filterEnd)
+                    {
+                        // The variable lifetime is starts before AND ends after
+                        // the filter, so we need to create 2 new lifetimes:
+                        //     (1) a pinned one for the filter
+                        //     (2) a regular one for after the filter
+                        // and then adjust the original lifetime to end before
+                        // the filter.
+                        CLANG_FORMAT_COMMENT_ANCHOR;
+
+#ifdef DEBUG
+                        if (compiler->verbose)
+                        {
+                            printf("Splitting lifetime for filter: [%04X, %04X).\nOld: ", filterBeg, filterEnd);
+                            gcDumpVarPtrDsc(varTmp);
+                        }
+#endif // DEBUG
+
+                        varPtrDsc* desc1 = new (compiler, CMK_GC) varPtrDsc;
+                        desc1->vpdVarNum = varTmp->vpdVarNum | pinned_OFFSET_FLAG;
+                        desc1->vpdBegOfs = filterBeg;
+                        desc1->vpdEndOfs = filterEnd;
+
+                        varPtrDsc* desc2 = new (compiler, CMK_GC) varPtrDsc;
+                        desc2->vpdVarNum = varTmp->vpdVarNum;
+                        desc2->vpdBegOfs = filterEnd;
+                        desc2->vpdEndOfs = endOffs;
+
+                        varTmp->vpdEndOfs = filterBeg;
+
+                        gcInsertVarPtrDscSplit(desc1, varTmp);
+                        gcInsertVarPtrDscSplit(desc2, varTmp);
+
+#ifdef DEBUG
+                        if (compiler->verbose)
+                        {
+                            printf("New (1 of 3): ");
+                            gcDumpVarPtrDsc(varTmp);
+                            printf("New (2 of 3): ");
+                            gcDumpVarPtrDsc(desc1);
+                            printf("New (3 of 3): ");
+                            gcDumpVarPtrDsc(desc2);
+                        }
+#endif // DEBUG
+                    }
+                    else
+                    {
+                        // The variable lifetime started before the filter and ends
+                        // somewhere inside it, so we only create 1 new lifetime,
+                        // and then adjust the original lifetime to end before
+                        // the filter.
+                        CLANG_FORMAT_COMMENT_ANCHOR;
+
+#ifdef DEBUG
+                        if (compiler->verbose)
+                        {
+                            printf("Splitting lifetime for filter.\nOld: ");
+                            gcDumpVarPtrDsc(varTmp);
+                        }
+#endif // DEBUG
+
+                        varPtrDsc* desc = new (compiler, CMK_GC) varPtrDsc;
+                        desc->vpdVarNum = varTmp->vpdVarNum | pinned_OFFSET_FLAG;
+                        desc->vpdBegOfs = filterBeg;
+                        desc->vpdEndOfs = endOffs;
+
+                        varTmp->vpdEndOfs = filterBeg;
+
+                        gcInsertVarPtrDscSplit(desc, varTmp);
+
+#ifdef DEBUG
+                        if (compiler->verbose)
+                        {
+                            printf("New (1 of 2): ");
+                            gcDumpVarPtrDsc(varTmp);
+                            printf("New (2 of 2): ");
+                            gcDumpVarPtrDsc(desc);
+                        }
+#endif // DEBUG
+                    }
+                }
+                else
+                {
+                    if (endOffs > filterEnd)
+                    {
+                        // The variable lifetime starts inside the filter and
+                        // ends somewhere after it, so we create 1 new
+                        // lifetime for the part inside the filter and adjust
+                        // the start of the original lifetime to be the end
+                        // of the filter
+                        CLANG_FORMAT_COMMENT_ANCHOR;
+#ifdef DEBUG
+                        if (compiler->verbose)
+                        {
+                            printf("Splitting lifetime for filter.\nOld: ");
+                            gcDumpVarPtrDsc(varTmp);
+                        }
+#endif // DEBUG
+
+                        varPtrDsc* desc = new (compiler, CMK_GC) varPtrDsc;
+#ifndef JIT32_GCENCODER
+                        desc->vpdVarNum = varTmp->vpdVarNum | pinned_OFFSET_FLAG;
+                        desc->vpdBegOfs = begOffs;
+                        desc->vpdEndOfs = filterEnd;
+
+                        varTmp->vpdBegOfs = filterEnd;
+#else
+                        // Mark varTmp as pinned and generated use varPtrDsc(desc) as non-pinned
+                        // since gcInsertVarPtrDscSplit requires that varTmp->vpdBegOfs must precede desc->vpdBegOfs
+                        desc->vpdVarNum = varTmp->vpdVarNum;
+                        desc->vpdBegOfs = filterEnd;
+                        desc->vpdEndOfs = endOffs;
+
+                        varTmp->vpdVarNum = varTmp->vpdVarNum | pinned_OFFSET_FLAG;
+                        varTmp->vpdEndOfs = filterEnd;
+#endif
+
+                        gcInsertVarPtrDscSplit(desc, varTmp);
+
+#ifdef DEBUG
+                        if (compiler->verbose)
+                        {
+                            printf("New (1 of 2): ");
+                            gcDumpVarPtrDsc(desc);
+                            printf("New (2 of 2): ");
+                            gcDumpVarPtrDsc(varTmp);
+                        }
+#endif // DEBUG
+                    }
+                    else
+                    {
+                        // The variable lifetime is completely within the filter,
+                        // so just add the pinned flag.
+                        CLANG_FORMAT_COMMENT_ANCHOR;
+#ifdef DEBUG
+                        if (compiler->verbose)
+                        {
+                            printf("Pinning lifetime for filter.\nOld: ");
+                            gcDumpVarPtrDsc(varTmp);
+                        }
+#endif // DEBUG
+
+                        varTmp->vpdVarNum |= pinned_OFFSET_FLAG;
+#ifdef DEBUG
+                        if (compiler->verbose)
+                        {
+                            printf("New : ");
+                            gcDumpVarPtrDsc(varTmp);
+                        }
+#endif // DEBUG
+                    }
+                }
+            }
+        } // HasFilter
+    }     // Foreach EH
+}
+
+// gcInsertVarPtrDscSplit - Insert varPtrDsc that were created by splitting lifetimes
+//     From gcMarkFilterVarsPinned, we may have created one or two `varPtrDsc`s due to splitting lifetimes
+//     and these newly created `varPtrDsc`s should be inserted in gcVarPtrList.
+//     However the semantics of this call depend on the architecture.
+//
+//     x86-GCInfo requires gcVarPtrList to be sorted by vpdBegOfs.
+//     Every time inserting an entry we should keep the order of entries.
+//     So this function searches for a proper insertion point from "begin" then "desc" gets inserted.
+//
+//     For other architectures(ones that uses GCInfo{En|De}coder), we don't need any sort.
+//     So the argument "begin" is unused and "desc" will be inserted at the front of the list.
+
+void GCInfo::gcInsertVarPtrDscSplit(varPtrDsc* desc, varPtrDsc* begin)
+{
+#ifndef JIT32_GCENCODER
+    (void)begin;
+    desc->vpdNext = gcVarPtrList;
+    gcVarPtrList  = desc;
+#else  // JIT32_GCENCODER
+    // "desc" and "begin" must not be null
+    assert(desc != nullptr);
+    assert(begin != nullptr);
+
+    // The caller must guarantee that desc's BegOfs is equal or greater than begin's
+    // since we will search for insertion point from "begin"
+    assert(desc->vpdBegOfs >= begin->vpdBegOfs);
+
+    varPtrDsc* varTmp    = begin->vpdNext;
+    varPtrDsc* varInsert = begin;
+
+    while (varTmp != nullptr && varTmp->vpdBegOfs < desc->vpdBegOfs)
+    {
+        varInsert = varTmp;
+        varTmp    = varTmp->vpdNext;
+    }
+
+    // Insert point cannot be null
+    assert(varInsert != nullptr);
+
+    desc->vpdNext      = varInsert->vpdNext;
+    varInsert->vpdNext = desc;
+#endif // JIT32_GCENCODER
+}
+
+#ifdef DEBUG
+
+void GCInfo::gcDumpVarPtrDsc(varPtrDsc* desc)
+{
+    const int    offs   = (desc->vpdVarNum & ~OFFSET_MASK);
+    const GCtype gcType = (desc->vpdVarNum & byref_OFFSET_FLAG) ? GCT_BYREF : GCT_GCREF;
+    const bool   isPin  = (desc->vpdVarNum & pinned_OFFSET_FLAG) != 0;
+
+    printf("[%08X] %s%s var at [%s", dspPtr(desc), GCtypeStr(gcType), isPin ? "pinned-ptr" : "",
+           compiler->isFramePointerUsed() ? STR_FPBASE : STR_SPBASE);
+
+    if (offs < 0)
+    {
+        printf("-%02XH", -offs);
+    }
+    else if (offs > 0)
+    {
+        printf("+%02XH", +offs);
+    }
+
+    printf("] live from %04X to %04X\n", desc->vpdBegOfs, desc->vpdEndOfs);
+}
+
+#endif // DEBUG
+
+#endif // !defined(JIT32_GCENCODER) || defined(FEATURE_EH_FUNCLETS)
 
 #ifdef JIT32_GCENCODER
 
@@ -1248,10 +1537,10 @@ size_t GCInfo::gcInfoBlockHdrSave(
     header->prologSize = static_cast<unsigned char>(prologSize);
     assert(FitsIn<unsigned char>(epilogSize));
     header->epilogSize  = static_cast<unsigned char>(epilogSize);
-    header->epilogCount = compiler->getEmitter()->emitGetEpilogCnt();
-    if (header->epilogCount != compiler->getEmitter()->emitGetEpilogCnt())
+    header->epilogCount = compiler->GetEmitter()->emitGetEpilogCnt();
+    if (header->epilogCount != compiler->GetEmitter()->emitGetEpilogCnt())
         IMPL_LIMITATION("emitGetEpilogCnt() does not fit in InfoHdr::epilogCount");
-    header->epilogAtEnd = compiler->getEmitter()->emitHasEpilogEnd();
+    header->epilogAtEnd = compiler->GetEmitter()->emitHasEpilogEnd();
 
     if (compiler->codeGen->regSet.rsRegsModified(RBM_EDI))
         header->ediSaved = 1;
@@ -1260,7 +1549,7 @@ size_t GCInfo::gcInfoBlockHdrSave(
     if (compiler->codeGen->regSet.rsRegsModified(RBM_EBX))
         header->ebxSaved = 1;
 
-    header->interruptible = compiler->codeGen->genInterruptible;
+    header->interruptible = compiler->codeGen->GetInterruptible();
 
     if (!compiler->isFramePointerUsed())
     {
@@ -1318,27 +1607,30 @@ size_t GCInfo::gcInfoBlockHdrSave(
 
     header->syncStartOffset = INVALID_SYNC_OFFSET;
     header->syncEndOffset   = INVALID_SYNC_OFFSET;
+#ifndef UNIX_X86_ABI
+    // JIT is responsible for synchronization on funclet-based EH model that x86/Linux uses.
     if (compiler->info.compFlags & CORINFO_FLG_SYNCH)
     {
         assert(compiler->syncStartEmitCookie != NULL);
-        header->syncStartOffset = compiler->getEmitter()->emitCodeOffset(compiler->syncStartEmitCookie, 0);
+        header->syncStartOffset = compiler->GetEmitter()->emitCodeOffset(compiler->syncStartEmitCookie, 0);
         assert(header->syncStartOffset != INVALID_SYNC_OFFSET);
 
         assert(compiler->syncEndEmitCookie != NULL);
-        header->syncEndOffset = compiler->getEmitter()->emitCodeOffset(compiler->syncEndEmitCookie, 0);
+        header->syncEndOffset = compiler->GetEmitter()->emitCodeOffset(compiler->syncEndEmitCookie, 0);
         assert(header->syncEndOffset != INVALID_SYNC_OFFSET);
 
         assert(header->syncStartOffset < header->syncEndOffset);
         // synchronized methods can't have more than 1 epilog
         assert(header->epilogCount <= 1);
     }
+#endif
 
     header->revPInvokeOffset = INVALID_REV_PINVOKE_OFFSET;
 
     assert((compiler->compArgSize & 0x3) == 0);
 
     size_t argCount =
-        (compiler->compArgSize - (compiler->codeGen->intRegState.rsCalleeRegArgCount * sizeof(void*))) / sizeof(void*);
+        (compiler->compArgSize - (compiler->codeGen->intRegState.rsCalleeRegArgCount * REGSIZE_BYTES)) / REGSIZE_BYTES;
     assert(argCount <= MAX_USHORT_SIZE_T);
     header->argCount = static_cast<unsigned short>(argCount);
 
@@ -1453,7 +1745,7 @@ size_t GCInfo::gcInfoBlockHdrSave(
             gcEpilogTable      = mask ? dest : NULL;
             gcEpilogPrevOffset = 0;
 
-            size_t sz = compiler->getEmitter()->emitGenEpilogLst(gcRecordEpilog, this);
+            size_t sz = compiler->GetEmitter()->emitGenEpilogLst(gcRecordEpilog, this);
 
             /* Add the size of the epilog table to the total size */
 
@@ -1466,7 +1758,7 @@ size_t GCInfo::gcInfoBlockHdrSave(
 
     if (mask)
     {
-        if (compiler->codeGen->genInterruptible)
+        if (compiler->codeGen->GetInterruptible())
         {
             genMethodICnt++;
         }
@@ -1614,7 +1906,7 @@ PendingArgsStack::PendingArgsStack(unsigned maxDepth, Compiler* pComp)
     /* Do we need an array as well as the mask ? */
 
     if (pasMaxDepth > BITS_IN_pasMask)
-        pasTopArray = (BYTE*)pComp->compGetMemA(pasMaxDepth - BITS_IN_pasMask);
+        pasTopArray = pComp->getAllocator(CMK_Unknown).allocate<BYTE>(pasMaxDepth - BITS_IN_pasMask);
 }
 
 //-----------------------------------------------------------------------------
@@ -1789,7 +2081,7 @@ unsigned PendingArgsStack::pasEnumGCoffs(unsigned iter, unsigned* offs)
         {
             unsigned offset;
 
-            offset = (pasDepth - i) * sizeof(void*);
+            offset = (pasDepth - i) * TARGET_POINTER_SIZE;
             if (curArg == GCT_BYREF)
                 offset |= byref_OFFSET_FLAG;
 
@@ -1814,7 +2106,7 @@ unsigned PendingArgsStack::pasEnumGCoffs(unsigned iter, unsigned* offs)
             lvl += i;
 
             unsigned offset;
-            offset = lvl * sizeof(void*);
+            offset = lvl * TARGET_POINTER_SIZE;
             if (mask & pasByrefBottomMask)
                 offset |= byref_OFFSET_FLAG;
 
@@ -1843,17 +2135,11 @@ unsigned PendingArgsStack::pasEnumGCoffs(unsigned iter, unsigned* offs)
 #endif
 size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, unsigned codeSize, size_t* pArgTabOffset)
 {
-    unsigned count;
-
     unsigned   varNum;
     LclVarDsc* varDsc;
 
-    unsigned pass;
-
     size_t   totalSize = 0;
     unsigned lastOffset;
-
-    bool thisKeptAliveIsInUntracked = false;
 
     /* The mask should be all 0's or all 1's */
 
@@ -1879,29 +2165,25 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
     totalSize += sizeof(short);
 #endif
 
-    /**************************************************************************
-     *
-     *                      Untracked ptr variables
-     *
-     **************************************************************************
-     */
+/**************************************************************************
+ *
+ *                      Untracked ptr variables
+ *
+ **************************************************************************
+ */
+#if DEBUG
+    unsigned untrackedCount  = 0;
+    unsigned varPtrTableSize = 0;
+    gcCountForHeader(&untrackedCount, &varPtrTableSize);
+    assert(untrackedCount == header.untrackedCnt);
+    assert(varPtrTableSize == header.varPtrTableSize);
+#endif // DEBUG
 
-    count = 0;
-    for (pass = 0; pass < 2; pass++)
+    if (header.untrackedCnt != 0)
     {
-        /* If pass==0, generate the count
-         * If pass==1, write the table of untracked pointer variables.
-         */
+        // Write the table of untracked pointer variables.
 
         int lastoffset = 0;
-        if (pass == 1)
-        {
-            assert(count == header.untrackedCnt);
-            if (header.untrackedCnt == 0)
-                break; // No entries, break exits the loop since pass==1
-        }
-
-        /* Count&Write untracked locals and non-enregistered args */
 
         for (varNum = 0, varDsc = compiler->lvaTable; varNum < compiler->lvaCount; varNum++, varDsc++)
         {
@@ -1914,108 +2196,82 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
 
             if (varTypeIsGC(varDsc->TypeGet()))
             {
-                /* Do we have an argument or local variable? */
-                if (!varDsc->lvIsParam)
+                if (!gcIsUntrackedLocalOrNonEnregisteredArg(varNum))
                 {
-                    // If is is pinned, it must be an untracked local
-                    assert(!varDsc->lvPinned || !varDsc->lvTracked);
-
-                    if (varDsc->lvTracked || !varDsc->lvOnFrame)
-                        continue;
-                }
-                else
-                {
-/* Stack-passed arguments which are not enregistered
- * are always reported in this "untracked stack
- * pointers" section of the GC info even if lvTracked==true
- */
-
-/* Has this argument been enregistered? */
-#ifndef LEGACY_BACKEND
-                    if (!varDsc->lvOnFrame)
-#else  // LEGACY_BACKEND
-                    if (varDsc->lvRegister)
-#endif // LEGACY_BACKEND
-                    {
-                        /* if a CEE_JMP has been used, then we need to report all the arguments
-                           even if they are enregistered, since we will be using this value
-                           in JMP call.  Note that this is subtle as we require that
-                           argument offsets are always fixed up properly even if lvRegister
-                           is set */
-                        if (!compiler->compJmpOpUsed)
-                            continue;
-                    }
-                    else
-                    {
-                        if (!varDsc->lvOnFrame)
-                        {
-                            /* If this non-enregistered pointer arg is never
-                             * used, we don't need to report it
-                             */
-                            assert(varDsc->lvRefCnt == 0); // This assert is currently a known issue for X86-RyuJit
-                            continue;
-                        }
-                        else if (varDsc->lvIsRegArg && varDsc->lvTracked)
-                        {
-                            /* If this register-passed arg is tracked, then
-                             * it has been allocated space near the other
-                             * pointer variables and we have accurate life-
-                             * time info. It will be reported with
-                             * gcVarPtrList in the "tracked-pointer" section
-                             */
-
-                            continue;
-                        }
-                    }
-                }
-
-                if (compiler->lvaIsOriginalThisArg(varNum) && compiler->lvaKeepAliveAndReportThis())
-                {
-                    // Encoding of untracked variables does not support reporting
-                    // "this". So report it as a tracked variable with a liveness
-                    // extending over the entire method.
-
-                    thisKeptAliveIsInUntracked = true;
                     continue;
                 }
 
-                if (pass == 0)
-                    count++;
+                int offset = varDsc->lvStkOffs;
+#if DOUBLE_ALIGN
+                // For genDoubleAlign(), locals are addressed relative to ESP and
+                // arguments are addressed relative to EBP.
+
+                if (compiler->genDoubleAlign() && varDsc->lvIsParam && !varDsc->lvIsRegArg)
+                    offset += compiler->codeGen->genTotalFrameSize();
+#endif
+
+                // The lower bits of the offset encode properties of the stk ptr
+
+                assert(~OFFSET_MASK % sizeof(offset) == 0);
+
+                if (varDsc->TypeGet() == TYP_BYREF)
+                {
+                    // Or in byref_OFFSET_FLAG for 'byref' pointer tracking
+                    offset |= byref_OFFSET_FLAG;
+                }
+
+                if (varDsc->lvPinned)
+                {
+                    // Or in pinned_OFFSET_FLAG for 'pinned' pointer tracking
+                    offset |= pinned_OFFSET_FLAG;
+                }
+
+                int encodedoffset = lastoffset - offset;
+                lastoffset        = offset;
+
+                if (mask == 0)
+                    totalSize += encodeSigned(NULL, encodedoffset);
                 else
                 {
-                    int offset;
-                    assert(pass == 1);
+                    unsigned sz = encodeSigned(dest, encodedoffset);
+                    dest += sz;
+                    totalSize += sz;
+                }
+            }
+            else if ((varDsc->TypeGet() == TYP_STRUCT) && varDsc->lvOnFrame && varDsc->HasGCPtr())
+            {
+                ClassLayout* layout = varDsc->GetLayout();
+                unsigned     slots  = layout->GetSlotCount();
 
-                    offset = varDsc->lvStkOffs;
+                for (unsigned i = 0; i < slots; i++)
+                {
+                    if (!layout->IsGCPtr(i))
+                    {
+                        continue;
+                    }
+
+                    unsigned offset = varDsc->lvStkOffs + i * TARGET_POINTER_SIZE;
 #if DOUBLE_ALIGN
                     // For genDoubleAlign(), locals are addressed relative to ESP and
                     // arguments are addressed relative to EBP.
 
                     if (compiler->genDoubleAlign() && varDsc->lvIsParam && !varDsc->lvIsRegArg)
+                    {
                         offset += compiler->codeGen->genTotalFrameSize();
-#endif
-
-                    // The lower bits of the offset encode properties of the stk ptr
-
-                    assert(~OFFSET_MASK % sizeof(offset) == 0);
-
-                    if (varDsc->TypeGet() == TYP_BYREF)
-                    {
-                        // Or in byref_OFFSET_FLAG for 'byref' pointer tracking
-                        offset |= byref_OFFSET_FLAG;
                     }
-
-                    if (varDsc->lvPinned)
+#endif
+                    if (layout->GetGCPtrType(i) == TYP_BYREF)
                     {
-                        // Or in pinned_OFFSET_FLAG for 'pinned' pointer tracking
-                        offset |= pinned_OFFSET_FLAG;
+                        offset |= byref_OFFSET_FLAG; // indicate it is a byref GC pointer
                     }
 
                     int encodedoffset = lastoffset - offset;
                     lastoffset        = offset;
 
                     if (mask == 0)
+                    {
                         totalSize += encodeSigned(NULL, encodedoffset);
+                    }
                     else
                     {
                         unsigned sz = encodeSigned(dest, encodedoffset);
@@ -2024,65 +2280,18 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
                     }
                 }
             }
-
-            // A struct will have gcSlots only if it is at least TARGET_POINTER_SIZE.
-            if (varDsc->lvType == TYP_STRUCT && varDsc->lvOnFrame && (varDsc->lvExactSize >= TARGET_POINTER_SIZE))
-            {
-                unsigned slots  = compiler->lvaLclSize(varNum) / sizeof(void*);
-                BYTE*    gcPtrs = compiler->lvaGetGcLayout(varNum);
-
-                // walk each member of the array
-                for (unsigned i = 0; i < slots; i++)
-                {
-                    if (gcPtrs[i] == TYPE_GC_NONE) // skip non-gc slots
-                        continue;
-
-                    if (pass == 0)
-                        count++;
-                    else
-                    {
-                        assert(pass == 1);
-
-                        unsigned offset = varDsc->lvStkOffs + i * sizeof(void*);
-#if DOUBLE_ALIGN
-                        // For genDoubleAlign(), locals are addressed relative to ESP and
-                        // arguments are addressed relative to EBP.
-
-                        if (compiler->genDoubleAlign() && varDsc->lvIsParam && !varDsc->lvIsRegArg)
-                            offset += compiler->codeGen->genTotalFrameSize();
-#endif
-                        if (gcPtrs[i] == TYPE_GC_BYREF)
-                            offset |= byref_OFFSET_FLAG; // indicate it is a byref GC pointer
-
-                        int encodedoffset = lastoffset - offset;
-                        lastoffset        = offset;
-
-                        if (mask == 0)
-                            totalSize += encodeSigned(NULL, encodedoffset);
-                        else
-                        {
-                            unsigned sz = encodeSigned(dest, encodedoffset);
-                            dest += sz;
-                            totalSize += sz;
-                        }
-                    }
-                }
-            }
         }
 
         /* Count&Write spill temps that hold pointers */
 
-        assert(compiler->tmpAllFree());
-        for (TempDsc* tempItem = compiler->tmpListBeg(); tempItem != nullptr; tempItem = compiler->tmpListNxt(tempItem))
+        assert(compiler->codeGen->regSet.tmpAllFree());
+        for (TempDsc* tempItem = compiler->codeGen->regSet.tmpListBeg(); tempItem != nullptr;
+             tempItem          = compiler->codeGen->regSet.tmpListNxt(tempItem))
         {
             if (varTypeIsGC(tempItem->tdTempType()))
             {
-                if (pass == 0)
-                    count++;
-                else
                 {
                     int offset;
-                    assert(pass == 1);
 
                     offset = tempItem->tdTempOffs();
 
@@ -2122,63 +2331,53 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
      *
      *  Generate the table of stack pointer variable lifetimes.
      *
-     *  In the first pass we'll count the lifetime entries and note
-     *  whether there are any that don't fit in a small encoding. In
-     *  the second pass we actually generate the table contents.
-     *
      **************************************************************************
      */
 
-    // First we check for the most common case - no lifetimes at all.
+    bool keepThisAlive = false;
 
-    if (header.varPtrTableSize == 0)
-        goto DONE_VLT;
-
-    varPtrDsc* varTmp;
-    count = 0;
-
-    if (thisKeptAliveIsInUntracked)
+    if (!compiler->info.compIsStatic)
     {
-        count = 1;
-
-        // Encoding of untracked variables does not support reporting
-        // "this". So report it as a tracked variable with a liveness
-        // extending over the entire method.
-
-        assert(compiler->lvaTable[compiler->info.compThisArg].TypeGet() == TYP_REF);
-
-        unsigned varOffs = compiler->lvaTable[compiler->info.compThisArg].lvStkOffs;
-
-        /* For negative stack offsets we must reset the low bits,
-         * take abs and then set them back */
-
-        varOffs = abs(static_cast<int>(varOffs));
-        varOffs |= this_OFFSET_FLAG;
-
-        size_t sz = 0;
-        sz        = encodeUnsigned(mask ? (dest + sz) : NULL, varOffs);
-        sz += encodeUDelta(mask ? (dest + sz) : NULL, 0, 0);
-        sz += encodeUDelta(mask ? (dest + sz) : NULL, codeSize, 0);
-
-        dest += (sz & mask);
-        totalSize += sz;
+        unsigned thisArgNum = compiler->info.compThisArg;
+        gcIsUntrackedLocalOrNonEnregisteredArg(thisArgNum, &keepThisAlive);
     }
 
-    for (pass = 0; pass < 2; pass++)
-    {
-        /* If second pass, generate the count */
+    // First we check for the most common case - no lifetimes at all.
 
-        if (pass)
+    if (header.varPtrTableSize != 0)
+    {
+#if !defined(FEATURE_EH_FUNCLETS)
+        if (keepThisAlive)
         {
-            assert(header.varPtrTableSize > 0);
-            assert(header.varPtrTableSize == count);
+            // Encoding of untracked variables does not support reporting
+            // "this". So report it as a tracked variable with a liveness
+            // extending over the entire method.
+
+            assert(compiler->lvaTable[compiler->info.compThisArg].TypeGet() == TYP_REF);
+
+            unsigned varOffs = compiler->lvaTable[compiler->info.compThisArg].lvStkOffs;
+
+            /* For negative stack offsets we must reset the low bits,
+                * take abs and then set them back */
+
+            varOffs = abs(static_cast<int>(varOffs));
+            varOffs |= this_OFFSET_FLAG;
+
+            size_t sz = 0;
+            sz        = encodeUnsigned(mask ? (dest + sz) : NULL, varOffs);
+            sz += encodeUDelta(mask ? (dest + sz) : NULL, 0, 0);
+            sz += encodeUDelta(mask ? (dest + sz) : NULL, codeSize, 0);
+
+            dest += (sz & mask);
+            totalSize += sz;
         }
+#endif // !FEATURE_EH_FUNCLETS
 
         /* We'll use a delta encoding for the lifetime offsets */
 
         lastOffset = 0;
 
-        for (varTmp = gcVarPtrList; varTmp; varTmp = varTmp->vpdNext)
+        for (varPtrDsc* varTmp = gcVarPtrList; varTmp; varTmp = varTmp->vpdNext)
         {
             unsigned varOffs;
             unsigned lowBits;
@@ -2186,7 +2385,7 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
             unsigned begOffs;
             unsigned endOffs;
 
-            assert(~OFFSET_MASK % sizeof(void*) == 0);
+            assert(~OFFSET_MASK % TARGET_POINTER_SIZE == 0);
 
             /* Get hold of the variable's stack offset */
 
@@ -2210,28 +2409,19 @@ size_t GCInfo::gcMakeRegPtrTable(BYTE* dest, int mask, const InfoHdr& header, un
 
             /* Are we counting or generating? */
 
-            if (!pass)
-            {
-                count++;
-            }
-            else
-            {
-                size_t sz = 0;
-                sz        = encodeUnsigned(mask ? (dest + sz) : NULL, varOffs);
-                sz += encodeUDelta(mask ? (dest + sz) : NULL, begOffs, lastOffset);
-                sz += encodeUDelta(mask ? (dest + sz) : NULL, endOffs, begOffs);
+            size_t sz = 0;
+            sz        = encodeUnsigned(mask ? (dest + sz) : NULL, varOffs);
+            sz += encodeUDelta(mask ? (dest + sz) : NULL, begOffs, lastOffset);
+            sz += encodeUDelta(mask ? (dest + sz) : NULL, endOffs, begOffs);
 
-                dest += (sz & mask);
-                totalSize += sz;
-            }
+            dest += (sz & mask);
+            totalSize += sz;
 
             /* The next entry will be relative to the one we just processed */
 
             lastOffset = begOffs;
         }
     }
-
-DONE_VLT:
 
     if (pArgTabOffset != NULL)
         *pArgTabOffset = totalSize;
@@ -2260,10 +2450,10 @@ DONE_VLT:
 
     lastOffset = 0;
 
-    if (compiler->codeGen->genInterruptible)
+    if (compiler->codeGen->GetInterruptible())
     {
 #ifdef _TARGET_X86_
-        assert(compiler->genFullPtrRegMap);
+        assert(compiler->IsFullPtrRegMapRequired());
 
         unsigned ptrRegs = 0;
 
@@ -2424,7 +2614,9 @@ DONE_VLT:
 
                     assert((codeDelta & 0x7) == codeDelta);
                     *dest++ = 0xB0 | (BYTE)codeDelta;
+#ifndef UNIX_X86_ABI
                     assert(!compiler->isFramePointerUsed());
+#endif
 
                     /* Remember the new 'last' offset */
 
@@ -2550,7 +2742,7 @@ DONE_VLT:
 
                     dest = gceByrefPrefixI(genRegPtrTemp, dest);
 
-                    if (!thisKeptAliveIsInUntracked && genRegPtrTemp->rpdIsThis)
+                    if (!keepThisAlive && genRegPtrTemp->rpdIsThis)
                     {
                         // Mark with 'this' pointer prefix
                         *dest++ = 0xBC;
@@ -2592,7 +2784,7 @@ DONE_VLT:
         dest -= mask;
         totalSize++;
     }
-    else if (compiler->isFramePointerUsed()) // genInterruptible is false
+    else if (compiler->isFramePointerUsed()) // GetInterruptible() is false
     {
 #ifdef _TARGET_X86_
         /*
@@ -2710,11 +2902,11 @@ DONE_VLT:
         */
 
         /* If "this" is enregistered, note it. We do this explicitly here as
-           genFullPtrRegMap==false, and so we don't have any regPtrDsc's. */
+           IsFullPtrRegMapRequired()==false, and so we don't have any regPtrDsc's. */
 
         if (compiler->lvaKeepAliveAndReportThis() && compiler->lvaTable[compiler->info.compThisArg].lvRegister)
         {
-            unsigned thisRegMask   = genRegMask(compiler->lvaTable[compiler->info.compThisArg].lvRegNum);
+            unsigned thisRegMask   = genRegMask(compiler->lvaTable[compiler->info.compThisArg].GetRegNum());
             unsigned thisPtrRegEnc = gceEncodeCalleeSavedRegs(thisRegMask) << 4;
 
             if (thisPtrRegEnc)
@@ -2727,7 +2919,7 @@ DONE_VLT:
 
         CallDsc* call;
 
-        assert(compiler->genFullPtrRegMap == false);
+        assert(compiler->IsFullPtrRegMapRequired() == false);
 
         /* Walk the list of pointer register/argument entries */
 
@@ -2879,15 +3071,15 @@ DONE_VLT:
         dest -= mask;
         totalSize++;
     }
-    else // genInterruptible is false and we have an EBP-less frame
+    else // GetInterruptible() is false and we have an EBP-less frame
     {
-        assert(compiler->genFullPtrRegMap);
+        assert(compiler->IsFullPtrRegMapRequired());
 
 #ifdef _TARGET_X86_
 
         regPtrDsc*       genRegPtrTemp;
         regNumber        thisRegNum = regNumber(0);
-        PendingArgsStack pasStk(compiler->getEmitter()->emitMaxStackDepth, compiler);
+        PendingArgsStack pasStk(compiler->GetEmitter()->emitMaxStackDepth, compiler);
 
         /* Walk the list of pointer register/argument entries */
 
@@ -2989,7 +3181,7 @@ DONE_VLT:
             unsigned origCodeDelta = codeDelta;
 #endif
 
-            if (!thisKeptAliveIsInUntracked && genRegPtrTemp->rpdIsThis)
+            if (!keepThisAlive && genRegPtrTemp->rpdIsThis)
             {
                 unsigned tmpMask = genRegPtrTemp->rpdCompiler.rpdAdd;
 
@@ -3439,34 +3631,12 @@ void GCInfo::gcFindPtrsInFrame(const void* infoBlock, const void* codeBlock, uns
 #else // !JIT32_GCENCODER
 
 #include "gcinfoencoder.h"
-#include "simplerhash.h"
 
 // Do explicit instantiation.
-template class SimplerHashTable<RegSlotIdKey, RegSlotIdKey, GcSlotId, JitSimplerHashBehavior>;
-template class SimplerHashTable<StackSlotIdKey, StackSlotIdKey, GcSlotId, JitSimplerHashBehavior>;
+template class JitHashTable<RegSlotIdKey, RegSlotIdKey, GcSlotId>;
+template class JitHashTable<StackSlotIdKey, StackSlotIdKey, GcSlotId>;
 
 #ifdef DEBUG
-
-void GCInfo::gcDumpVarPtrDsc(varPtrDsc* desc)
-{
-    const int    offs   = (desc->vpdVarNum & ~OFFSET_MASK);
-    const GCtype gcType = (desc->vpdVarNum & byref_OFFSET_FLAG) ? GCT_BYREF : GCT_GCREF;
-    const bool   isPin  = (desc->vpdVarNum & pinned_OFFSET_FLAG) != 0;
-
-    printf("[%08X] %s%s var at [%s", dspPtr(desc), GCtypeStr(gcType), isPin ? "pinned-ptr" : "",
-           compiler->isFramePointerUsed() ? STR_FPBASE : STR_SPBASE);
-
-    if (offs < 0)
-    {
-        printf("-%02XH", -offs);
-    }
-    else if (offs > 0)
-    {
-        printf("+%02XH", +offs);
-    }
-
-    printf("] live from %04X to %04X\n", desc->vpdBegOfs, desc->vpdEndOfs);
-}
 
 static const char* const GcSlotFlagsNames[] = {"",
                                                "(byref) ",
@@ -3629,6 +3799,7 @@ public:
         }
     }
 
+#ifdef _TARGET_AMD64_
     void SetWantsReportOnlyLeaf()
     {
         m_gcInfoEncoder->SetWantsReportOnlyLeaf();
@@ -3637,6 +3808,16 @@ public:
             printf("Set WantsReportOnlyLeaf.\n");
         }
     }
+#elif defined(_TARGET_ARMARCH_)
+    void SetHasTailCalls()
+    {
+        m_gcInfoEncoder->SetHasTailCalls();
+        if (m_doLogging)
+        {
+            printf("Set HasTailCalls.\n");
+        }
+    }
+#endif // _TARGET_AMD64_
 
     void SetSizeOfStackOutgoingAndScratchArea(UINT32 size)
     {
@@ -3692,7 +3873,7 @@ void GCInfo::gcInfoBlockHdrSave(GcInfoEncoder* gcInfoEncoder, unsigned methodSiz
     {
         // The predicate above is true only if there is an extra generic context parameter, not for
         // the case where the generic context is provided by "this."
-        assert(compiler->info.compTypeCtxtArg != BAD_VAR_NUM);
+        assert((SIZE_T)compiler->info.compTypeCtxtArg != BAD_VAR_NUM);
         GENERIC_CONTEXTPARAM_TYPE ctxtParamType = GENERIC_CONTEXTPARAM_NONE;
         switch (compiler->info.compMethodInfo->options & CORINFO_GENERICS_CTXT_MASK)
         {
@@ -3750,7 +3931,7 @@ void GCInfo::gcInfoBlockHdrSave(GcInfoEncoder* gcInfoEncoder, unsigned methodSiz
 
         // A VM requirement due to how the decoder works (it ignores partially interruptible frames when
         // an exception has escaped, but the VM requires the security object to live on).
-        assert(compiler->codeGen->genInterruptible);
+        assert(compiler->codeGen->GetInterruptible());
 
         // The lv offset is FP-relative, and the using code expects caller-sp relative, so translate.
         // The normal GC lifetime reporting mechanisms will report a proper lifetime to the GC.
@@ -3760,7 +3941,7 @@ void GCInfo::gcInfoBlockHdrSave(GcInfoEncoder* gcInfoEncoder, unsigned methodSiz
             compiler->lvaGetCallerSPRelativeOffset(compiler->lvaSecurityObject));
     }
 
-#if FEATURE_EH_FUNCLETS
+#if defined(FEATURE_EH_FUNCLETS)
     if (compiler->lvaPSPSym != BAD_VAR_NUM)
     {
 #ifdef _TARGET_AMD64_
@@ -3771,12 +3952,22 @@ void GCInfo::gcInfoBlockHdrSave(GcInfoEncoder* gcInfoEncoder, unsigned methodSiz
 #endif // !_TARGET_AMD64_
     }
 
+#ifdef _TARGET_AMD64_
     if (compiler->ehAnyFunclets())
     {
         // Set this to avoid double-reporting the parent frame (unlike JIT64)
         gcInfoEncoderWithLog->SetWantsReportOnlyLeaf();
     }
+#endif // _TARGET_AMD64_
+
 #endif // FEATURE_EH_FUNCLETS
+
+#ifdef _TARGET_ARMARCH_
+    if (compiler->codeGen->GetHasTailCalls())
+    {
+        gcInfoEncoderWithLog->SetHasTailCalls();
+    }
+#endif // _TARGET_ARMARCH_
 
 #if FEATURE_FIXED_OUT_ARGS
     // outgoing stack area size
@@ -3785,7 +3976,7 @@ void GCInfo::gcInfoBlockHdrSave(GcInfoEncoder* gcInfoEncoder, unsigned methodSiz
 
 #if DISPLAY_SIZES
 
-    if (compiler->codeGen->genInterruptible)
+    if (compiler->codeGen->GetInterruptible())
     {
         genMethodICnt++;
     }
@@ -3844,12 +4035,14 @@ struct InterruptibleRangeReporter
     }
 };
 
-void GCInfo::gcMakeRegPtrTable(GcInfoEncoder* gcInfoEncoder,
-                               unsigned       codeSize,
-                               unsigned       prologSize,
-                               MakeRegPtrMode mode)
+void GCInfo::gcMakeRegPtrTable(
+    GcInfoEncoder* gcInfoEncoder, unsigned codeSize, unsigned prologSize, MakeRegPtrMode mode, unsigned* callCntRef)
 {
     GCENCODER_WITH_LOGGING(gcInfoEncoderWithLog, gcInfoEncoder);
+
+    const bool noTrackedGCSlots =
+        (compiler->opts.MinOpts() && !compiler->opts.jitFlags->IsSet(JitFlags::JIT_FLAG_PREJIT) &&
+         !JitConfig.JitMinOptsTrackGCrefs());
 
     if (mode == MAKE_REG_PTR_MODE_ASSIGN_SLOTS)
     {
@@ -3903,11 +4096,7 @@ void GCInfo::gcMakeRegPtrTable(GcInfoEncoder* gcInfoEncoder,
                 // Has this argument been fully enregistered?
                 CLANG_FORMAT_COMMENT_ANCHOR;
 
-#ifndef LEGACY_BACKEND
                 if (!varDsc->lvOnFrame)
-#else  // LEGACY_BACKEND
-                if (varDsc->lvRegister)
-#endif // LEGACY_BACKEND
                 {
                     // If a CEE_JMP has been used, then we need to report all the arguments
                     // even if they are enregistered, since we will be using this value
@@ -3921,14 +4110,7 @@ void GCInfo::gcMakeRegPtrTable(GcInfoEncoder* gcInfoEncoder,
                 }
                 else
                 {
-                    if (!varDsc->lvOnFrame)
-                    {
-                        // If this non-enregistered pointer arg is never
-                        // used, we don't need to report it.
-                        assert(varDsc->lvRefCnt == 0);
-                        continue;
-                    }
-                    else if (varDsc->lvIsRegArg && varDsc->lvTracked)
+                    if (varDsc->lvIsRegArg && varDsc->lvTracked)
                     {
                         // If this register-passed arg is tracked, then
                         // it has been allocated space near the other
@@ -3961,34 +4143,44 @@ void GCInfo::gcMakeRegPtrTable(GcInfoEncoder* gcInfoEncoder,
             {
                 stackSlotBase = GC_FRAMEREG_REL;
             }
-            StackSlotIdKey sskey(varDsc->lvStkOffs, (stackSlotBase == GC_FRAMEREG_REL), flags);
-            GcSlotId       varSlotId;
-            if (mode == MAKE_REG_PTR_MODE_ASSIGN_SLOTS)
+            if (noTrackedGCSlots)
             {
-                if (!m_stackSlotMap->Lookup(sskey, &varSlotId))
+                // No need to hash/lookup untracked GC refs; just grab a new Slot Id.
+                if (mode == MAKE_REG_PTR_MODE_ASSIGN_SLOTS)
                 {
-                    varSlotId = gcInfoEncoderWithLog->GetStackSlotId(varDsc->lvStkOffs, flags, stackSlotBase);
-                    m_stackSlotMap->Set(sskey, varSlotId);
+                    gcInfoEncoderWithLog->GetStackSlotId(varDsc->lvStkOffs, flags, stackSlotBase);
+                }
+            }
+            else
+            {
+                StackSlotIdKey sskey(varDsc->lvStkOffs, (stackSlotBase == GC_FRAMEREG_REL), flags);
+                GcSlotId       varSlotId;
+                if (mode == MAKE_REG_PTR_MODE_ASSIGN_SLOTS)
+                {
+                    if (!m_stackSlotMap->Lookup(sskey, &varSlotId))
+                    {
+                        varSlotId = gcInfoEncoderWithLog->GetStackSlotId(varDsc->lvStkOffs, flags, stackSlotBase);
+                        m_stackSlotMap->Set(sskey, varSlotId);
+                    }
                 }
             }
         }
 
         // If this is a TYP_STRUCT, handle its GC pointers.
         // Note that the enregisterable struct types cannot have GC pointers in them.
-        if ((varDsc->lvType == TYP_STRUCT) && varDsc->lvOnFrame && (varDsc->lvExactSize >= TARGET_POINTER_SIZE))
+        if ((varDsc->TypeGet() == TYP_STRUCT) && varDsc->lvOnFrame && (varDsc->lvExactSize >= TARGET_POINTER_SIZE))
         {
-            unsigned slots  = compiler->lvaLclSize(varNum) / sizeof(void*);
-            BYTE*    gcPtrs = compiler->lvaGetGcLayout(varNum);
+            ClassLayout* layout = varDsc->GetLayout();
+            unsigned     slots  = layout->GetSlotCount();
 
-            // walk each member of the array
             for (unsigned i = 0; i < slots; i++)
             {
-                if (gcPtrs[i] == TYPE_GC_NONE)
-                { // skip non-gc slots
+                if (!layout->IsGCPtr(i))
+                {
                     continue;
                 }
 
-                int offset = varDsc->lvStkOffs + i * sizeof(void*);
+                int offset = varDsc->lvStkOffs + i * TARGET_POINTER_SIZE;
 #if DOUBLE_ALIGN
                 // For genDoubleAlign(), locals are addressed relative to ESP and
                 // arguments are addressed relative to EBP.
@@ -3997,7 +4189,7 @@ void GCInfo::gcMakeRegPtrTable(GcInfoEncoder* gcInfoEncoder,
                     offset += compiler->codeGen->genTotalFrameSize();
 #endif
                 GcSlotFlags flags = GC_SLOT_UNTRACKED;
-                if (gcPtrs[i] == TYPE_GC_BYREF)
+                if (layout->GetGCPtrType(i) == TYP_BYREF)
                 {
                     flags = (GcSlotFlags)(flags | GC_SLOT_INTERIOR);
                 }
@@ -4025,8 +4217,9 @@ void GCInfo::gcMakeRegPtrTable(GcInfoEncoder* gcInfoEncoder,
     {
         // Count&Write spill temps that hold pointers.
 
-        assert(compiler->tmpAllFree());
-        for (TempDsc* tempItem = compiler->tmpListBeg(); tempItem != nullptr; tempItem = compiler->tmpListNxt(tempItem))
+        assert(compiler->codeGen->regSet.tmpAllFree());
+        for (TempDsc* tempItem = compiler->codeGen->regSet.tmpListBeg(); tempItem != nullptr;
+             tempItem          = compiler->codeGen->regSet.tmpListNxt(tempItem))
         {
             if (varTypeIsGC(tempItem->tdTempType()))
             {
@@ -4082,9 +4275,9 @@ void GCInfo::gcMakeRegPtrTable(GcInfoEncoder* gcInfoEncoder,
      **************************************************************************
      */
 
-    if (compiler->codeGen->genInterruptible)
+    if (compiler->codeGen->GetInterruptible())
     {
-        assert(compiler->genFullPtrRegMap);
+        assert(compiler->IsFullPtrRegMapRequired());
 
         regMaskSmall ptrRegs          = 0;
         regPtrDsc*   regStackArgFirst = nullptr;
@@ -4176,7 +4369,7 @@ void GCInfo::gcMakeRegPtrTable(GcInfoEncoder* gcInfoEncoder,
             // Currently just prologs and epilogs.
 
             InterruptibleRangeReporter reporter(prologSize, gcInfoEncoderWithLog);
-            compiler->getEmitter()->emitGenNoGCLst(reporter);
+            compiler->GetEmitter()->emitGenNoGCLst(reporter);
             prologSize = reporter.prevStart;
 
             // Report any remainder
@@ -4186,9 +4379,9 @@ void GCInfo::gcMakeRegPtrTable(GcInfoEncoder* gcInfoEncoder,
             }
         }
     }
-    else if (compiler->isFramePointerUsed()) // genInterruptible is false, and we're using EBP as a frame pointer.
+    else if (compiler->isFramePointerUsed()) // GetInterruptible() is false, and we're using EBP as a frame pointer.
     {
-        assert(compiler->genFullPtrRegMap == false);
+        assert(compiler->IsFullPtrRegMapRequired() == false);
 
         // Walk the list of pointer register/argument entries.
 
@@ -4204,9 +4397,24 @@ void GCInfo::gcMakeRegPtrTable(GcInfoEncoder* gcInfoEncoder,
         {
             if (gcCallDescList != nullptr)
             {
-                for (CallDsc* call = gcCallDescList; call != nullptr; call = call->cdNext)
+                if (noTrackedGCSlots)
                 {
-                    numCallSites++;
+                    // We have the call count from the previous run.
+                    numCallSites = *callCntRef;
+
+                    // If there are no calls, tell the world and bail.
+                    if (numCallSites == 0)
+                    {
+                        gcInfoEncoderWithLog->DefineCallSites(nullptr, nullptr, 0);
+                        return;
+                    }
+                }
+                else
+                {
+                    for (CallDsc* call = gcCallDescList; call != nullptr; call = call->cdNext)
+                    {
+                        numCallSites++;
+                    }
                 }
                 pCallSites     = new (compiler, CMK_GC) unsigned[numCallSites];
                 pCallSiteSizes = new (compiler, CMK_GC) BYTE[numCallSites];
@@ -4216,17 +4424,8 @@ void GCInfo::gcMakeRegPtrTable(GcInfoEncoder* gcInfoEncoder,
         // Now consider every call.
         for (CallDsc* call = gcCallDescList; call != nullptr; call = call->cdNext)
         {
-            if (mode == MAKE_REG_PTR_MODE_DO_WORK)
-            {
-                pCallSites[callSiteNum]     = call->cdOffs - call->cdCallInstrSize;
-                pCallSiteSizes[callSiteNum] = call->cdCallInstrSize;
-                callSiteNum++;
-            }
-
-            unsigned nextOffset;
-
             // Figure out the code offset of this entry.
-            nextOffset = call->cdOffs;
+            unsigned nextOffset = call->cdOffs;
 
             // As far as I (DLD, 2010) can determine by asking around, the "call->u1.cdArgMask"
             // and "cdArgCnt" cases are to handle x86 situations in which a call expression is nested as an
@@ -4251,22 +4450,44 @@ void GCInfo::gcMakeRegPtrTable(GcInfoEncoder* gcInfoEncoder,
             assert(call->cdOffs >= call->cdCallInstrSize);
             // call->cdOffs is actually the offset of the instruction *following* the call, so subtract
             // the call instruction size to get the offset of the actual call instruction...
-            unsigned callOffset = call->cdOffs - call->cdCallInstrSize;
-            // Record that these registers are live before the call...
-            gcInfoRecordGCRegStateChange(gcInfoEncoder, mode, callOffset, regMask, GC_SLOT_LIVE, byrefRegMask, nullptr);
-            // ...and dead after.
-            gcInfoRecordGCRegStateChange(gcInfoEncoder, mode, call->cdOffs, regMask, GC_SLOT_DEAD, byrefRegMask,
-                                         nullptr);
+            unsigned callOffset = nextOffset - call->cdCallInstrSize;
+
+            if (noTrackedGCSlots && regMask == 0)
+            {
+                // No live GC refs in regs at the call -> don't record the call.
+            }
+            else
+            {
+                // Append an entry for the call if doing the real thing.
+                if (mode == MAKE_REG_PTR_MODE_DO_WORK)
+                {
+                    pCallSites[callSiteNum]     = callOffset;
+                    pCallSiteSizes[callSiteNum] = call->cdCallInstrSize;
+                }
+                callSiteNum++;
+
+                // Record that these registers are live before the call...
+                gcInfoRecordGCRegStateChange(gcInfoEncoder, mode, callOffset, regMask, GC_SLOT_LIVE, byrefRegMask,
+                                             nullptr);
+                // ...and dead after.
+                gcInfoRecordGCRegStateChange(gcInfoEncoder, mode, nextOffset, regMask, GC_SLOT_DEAD, byrefRegMask,
+                                             nullptr);
+            }
         }
+        // Make sure we've recorded the expected number of calls
+        assert(mode != MAKE_REG_PTR_MODE_DO_WORK || numCallSites == callSiteNum);
+        // Return the actual recorded call count to the caller
+        *callCntRef = callSiteNum;
+
         // OK, define the call sites.
         if (mode == MAKE_REG_PTR_MODE_DO_WORK)
         {
             gcInfoEncoderWithLog->DefineCallSites(pCallSites, pCallSiteSizes, numCallSites);
         }
     }
-    else // genInterruptible is false and we have an EBP-less frame
+    else // GetInterruptible() is false and we have an EBP-less frame
     {
-        assert(compiler->genFullPtrRegMap);
+        assert(compiler->IsFullPtrRegMapRequired());
 
         // Walk the list of pointer register/argument entries */
         // First count them.
@@ -4483,6 +4704,7 @@ void GCInfo::gcMakeVarPtrTable(GcInfoEncoder* gcInfoEncoder, MakeRegPtrMode mode
         {
             flags = (GcSlotFlags)(flags | GC_SLOT_INTERIOR);
         }
+
         if ((lowBits & pinned_OFFSET_FLAG) != 0)
         {
             flags = (GcSlotFlags)(flags | GC_SLOT_PINNED);
@@ -4514,210 +4736,6 @@ void GCInfo::gcMakeVarPtrTable(GcInfoEncoder* gcInfoEncoder, MakeRegPtrMode mode
     }
 }
 
-// gcMarkFilterVarsPinned - Walk all lifetimes and make it so that anything
-//     live in a filter is marked as pinned (often by splitting the lifetime
-//     so that *only* the filter region is pinned).  This should only be
-//     called once (after generating all lifetimes, but before slot ids are
-//     finalized.
-//
-// DevDiv 376329 - The VM has to double report filters and their parent frame
-// because they occur during the 1st pass and the parent frame doesn't go dead
-// until we start unwinding in the 2nd pass.
-//
-// Untracked locals will only be reported in non-filter funclets and the
-// parent.
-// Registers can't be double reported by 2 frames since they're different.
-// That just leaves stack variables which might be double reported.
-//
-// Technically double reporting is only a problem when the GC has to relocate a
-// reference. So we avoid that problem by marking all live tracked stack
-// variables as pinned inside the filter.  Thus if they are double reported, it
-// won't be a problem since they won't be double relocated.
-//
-void GCInfo::gcMarkFilterVarsPinned()
-{
-    assert(compiler->ehAnyFunclets());
-    const EHblkDsc* endHBtab = &(compiler->compHndBBtab[compiler->compHndBBtabCount]);
-
-    for (EHblkDsc* HBtab = compiler->compHndBBtab; HBtab < endHBtab; HBtab++)
-    {
-        if (HBtab->HasFilter())
-        {
-            const UNATIVE_OFFSET filterBeg = compiler->ehCodeOffset(HBtab->ebdFilter);
-            const UNATIVE_OFFSET filterEnd = compiler->ehCodeOffset(HBtab->ebdHndBeg);
-
-            for (varPtrDsc* varTmp = gcVarPtrList; varTmp != nullptr; varTmp = varTmp->vpdNext)
-            {
-                // Get hold of the variable's flags.
-                const unsigned lowBits = varTmp->vpdVarNum & OFFSET_MASK;
-
-                // Compute the actual lifetime offsets.
-                const unsigned begOffs = varTmp->vpdBegOfs;
-                const unsigned endOffs = varTmp->vpdEndOfs;
-
-                // Special case: skip any 0-length lifetimes.
-                if (endOffs == begOffs)
-                {
-                    continue;
-                }
-
-                // Skip lifetimes with no overlap with the filter
-                if ((endOffs <= filterBeg) || (begOffs >= filterEnd))
-                {
-                    continue;
-                }
-
-                // Because there is no nesting within filters, nothing
-                // should be already pinned.
-                assert((lowBits & pinned_OFFSET_FLAG) == 0);
-
-                if (begOffs < filterBeg)
-                {
-                    if (endOffs > filterEnd)
-                    {
-                        // The variable lifetime is starts before AND ends after
-                        // the filter, so we need to create 2 new lifetimes:
-                        //     (1) a pinned one for the filter
-                        //     (2) a regular one for after the filter
-                        // and then adjust the original lifetime to end before
-                        // the filter.
-                        CLANG_FORMAT_COMMENT_ANCHOR;
-
-#ifdef DEBUG
-                        if (compiler->verbose)
-                        {
-                            printf("Splitting lifetime for filter: [%04X, %04X).\nOld: ", filterBeg, filterEnd);
-                            gcDumpVarPtrDsc(varTmp);
-                        }
-#endif // DEBUG
-
-                        varPtrDsc* desc1 = new (compiler, CMK_GC) varPtrDsc;
-                        desc1->vpdNext   = gcVarPtrList;
-                        desc1->vpdVarNum = varTmp->vpdVarNum | pinned_OFFSET_FLAG;
-                        desc1->vpdBegOfs = filterBeg;
-                        desc1->vpdEndOfs = filterEnd;
-
-                        varPtrDsc* desc2 = new (compiler, CMK_GC) varPtrDsc;
-                        desc2->vpdNext   = desc1;
-                        desc2->vpdVarNum = varTmp->vpdVarNum;
-                        desc2->vpdBegOfs = filterEnd;
-                        desc2->vpdEndOfs = endOffs;
-                        gcVarPtrList     = desc2;
-
-                        varTmp->vpdEndOfs = filterBeg;
-#ifdef DEBUG
-                        if (compiler->verbose)
-                        {
-                            printf("New (1 of 3): ");
-                            gcDumpVarPtrDsc(varTmp);
-                            printf("New (2 of 3): ");
-                            gcDumpVarPtrDsc(desc1);
-                            printf("New (3 of 3): ");
-                            gcDumpVarPtrDsc(desc2);
-                        }
-#endif // DEBUG
-                    }
-                    else
-                    {
-                        // The variable lifetime started before the filter and ends
-                        // somewhere inside it, so we only create 1 new lifetime,
-                        // and then adjust the original lifetime to end before
-                        // the filter.
-                        CLANG_FORMAT_COMMENT_ANCHOR;
-
-#ifdef DEBUG
-                        if (compiler->verbose)
-                        {
-                            printf("Splitting lifetime for filter.\nOld: ");
-                            gcDumpVarPtrDsc(varTmp);
-                        }
-#endif // DEBUG
-
-                        varPtrDsc* desc = new (compiler, CMK_GC) varPtrDsc;
-                        desc->vpdNext   = gcVarPtrList;
-                        desc->vpdVarNum = varTmp->vpdVarNum | pinned_OFFSET_FLAG;
-                        desc->vpdBegOfs = filterBeg;
-                        desc->vpdEndOfs = endOffs;
-                        gcVarPtrList    = desc;
-
-                        varTmp->vpdEndOfs = filterBeg;
-
-#ifdef DEBUG
-                        if (compiler->verbose)
-                        {
-                            printf("New (1 of 2): ");
-                            gcDumpVarPtrDsc(varTmp);
-                            printf("New (2 of 2): ");
-                            gcDumpVarPtrDsc(desc);
-                        }
-#endif // DEBUG
-                    }
-                }
-                else
-                {
-                    if (endOffs > filterEnd)
-                    {
-                        // The variable lifetime starts inside the filter and
-                        // ends somewhere after it, so we create 1 new
-                        // lifetime for the part inside the filter and adjust
-                        // the start of the original lifetime to be the end
-                        // of the filter
-                        CLANG_FORMAT_COMMENT_ANCHOR;
-#ifdef DEBUG
-                        if (compiler->verbose)
-                        {
-                            printf("Splitting lifetime for filter.\nOld: ");
-                            gcDumpVarPtrDsc(varTmp);
-                        }
-#endif // DEBUG
-
-                        varPtrDsc* desc = new (compiler, CMK_GC) varPtrDsc;
-                        desc->vpdNext   = gcVarPtrList;
-                        desc->vpdVarNum = varTmp->vpdVarNum | pinned_OFFSET_FLAG;
-                        desc->vpdBegOfs = begOffs;
-                        desc->vpdEndOfs = filterEnd;
-                        gcVarPtrList    = desc;
-
-                        varTmp->vpdBegOfs = filterEnd;
-
-#ifdef DEBUG
-                        if (compiler->verbose)
-                        {
-                            printf("New (1 of 2): ");
-                            gcDumpVarPtrDsc(desc);
-                            printf("New (2 of 2): ");
-                            gcDumpVarPtrDsc(varTmp);
-                        }
-#endif // DEBUG
-                    }
-                    else
-                    {
-                        // The variable lifetime is completely within the filter,
-                        // so just add the pinned flag.
-                        CLANG_FORMAT_COMMENT_ANCHOR;
-#ifdef DEBUG
-                        if (compiler->verbose)
-                        {
-                            printf("Pinning lifetime for filter.\nOld: ");
-                            gcDumpVarPtrDsc(varTmp);
-                        }
-#endif // DEBUG
-
-                        varTmp->vpdVarNum |= pinned_OFFSET_FLAG;
-#ifdef DEBUG
-                        if (compiler->verbose)
-                        {
-                            printf("New : ");
-                            gcDumpVarPtrDsc(varTmp);
-                        }
-#endif // DEBUG
-                    }
-                }
-            }
-        } // HasFilter
-    }     // Foreach EH
-}
-
 void GCInfo::gcInfoRecordGCStackArgLive(GcInfoEncoder* gcInfoEncoder, MakeRegPtrMode mode, regPtrDsc* genStackPtr)
 {
     // On non-x86 platforms, don't have pointer argument push/pop/kill declarations.
@@ -4727,7 +4745,7 @@ void GCInfo::gcInfoRecordGCStackArgLive(GcInfoEncoder* gcInfoEncoder, MakeRegPtr
     assert(genStackPtr->rpdArgTypeGet() == rpdARG_PUSH);
 
     // We only need to report these when we're doing fuly-interruptible
-    assert(compiler->codeGen->genInterruptible);
+    assert(compiler->codeGen->GetInterruptible());
 
     GCENCODER_WITH_LOGGING(gcInfoEncoderWithLog, gcInfoEncoder);
 
@@ -4764,7 +4782,7 @@ void GCInfo::gcInfoRecordGCStackArgsDead(GcInfoEncoder* gcInfoEncoder,
     // earlier, as going dead after the call.
 
     // We only need to report these when we're doing fuly-interruptible
-    assert(compiler->codeGen->genInterruptible);
+    assert(compiler->codeGen->GetInterruptible());
 
     GCENCODER_WITH_LOGGING(gcInfoEncoderWithLog, gcInfoEncoder);
 

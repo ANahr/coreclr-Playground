@@ -19,7 +19,6 @@
 #include "memorypool.h"
 #include "assemblyspecbase.h"
 #include "domainfile.h"
-#include "genericstackprobe.h"
 #include "holder.h"
 
 class AppDomain;
@@ -35,7 +34,6 @@ class AssemblySpec  : public BaseAssemblySpec
     friend class AssemblyNameNative;
     
     AppDomain       *m_pAppDomain;
-    SBuffer          m_HashForControl;
     DWORD            m_dwHashAlg;
     DomainAssembly  *m_pParentAssembly;
 
@@ -50,7 +48,6 @@ class AssemblySpec  : public BaseAssemblySpec
     HRESULT InitializeSpecInternal(mdToken kAssemblyRefOrDef, 
                                    IMDInternalImport *pImport, 
                                    DomainAssembly *pStaticParent,
-                                   BOOL fIntrospectionOnly,
                                    BOOL fAllowAllocation);
 
     // InitializeSpecInternal should be used very carefully so it's made private.
@@ -97,8 +94,7 @@ class AssemblySpec  : public BaseAssemblySpec
 
     void InitializeSpec(mdToken kAssemblyRefOrDef, 
                         IMDInternalImport *pImport, 
-                        DomainAssembly *pStaticParent = NULL,
-                        BOOL fIntrospectionOnly = FALSE)
+                        DomainAssembly *pStaticParent = NULL)
     {
         CONTRACTL
         {
@@ -108,7 +104,7 @@ class AssemblySpec  : public BaseAssemblySpec
             MODE_ANY;
         }
         CONTRACTL_END;
-        HRESULT hr=InitializeSpecInternal(kAssemblyRefOrDef, pImport,pStaticParent,fIntrospectionOnly,TRUE);
+        HRESULT hr=InitializeSpecInternal(kAssemblyRefOrDef, pImport,pStaticParent,TRUE);
         if(FAILED(hr))
             EEFileLoadException::Throw(this,hr);
     };
@@ -117,8 +113,7 @@ class AssemblySpec  : public BaseAssemblySpec
     void InitializeSpec(PEAssembly *pFile);
     HRESULT InitializeSpec(StackingAllocator* alloc,
                         ASSEMBLYNAMEREF* pName,
-                        BOOL fParse = TRUE,
-                        BOOL fIntrospectionOnly = FALSE);
+                        BOOL fParse = TRUE);
 
     void AssemblyNameInit(ASSEMBLYNAMEREF* pName, PEImage* pImageInfo); //[in,out], [in]
 
@@ -185,14 +180,12 @@ class AssemblySpec  : public BaseAssemblySpec
 
         BaseAssemblySpec::CopyFrom(pSource);
 
-        SetIntrospectionOnly(pSource->IsIntrospectionOnly());
         SetParentAssembly(pSource->GetParentAssembly());
 
         // Copy the details of the fallback load context binder
         SetFallbackLoadContextBinderForRequestingAssembly(pSource->GetFallbackLoadContextBinderForRequestingAssembly());
         m_fPreferFallbackLoadContextBinder = pSource->GetPreferFallbackLoadContextBinder();
 
-        m_HashForControl = pSource->m_HashForControl;
         m_dwHashAlg = pSource->m_dwHashAlg;
     }
 
@@ -205,34 +198,18 @@ class AssemblySpec  : public BaseAssemblySpec
                       BOOL fUsePublicKeyToken = TRUE,
                       BOOL fMustBeBindable = FALSE /*(used only by FusionBind's implementation)*/);
 
-    // Make sure this matches in the managed Assembly.DemandPermission()
-    enum FilePermFlag {
-        FILE_PATHDISCOVERY   = 0x0,
-        FILE_READ            = 0x1,
-        FILE_READANDPATHDISC = 0x2,
-        FILE_WEBPERM         = 0x3
-    };
-
-
 
     VOID Bind(
         AppDomain* pAppDomain, 
         BOOL fThrowOnFileNotFound,
         CoreBindResult* pBindResult,
         BOOL fNgenExplicitBind = FALSE, 
-        BOOL fExplicitBindToNativeImage = FALSE,
-        StackCrawlMark *pCallerStackMark  = NULL );
+        BOOL fExplicitBindToNativeImage = FALSE);
 
     Assembly *LoadAssembly(FileLoadLevel targetLevel, 
-                           AssemblyLoadSecurity *pLoadSecurity = NULL,
-                           BOOL fThrowOnFileNotFound = TRUE,
-                           BOOL fRaisePrebindEvents = TRUE,
-                           StackCrawlMark *pCallerStackMark = NULL);
+                           BOOL fThrowOnFileNotFound = TRUE);
     DomainAssembly *LoadDomainAssembly(FileLoadLevel targetLevel,
-                                       AssemblyLoadSecurity *pLoadSecurity = NULL,
-                                       BOOL fThrowOnFileNotFound = TRUE,
-                                       BOOL fRaisePrebindEvents = TRUE,
-                                       StackCrawlMark *pCallerStackMark = NULL);
+                                       BOOL fThrowOnFileNotFound = TRUE);
 
     //****************************************************************************************
     //
@@ -252,27 +229,12 @@ class AssemblySpec  : public BaseAssemblySpec
     void MatchRetargetedPublicKeys(Assembly *pAssembly);
   public:
     void MatchPublicKeys(Assembly *pAssembly);
-    PEAssembly *ResolveAssemblyFile(AppDomain *pAppDomain, BOOL fPreBind);
+    PEAssembly *ResolveAssemblyFile(AppDomain *pAppDomain);
 
     AppDomain *GetAppDomain() 
     {
         LIMITED_METHOD_CONTRACT;
         return m_pAppDomain;
-    }
-
-    HRESULT SetHashForControl(PBYTE pHashForControl, DWORD dwHashForControl, DWORD dwHashAlg)
-    {
-        CONTRACTL
-        {
-            THROWS;
-            GC_NOTRIGGER;
-            PRECONDITION(CheckPointer(pHashForControl));
-        }
-        CONTRACTL_END;
-
-        m_HashForControl.Set(pHashForControl, dwHashForControl);
-        m_dwHashAlg=dwHashAlg; 
-        return S_OK;
     }
 
     void ParseEncodedName();
@@ -435,19 +397,8 @@ class AssemblySpecBindingCache
                 delete m_pException;
         };
 
-        void OnAppDomainUnload()
-        {
-            LIMITED_METHOD_CONTRACT;
-            if (m_exceptionType == EXTYPE_EE)
-            {
-                m_exceptionType = EXTYPE_NONE;
-                delete m_pException;
-                m_pException = NULL;
-            }
-        };
-
         inline DomainAssembly* GetAssembly(){ LIMITED_METHOD_CONTRACT; return m_pAssembly;};
-        inline void SetAssembly(DomainAssembly* pAssembly){ LIMITED_METHOD_CONTRACT;  m_pAssembly=pAssembly;};        
+        inline void SetAssembly(DomainAssembly* pAssembly){ LIMITED_METHOD_CONTRACT;  m_pAssembly=pAssembly;};
         inline PEAssembly* GetFile(){ LIMITED_METHOD_CONTRACT; return m_pFile;};
         inline BOOL IsError(){ LIMITED_METHOD_CONTRACT; return (m_exceptionType!=EXTYPE_NONE);};
 
@@ -581,7 +532,7 @@ class AssemblySpecBindingCache
     PtrHashMap m_map;
     LoaderHeap *m_pHeap;
 
-    AssemblySpecBindingCache::AssemblyBinding* GetAssemblyBindingEntryForAssemblySpec(AssemblySpec* pSpec, BOOL fThrow);
+    AssemblySpecBindingCache::AssemblyBinding* LookupInternal(AssemblySpec* pSpec, BOOL fThrow = FALSE);
     
   public:
 
@@ -590,8 +541,6 @@ class AssemblySpecBindingCache
 
     void Init(CrstBase *pCrst, LoaderHeap *pHeap = NULL);
     void Clear();
-
-    void OnAppDomainUnload();
 
     BOOL Contains(AssemblySpec *pSpec);
 
@@ -603,12 +552,14 @@ class AssemblySpecBindingCache
     
     BOOL StoreException(AssemblySpec *pSpec, Exception* pEx);
 
+    BOOL RemoveAssembly(DomainAssembly* pAssembly);
+
     DWORD Hash(AssemblySpec *pSpec)
     {
         WRAPPER_NO_CONTRACT;
         return pSpec->Hash();
     }
-    
+
 #if !defined(DACCESS_COMPILE)
     void GetAllAssemblies(SetSHash<PTR_DomainAssembly>& assemblyList)
     {

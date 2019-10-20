@@ -13,19 +13,14 @@
 #include "eetwain.h"
 #include "codeman.h"
 #include "eeconfig.h"
-#include "stackprobe.h"
 #include "dbginterface.h"
 #include "generics.h"
 #ifdef FEATURE_INTERPRETER
 #include "interpreter.h"
 #endif // FEATURE_INTERPRETER
 
-#ifdef WIN64EXCEPTIONS
+#ifdef FEATURE_EH_FUNCLETS
 #define PROCESS_EXPLICIT_FRAME_BEFORE_MANAGED_FRAME
-#endif
-
-#ifdef _DEBUG
-void* forceFrame;   // Variable used to force a local variable to the frame
 #endif
 
 CrawlFrame::CrawlFrame()
@@ -132,7 +127,6 @@ BOOL CrawlFrame::IsInCalleesFrames(LPVOID stackPointer)
 MethodDesc* CrawlFrame::GetFunction()
 {
     LIMITED_METHOD_DAC_CONTRACT;
-    STATIC_CONTRACT_SO_TOLERANT;
     if (pFunc != NULL)
     {
         return pFunc;
@@ -267,7 +261,7 @@ PTR_VOID CrawlFrame::GetParamTypeArg()
             return NULL;
         }
 
-#ifdef _WIN64
+#ifdef BIT64
         if (!pFunc->IsSharedByGenericInstantiations() ||
             !(pFunc->RequiresInstMethodTableArg() || pFunc->RequiresInstMethodDescArg()))
         {
@@ -275,7 +269,7 @@ PTR_VOID CrawlFrame::GetParamTypeArg()
             // and actually has a param type arg
             return NULL;
         }
-#endif // _WIN64
+#endif // BIT64
 
         _ASSERTE(pFrame);
         _ASSERTE(pFunc);
@@ -357,6 +351,19 @@ bool CrawlFrame::IsGcSafe()
     return GetCodeManager()->IsGcSafe(&codeInfo, GetRelOffset());
 }
 
+#if defined(_TARGET_ARM_) || defined(_TARGET_ARM64_)
+bool CrawlFrame::HasTailCalls()
+{
+    CONTRACTL {
+        NOTHROW;
+        GC_NOTRIGGER;
+        SUPPORTS_DAC;
+    } CONTRACTL_END;
+
+    return GetCodeManager()->HasTailCalls(&codeInfo);
+}
+#endif // _TARGET_ARM_ || _TARGET_ARM64_
+
 inline void CrawlFrame::GotoNextFrame()
 {
     CONTRACTL {
@@ -425,7 +432,7 @@ void CrawlFrame::SetCurGSCookie(GSCookie * pGSCookie)
 #endif // !DACCESS_COMPILE
 }
 
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
 bool CrawlFrame::IsFilterFunclet()
 {
     WRAPPER_NO_CONTRACT;
@@ -444,7 +451,7 @@ bool CrawlFrame::IsFilterFunclet()
     return isFilterFunclet;
 }
 
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 
 //******************************************************************************
 #if defined(ELIMINATE_FEF)
@@ -510,7 +517,6 @@ void ExInfoWalker::WalkToManaged()
     {
         NOTHROW;
         GC_NOTRIGGER;
-        SO_TOLERANT;
         MODE_ANY;
         SUPPORTS_DAC;
     }
@@ -539,7 +545,7 @@ void ExInfoWalker::WalkToManaged()
 } // void ExInfoWalker::WalkToManaged()
 #endif // defined(ELIMINATE_FEF)
 
-#ifdef WIN64EXCEPTIONS
+#ifdef FEATURE_EH_FUNCLETS
 // static
 UINT_PTR Thread::VirtualUnwindCallFrame(PREGDISPLAY pRD, EECodeInfo* pCodeInfo /*= NULL*/)
 {
@@ -549,7 +555,6 @@ UINT_PTR Thread::VirtualUnwindCallFrame(PREGDISPLAY pRD, EECodeInfo* pCodeInfo /
         GC_NOTRIGGER;
 
         PRECONDITION(GetControlPC(pRD) == GetIP(pRD->pCurrentContext));
-        SO_TOLERANT;
     }
     CONTRACTL_END;
 
@@ -589,7 +594,6 @@ PCODE Thread::VirtualUnwindCallFrame(T_CONTEXT* pContext,
         GC_NOTRIGGER;
         PRECONDITION(CheckPointer(pContext, NULL_NOT_OK));
         PRECONDITION(CheckPointer(pContextPointers, NULL_OK));
-        SO_TOLERANT;
         SUPPORTS_DAC;
     }
     CONTRACTL_END;
@@ -630,7 +634,10 @@ PCODE Thread::VirtualUnwindCallFrame(T_CONTEXT* pContext,
         pFunctionEntryFromOS  = RtlLookupFunctionEntry(uControlPc,
                                                        ARM_ONLY((DWORD*))(&uImageBaseFromOS),
                                                        NULL);
-        _ASSERTE( (uImageBase == uImageBaseFromOS) && (pFunctionEntry == pFunctionEntryFromOS) );
+
+        // Note that he address returned from the OS is different from the one we have computed
+        // when unwind info is registered using RtlAddGrowableFunctionTable. Compare RUNTIME_FUNCTION content.
+        _ASSERTE( (uImageBase == uImageBaseFromOS) && (memcmp(pFunctionEntry, pFunctionEntryFromOS, sizeof(RUNTIME_FUNCTION)) == 0) );
 #endif // _DEBUG && !FEATURE_PAL
     }
 
@@ -706,7 +713,6 @@ PCODE Thread::VirtualUnwindNonLeafCallFrame(T_CONTEXT* pContext, KNONVOLATILE_CO
         PRECONDITION(CheckPointer(pContext, NULL_NOT_OK));
         PRECONDITION(CheckPointer(pContextPointers, NULL_OK));
         PRECONDITION(CheckPointer(pFunctionEntry, NULL_OK));
-        SO_TOLERANT;
     }
     CONTRACTL_END;
 
@@ -751,7 +757,6 @@ UINT_PTR Thread::VirtualUnwindToFirstManagedCallFrame(T_CONTEXT* pContext)
     {
         NOTHROW;
         GC_NOTRIGGER;
-        SO_TOLERANT;
     }
     CONTRACTL_END;
 
@@ -761,9 +766,28 @@ UINT_PTR Thread::VirtualUnwindToFirstManagedCallFrame(T_CONTEXT* pContext)
     // get our caller's PSP, or our caller's caller's SP.
     while (!ExecutionManager::IsManagedCode(uControlPc))
     {
+#ifdef FEATURE_WRITEBARRIER_COPY        
+        if (IsIPInWriteBarrierCodeCopy(uControlPc))
+        {
+            // Pretend we were executing the barrier function at its original location so that the unwinder can unwind the frame
+            uControlPc = AdjustWriteBarrierIP(uControlPc);
+            SetIP(pContext, uControlPc);
+        }
+#endif // FEATURE_WRITEBARRIER_COPY
+
 #ifndef FEATURE_PAL
         uControlPc = VirtualUnwindCallFrame(pContext);
 #else // !FEATURE_PAL
+
+#ifdef VSD_STUB_CAN_THROW_AV
+        if (IsIPinVirtualStub(uControlPc))
+        {
+            AdjustContextForVirtualStub(NULL, pContext);
+            uControlPc = GetIP(pContext);
+            break;
+        }
+#endif // VSD_STUB_CAN_THROW_AV
+
         BOOL success = PAL_VirtualUnwind(pContext, NULL);
         if (!success)
         {
@@ -784,7 +808,7 @@ UINT_PTR Thread::VirtualUnwindToFirstManagedCallFrame(T_CONTEXT* pContext)
 }
 
 #endif // !DACCESS_COMPILE
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 
 #ifdef _DEBUG
 void Thread::DebugLogStackWalkInfo(CrawlFrame* pCF, __in_z LPCSTR pszTag, UINT32 uFramesProcessed)
@@ -795,13 +819,13 @@ void Thread::DebugLogStackWalkInfo(CrawlFrame* pCF, __in_z LPCSTR pszTag, UINT32
     {
         LPCSTR pszType = "";
 
-#ifdef WIN64EXCEPTIONS
+#ifdef FEATURE_EH_FUNCLETS
         if (pCF->IsFunclet())
         {
             pszType = "[funclet]";
         }
         else
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
         if (pCF->pFunc->IsNoMetadata())
         {
             pszType = "[no metadata]";
@@ -879,7 +903,7 @@ StackWalkAction Thread::MakeStackwalkerCallback(
 }
 
 
-#if !defined(DACCESS_COMPILE) && defined(_TARGET_X86_) && !defined(WIN64EXCEPTIONS)
+#if !defined(DACCESS_COMPILE) && defined(_TARGET_X86_) && !defined(FEATURE_EH_FUNCLETS)
 #define STACKWALKER_MAY_POP_FRAMES
 #endif
 
@@ -896,7 +920,6 @@ StackWalkAction Thread::StackWalkFramesEx(
     // that any C++ destructors pushed in this function will never execute, and it means that this function can
     // never have a dynamic contract.
     STATIC_CONTRACT_WRAPPER;
-    STATIC_CONTRACT_SO_INTOLERANT;
     SCAN_IGNORE_THROW;            // see contract above
     SCAN_IGNORE_TRIGGER;          // see contract above
 
@@ -1124,13 +1147,13 @@ void StackFrameIterator::CommonCtor(Thread * pThread, PTR_Frame pFrame, ULONG32 
 
     m_pCachedGSCookie = NULL;
 
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
     m_sfParent = StackFrame();
     ResetGCRefReportingState();
     m_fDidFuncletReportGCReferences = true;
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 
-#if !defined(_TARGET_X86_)
+#if defined(RECORD_RESUMABLE_FRAME_SP)
     m_pvResumableFrameTargetSP = NULL;
 #endif
 } // StackFrameIterator::CommonCtor()
@@ -1177,10 +1200,10 @@ BOOL StackFrameIterator::Init(Thread *    pThread,
     _ASSERTE(CanThisThreadCallIntoHost() || (flags & LIGHTUNWIND) == 0);
 #endif // DACCESS_COMPILE
 
-#ifdef WIN64EXCEPTIONS
+#ifdef FEATURE_EH_FUNCLETS
     _ASSERTE(!(flags & POPFRAMES));
     _ASSERTE(pRegDisp->pCurrentContext);
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 
     BEGIN_FORBID_TYPELOAD();
 
@@ -1219,7 +1242,7 @@ BOOL StackFrameIterator::Init(Thread *    pThread,
     }
     INDEBUG(m_pRealStartFrame = m_crawl.pFrame);
 
-    if (m_crawl.pFrame != FRAME_TOP)
+    if (m_crawl.pFrame != FRAME_TOP && !(m_flags & SKIP_GSCOOKIE_CHECK))
     {
         m_crawl.SetCurGSCookie(Frame::SafeGetGSCookiePtr(m_crawl.pFrame));
     }
@@ -1312,7 +1335,7 @@ BOOL StackFrameIterator::ResetRegDisp(PREGDISPLAY pRegDisp,
         _ASSERTE(m_crawl.pFrame != NULL);
     }
 
-    if (m_crawl.pFrame != FRAME_TOP)
+    if (m_crawl.pFrame != FRAME_TOP && !(m_flags & SKIP_GSCOOKIE_CHECK))
     {
         m_crawl.SetCurGSCookie(Frame::SafeGetGSCookiePtr(m_crawl.pFrame));
     }
@@ -1425,7 +1448,6 @@ BOOL StackFrameIterator::ResetRegDisp(PREGDISPLAY pRegDisp,
                 _ASSERTE(curPc == GetControlPC(m_crawl.pRD));
             }
 
-            // this call also updates the appdomain if the explicit frame is a ContextTransitionFrame
             m_crawl.GotoNextFrame();
         }
     }
@@ -1485,12 +1507,12 @@ void StackFrameIterator::ResetCrawlFrame()
 
     m_crawl.taNoFrameTransitionMarker = NULL;
 
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
     m_crawl.isFilterFunclet       = false;
     m_crawl.isFilterFuncletCached = false;
     m_crawl.fShouldParentToFuncletSkipReportingGCReferences = false;
     m_crawl.fShouldParentFrameUseUnwindTargetPCforGCReporting = false;
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 
     m_crawl.pThread = this->m_pThread;
 
@@ -1541,28 +1563,32 @@ BOOL StackFrameIterator::IsValid(void)
         // Try to ensure that the frame chain did not change underneath us.
         // In particular, is thread's starting frame the same as it was when
         // we started?
-        //DevDiv 168789: In GCStress >= 4 two threads could race on triggering GC;
-        //  if the one that just made p/invoke call is second and hits the trap instruction
-        //  before call to syncronize with GC, it will push a frame [ResumableFrame on Unix 
-        //  and RedirectedThreadFrame on Windows] concurrently with GC stackwalking.
-        //  In normal case (no GCStress), after p/invoke, IL_STUB will check if GC is in progress and syncronize.
-        BOOL bRedirectedPinvoke = FALSE;
+        BOOL bIsRealStartFrameUnchanged = 
+            (m_pStartFrame != NULL) ||
+            (m_flags & POPFRAMES) ||
+            (m_pRealStartFrame == m_pThread->GetFrame());
 
 #ifdef FEATURE_HIJACK
-        bRedirectedPinvoke = ((GCStress<cfg_instr>::IsEnabled()) && 
-                              (m_pRealStartFrame != NULL) &&
-                              (m_pRealStartFrame != FRAME_TOP) &&
-                              (m_pRealStartFrame->GetVTablePtr() == InlinedCallFrame::GetMethodFrameVPtr()) && 
-                              (m_pThread->GetFrame() != NULL) &&
-                              (m_pThread->GetFrame() != FRAME_TOP) &&
-                              ((m_pThread->GetFrame()->GetVTablePtr() == ResumableFrame::GetMethodFrameVPtr()) ||
-                               (m_pThread->GetFrame()->GetVTablePtr() == RedirectedThreadFrame::GetMethodFrameVPtr())));
+        // In GCStress >= 4 two threads could race on triggering GC;
+        // if the one that just made p/invoke call is second and hits the trap instruction
+        // before call to synchronize with GC, it will push a frame [ResumableFrame on Unix
+        // and RedirectedThreadFrame on Windows] concurrently with GC stackwalking.
+        // In normal case (no GCStress), after p/invoke, IL_STUB will check if GC is in progress and synchronize.
+        // NOTE: This condition needs to be evaluated after the previous one to prevent a subtle race condition
+        // (https://github.com/dotnet/coreclr/issues/21581)
+        bIsRealStartFrameUnchanged = bIsRealStartFrameUnchanged ||
+            ((GCStress<cfg_instr>::IsEnabled()) &&
+            (m_pRealStartFrame != NULL) &&
+            (m_pRealStartFrame != FRAME_TOP) &&
+            (m_pRealStartFrame->GetVTablePtr() == InlinedCallFrame::GetMethodFrameVPtr()) &&
+            (m_pThread->GetFrame() != NULL) &&
+            (m_pThread->GetFrame() != FRAME_TOP) &&
+            ((m_pThread->GetFrame()->GetVTablePtr() == ResumableFrame::GetMethodFrameVPtr()) ||
+            (m_pThread->GetFrame()->GetVTablePtr() == RedirectedThreadFrame::GetMethodFrameVPtr())));
 #endif // FEATURE_HIJACK
 
-        _ASSERTE( (m_pStartFrame != NULL) ||
-                  (m_flags & POPFRAMES) ||
-                  (m_pRealStartFrame == m_pThread->GetFrame()) ||
-                  (bRedirectedPinvoke));
+        _ASSERTE(bIsRealStartFrameUnchanged);
+
 #endif //_DEBUG
 
         return FALSE;
@@ -1626,10 +1652,10 @@ StackWalkAction StackFrameIterator::Filter(void)
     bool fStop            = false;
     bool fSkippingFunclet = false;
 
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
     bool fRecheckCurrentFrame = false;
     bool fSkipFuncletCallback = true;
-#endif // defined(WIN64EXCEPTIONS)
+#endif // defined(FEATURE_EH_FUNCLETS)
 
     StackWalkAction retVal = SWA_CONTINUE;
 
@@ -1638,7 +1664,7 @@ StackWalkAction StackFrameIterator::Filter(void)
         fStop = false;
         fSkippingFunclet = false;
         
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
         ExceptionTracker* pTracker = m_crawl.pThread->GetExceptionState()->GetCurrentExceptionTracker();
         fRecheckCurrentFrame = false;
         fSkipFuncletCallback = true;
@@ -1660,12 +1686,12 @@ StackWalkAction StackFrameIterator::Filter(void)
             // we are now skipping frames to get to the funclet's parent
             fSkippingFunclet = true;
         }
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 
         switch (m_frameState)
         {
             case SFITER_FRAMELESS_METHOD:
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
 ProcessFuncletsForGCReporting:
                 do
                 {
@@ -2165,7 +2191,7 @@ ProcessFuncletsForGCReporting:
                     }
                 }
                     
-#else // WIN64EXCEPTIONS
+#else // FEATURE_EH_FUNCLETS
                 // Skip IL stubs
                 if (m_flags & FUNCTIONSONLY)
                 {
@@ -2179,7 +2205,7 @@ ProcessFuncletsForGCReporting:
                         break;
                     }
                 }
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 
                 fStop = true;
                 break;
@@ -2192,7 +2218,7 @@ ProcessFuncletsForGCReporting:
             case SFITER_SKIPPED_FRAME_FUNCTION:
                 if (!fSkippingFunclet)
                 {
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
                     if (m_flags & GC_FUNCLET_REFERENCE_REPORTING)
                     {
                         // If we are enumerating frames for GC reporting and we determined that
@@ -2214,7 +2240,7 @@ ProcessFuncletsForGCReporting:
                             break;
                         }
                     }
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
                     if ( (m_crawl.pFunc != NULL) || !(m_flags & FUNCTIONSONLY) )
                     {
                         fStop = true;
@@ -2429,8 +2455,6 @@ StackWalkAction StackFrameIterator::NextRaw(void)
                     _ASSERTE(orUnwind != NULL);
                     VALIDATEOBJECTREF(orUnwind);
 
-                    _ASSERTE(!orUnwind->IsTransparentProxy());
-
                     if (orUnwind != NULL)
                     {
                         orUnwind->LeaveObjMonitorAtException();
@@ -2448,8 +2472,7 @@ StackWalkAction StackFrameIterator::NextRaw(void)
         // pushed on the stack after the frame is running
         _ASSERTE((m_crawl.pFrame == FRAME_TOP) ||
                  ((TADDR)GetRegdisplaySP(m_crawl.pRD) < dac_cast<TADDR>(m_crawl.pFrame)) ||
-                 (m_crawl.pFrame->GetVTablePtr() == FaultingExceptionFrame::GetMethodFrameVPtr()) ||
-                 (m_crawl.pFrame->GetVTablePtr() == ContextTransitionFrame::GetMethodFrameVPtr()));
+                 (m_crawl.pFrame->GetVTablePtr() == FaultingExceptionFrame::GetMethodFrameVPtr()));
 #endif // !defined(ELIMINATE_FEF)
 
         // Get rid of the frame (actually, it isn't really popped)
@@ -2637,7 +2660,7 @@ StackWalkAction StackFrameIterator::NextRaw(void)
             {
                 m_crawl.pFrame->UpdateRegDisplay(m_crawl.pRD);
 
-#if !defined(_TARGET_X86_)
+#if defined(RECORD_RESUMABLE_FRAME_SP)
                 CONSISTENCY_CHECK(NULL == m_pvResumableFrameTargetSP);
 
                 if (m_crawl.isFirst)
@@ -2665,14 +2688,14 @@ StackWalkAction StackFrameIterator::NextRaw(void)
                     EECodeManager::EnsureCallerContextIsValid(m_crawl.pRD, m_crawl.GetStackwalkCacheEntry());
                     m_pvResumableFrameTargetSP = (LPVOID)GetSP(m_crawl.pRD->pCallerContext);
                 }
-#endif // !_TARGET_X86_
+#endif // RECORD_RESUMABLE_FRAME_SP
 
 
-#if defined(_DEBUG) && !defined(DACCESS_COMPILE) && !defined(WIN64EXCEPTIONS)
+#if defined(_DEBUG) && !defined(DACCESS_COMPILE) && !defined(FEATURE_EH_FUNCLETS)
                 // We are transitioning from unmanaged code to managed code... lets do some validation of our
                 // EH mechanism on platforms that we can.
                 VerifyValidTransitionFromManagedCode(m_crawl.pThread, &m_crawl);
-#endif // _DEBUG && !DACCESS_COMPILE &&  !WIN64EXCEPTIONS
+#endif // _DEBUG && !DACCESS_COMPILE &&  !FEATURE_EH_FUNCLETS
             }
         }
 
@@ -2759,7 +2782,7 @@ void StackFrameIterator::UpdateRegDisp(void)
     WRAPPER_NO_CONTRACT;
     SUPPORTS_DAC;
 
-    WIN64_ONLY(SyncRegDisplayToCurrentContext(m_crawl.pRD));
+    BIT64_ONLY(SyncRegDisplayToCurrentContext(m_crawl.pRD));
 } // StackFrameIterator::UpdateRegDisp()
 
 //---------------------------------------------------------------------------------------
@@ -2777,7 +2800,6 @@ void StackFrameIterator::ProcessIp(PCODE Ip)
     {
         NOTHROW;
         GC_NOTRIGGER;
-        SO_TOLERANT;
         SUPPORTS_DAC;
     } CONTRACTL_END;
 
@@ -2956,9 +2978,9 @@ void StackFrameIterator::ProcessCurrentFrame(void)
 #endif // DACCESS_COMPILE
 
 
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
             m_crawl.isFilterFuncletCached = false;
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 
             m_crawl.pFunc = m_crawl.codeInfo.GetMethodDesc();
 
@@ -3042,9 +3064,7 @@ BOOL StackFrameIterator::CheckForSkippedFrames(void)
     LOG((LF_GCROOTS, LL_EVERYTHING, "STACKWALK: CheckForSkippedFrames\n"));
 
     // We might have skipped past some Frames.
-    // This happens with InlinedCallFrames and if we unwound
-    // out of a finally in managed code or for ContextTransitionFrames
-    // that are inserted into the managed call stack.
+    // This happens with InlinedCallFrames.
     while ( (m_crawl.pFrame != FRAME_TOP) &&
             (dac_cast<TADDR>(m_crawl.pFrame) < pvReferenceSP)
           )
@@ -3116,7 +3136,7 @@ void StackFrameIterator::PreProcessingForManagedFrames(void)
     WRAPPER_NO_CONTRACT;
     SUPPORTS_DAC;
 
-#if !defined(_TARGET_X86_)
+#if defined(RECORD_RESUMABLE_FRAME_SP)
     if (m_pvResumableFrameTargetSP)
     {
         // We expect that if we saw a resumable frame, the next managed
@@ -3130,7 +3150,7 @@ void StackFrameIterator::PreProcessingForManagedFrames(void)
         m_pvResumableFrameTargetSP = NULL;
         m_crawl.isFirst = true;
     }
-#endif // !_TARGET_X86_
+#endif // RECORD_RESUMABLE_FRAME_SP
 
 #if !defined(DACCESS_COMPILE)
     m_pCachedGSCookie = (GSCookie*)m_crawl.GetCodeManager()->GetGSCookieAddr(
@@ -3139,14 +3159,17 @@ void StackFrameIterator::PreProcessingForManagedFrames(void)
                                                         &m_crawl.codeManState);
 #endif // !DACCESS_COMPILE
 
-    if (m_pCachedGSCookie)
+    if (!(m_flags & SKIP_GSCOOKIE_CHECK) && m_pCachedGSCookie)
     {
         m_crawl.SetCurGSCookie(m_pCachedGSCookie);
     }
 
     INDEBUG(m_crawl.pThread->DebugLogStackWalkInfo(&m_crawl, "CONSIDER", m_uFramesProcessed));
 
-#if defined(_DEBUG) && defined(_TARGET_X86_) && !defined(DACCESS_COMPILE)
+#if defined(_DEBUG) && !defined(FEATURE_EH_FUNCLETS) && !defined(DACCESS_COMPILE)
+    //
+    // VM is responsible for synchronization on non-funclet EH model.
+    //
     // m_crawl.GetThisPointer() requires full unwind
     // In GC's relocate phase, objects is not verifiable
     if ( !(m_flags & (LIGHTUNWIND | QUICKUNWIND | ALLOW_INVALID_OBJECTS)) && 
@@ -3170,7 +3193,7 @@ void StackFrameIterator::PreProcessingForManagedFrames(void)
 
         END_GCX_ASSERT_COOP;
     }
-#endif // _DEBUG && _TARGET_X86_ && !DACCESS_COMPILE
+#endif // _DEBUG && !FEATURE_EH_FUNCLETS && !DACCESS_COMPILE
 
     m_frameState = SFITER_FRAMELESS_METHOD;
 } // StackFrameIterator::PreProcessingForManagedFrames()
@@ -3187,7 +3210,6 @@ void StackFrameIterator::PostProcessingForManagedFrames(void)
     {
         NOTHROW;
         GC_NOTRIGGER;
-        SO_TOLERANT;
         MODE_ANY;
         SUPPORTS_DAC;
     }
@@ -3225,7 +3247,6 @@ void StackFrameIterator::PostProcessingForNoFrameTransition()
     {
         NOTHROW;
         GC_NOTRIGGER;
-        SO_TOLERANT;
         MODE_ANY;
         SUPPORTS_DAC;
     }

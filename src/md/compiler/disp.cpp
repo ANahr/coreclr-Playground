@@ -46,13 +46,6 @@ Disp::Disp() : m_cRef(0)
     m_OptionValue.m_MergeOptions = MergeFlagsNone;
     m_OptionValue.m_InitialSize = MDInitialSizeDefault;
     m_OptionValue.m_LocalRefPreservation = MDPreserveLocalRefsNone;
-
-    // Allow Avalon to use the SecurityCriticalAttribute
-    if (CLRConfig::GetConfigValue(CLRConfig::UNSUPPORTED_FORCE_ASSEMREF_DUPCHECK))
-    {
-        m_OptionValue.m_DupCheck = (CorCheckDuplicatesFor)(m_OptionValue.m_DupCheck|MDDupAssemblyRef);
-    }
-
 } // Disp::Disp
 
 Disp::~Disp()
@@ -77,7 +70,6 @@ Disp::DefineScope(
     HRESULT     hr = S_OK;
     PathString szFileName(PathString::Literal, W("file:"));
     PathString szFileNameSuffix;
-    DWORD len;
     BEGIN_ENTRYPOINT_NOTHROW;
 
     RegMeta     *pMeta = 0;
@@ -106,7 +98,8 @@ Disp::DefineScope(
 
 #ifdef ENC_DELTA_HACK
 // Testers need this flag for their tests.
-    
+
+    DWORD len;
     EX_TRY{
     len = WszGetEnvironmentVariable(W("COMP_ENC_OPENSCOPE"), szFileNameSuffix);
     szFileName.Append(szFileNameSuffix);

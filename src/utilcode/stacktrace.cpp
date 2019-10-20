@@ -135,7 +135,7 @@ typedef BOOL (__stdcall *pfnImgHlp_StackWalk)(
     PTRANSLATE_ADDRESS_ROUTINE        TranslateAddress
     );
 
-#ifdef _WIN64
+#ifdef BIT64
 typedef DWORD64 (__stdcall *pfnImgHlp_SymGetModuleBase64)(
     IN  HANDLE          hProcess,
     IN  DWORD64         dwAddr
@@ -213,13 +213,13 @@ struct IMGHLPFN_LOAD
 };
 
 
-#if defined(_WIN64)
+#if defined(BIT64)
 typedef void (*pfn_GetRuntimeStackWalkInfo)(
     IN  ULONG64   ControlPc,
     OUT UINT_PTR* pModuleBase,
     OUT UINT_PTR* pFuncEntry
     );
-#endif // _WIN64
+#endif // BIT64
 
 
 //
@@ -243,9 +243,9 @@ pfnImgHlp_SymLoadModule           _SymLoadModule;
 pfnImgHlp_SymRegisterCallback     _SymRegisterCallback;
 pfnImgHlp_SymSetOptions           _SymSetOptions;
 pfnImgHlp_SymGetOptions           _SymGetOptions;
-#if defined(_WIN64)
+#if defined(BIT64)
 pfn_GetRuntimeStackWalkInfo       _GetRuntimeStackWalkInfo;
-#endif // _WIN64
+#endif // BIT64
 
 IMGHLPFN_LOAD ailFuncList[] =
 {
@@ -287,7 +287,6 @@ LPSTR FillSymbolSearchPathThrows(CQuickBytes &qb)
 #endif
 
    InlineSString<MAX_SYM_PATH> rcBuff ; // Working buffer
-    WCHAR       rcVerString[64];            // Extension for install directory.
     int         chTotal = 0;                // How full is working buffer.
     int         ch;
 
@@ -470,7 +469,7 @@ void MagicInit()
     //
 
     _SymSetOptions(_SymGetOptions() | SYMOPT_DEFERRED_LOADS|SYMOPT_DEBUG);
-#ifndef _WIN64
+#ifndef BIT64
     _SymRegisterCallback(g_hProcess, SymCallback, 0);
 #endif
 
@@ -575,7 +574,7 @@ DWORD_PTR dwPCAddr
     
     HANDLE hFuncEntry = _SymFunctionTableAccess( hProcess, dwPCAddr );
 
-#if defined(_WIN64)
+#if defined(BIT64)
     if (hFuncEntry == NULL)
     {
         if (_GetRuntimeStackWalkInfo == NULL)
@@ -588,7 +587,7 @@ DWORD_PTR dwPCAddr
 
         _GetRuntimeStackWalkInfo((ULONG64)dwPCAddr, NULL, (UINT_PTR*)(&hFuncEntry));
     }
-#endif // _WIN64
+#endif // BIT64
 
     return hFuncEntry;
 }
@@ -653,7 +652,7 @@ DWORD_PTR dwAddr
         }
     }
 
-#if defined(_WIN64)
+#if defined(BIT64)
     if (_GetRuntimeStackWalkInfo == NULL)
     {
         _GetRuntimeStackWalkInfo = (pfn_GetRuntimeStackWalkInfo)
@@ -666,7 +665,7 @@ DWORD_PTR dwAddr
     _GetRuntimeStackWalkInfo((ULONG64)dwAddr, (UINT_PTR*)&moduleBase, NULL);
     if (moduleBase != NULL)
         return moduleBase;
-#endif // _WIN64
+#endif // BIT64
 
     return 0;
 }
@@ -725,7 +724,7 @@ CONTEXT * pContext      // Context to use (or NULL to use current)
         memcpy(&context, pContext, sizeof(CONTEXT));
     }
 
-#ifdef _WIN64
+#ifdef BIT64
     STACKFRAME64 stkfrm;
     memset(&stkfrm, 0, sizeof(STACKFRAME64));
 #else
@@ -792,7 +791,7 @@ CONTEXT * pContext      // Context to use (or NULL to use current)
 *       Actually prints the info into the string for the symbol.
 ****************************************************************************/
 
-#ifdef _WIN64
+#ifdef BIT64
     #define FMT_ADDR_BARE      "%08x`%08x"
 #else
     #define FMT_ADDR_BARE      "%08x"

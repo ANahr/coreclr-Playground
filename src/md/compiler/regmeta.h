@@ -16,15 +16,11 @@
 #define __RegMeta__h__
 
 #include <metamodelrw.h>
-#include <corperm.h>
 #include "../inc/mdlog.h"
 #include "utsem.h"
 
-#include "newmerger.h"
-
 #include "rwutil.h"
 #include "mdperf.h"
-#include <ivehandler.h>
 
 #include "sigparser.h"
 
@@ -159,10 +155,6 @@ class RegMeta :
     , public IMetaDataAssemblyEmit 
 #endif
 
-#ifdef FEATURE_METADATA_VALIDATOR
-    , public IMetaDataValidate 
-#endif
-
 #ifdef FEATURE_METADATA_EMIT_ALL
     , public IMetaDataFilter 
 #endif
@@ -183,7 +175,6 @@ class RegMeta :
 #endif
     , public IMDCommon
 {
-    friend class NEWMERGER;
     friend class CImportTlb;
     friend class MDInternalRW;
     friend class MDInternalRO;
@@ -1198,18 +1189,6 @@ public:
 
 #endif //FEATURE_METADATA_EMIT
 
-#ifdef FEATURE_METADATA_VALIDATOR
-//*****************************************************************************
-// IMetaDataValidator
-//*****************************************************************************
-
-    STDMETHODIMP ValidatorInit(
-        DWORD      dwModuleType,    // [IN] Specifies whether the module is a PE file or an obj.
-        IUnknown * pUnk);           // [IN] Validation error handler.
-
-    STDMETHODIMP ValidateMetaData();
-#endif //FEATURE_METADATA_VALIDATOR
-
 #ifdef FEATURE_METADATA_EMIT_ALL
 //*****************************************************************************
 // IMetaDataFilter
@@ -1626,8 +1605,6 @@ protected:
     }
 
     HRESULT PreSave();
-    HRESULT ProcessFilter();
-    HRESULT ProcessFilterWorker();
 
     // Initialize the EE
     HRESULT StartupEE();
@@ -2025,9 +2002,6 @@ private:
     ULONG       m_OpenFlags;                // Open time flags.
 
     LONG        m_cRef;                     // Ref count.
-#ifdef FEATURE_METADATA_EMIT_ALL
-    NEWMERGER   m_newMerger;                // class for handling merge 
-#endif //FEATURE_METADATA_EMIT_ALL
     IUnknown    *m_pFreeThreadedMarshaler;   // FreeThreadedMarshaler
     
 #ifdef FEATURE_METADATA_PERF_STATS
@@ -2048,7 +2022,6 @@ private:
     SetAPICallerType m_SetAPICaller;
 
     CorValidatorModuleType      m_ModuleType;
-    IVEHandler                  *m_pVEHandler;
     CCustAttrHash               m_caHash;   // Hashed list of custom attribute types seen.
     
     bool        m_bKeepKnownCa;             // Should all known CA's be kept?
@@ -2063,28 +2036,6 @@ private:
                               // There is an equivalent state in MiniMD, and both must be
                               // TRUE in order to delete safely.
 #endif
-
-    HRESULT _ValidateErrorHelper(
-        HRESULT     VECode,
-        VEContext   Context);
-
-    HRESULT _ValidateErrorHelper(
-        HRESULT     VECode,
-        VEContext   Context,
-        ULONG       ulVal1);
-
-    HRESULT _ValidateErrorHelper(
-        HRESULT     VECode,
-        VEContext   Context,
-        ULONG       ulVal1,
-        ULONG       ulVal2);
-    
-    HRESULT _ValidateErrorHelper(
-        HRESULT     VECode,
-        VEContext   Context,
-        ULONG       ulVal1,
-        ULONG       ulVal2,
-        ULONG       ulVal3);
     
 private:
     // Returns pointer to zeros of size (cbSize).

@@ -17,6 +17,7 @@ XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 #define _UTILS_H_
 
 #include "iallocator.h"
+#include "hostallocator.h"
 #include "cycletimer.h"
 
 // Needed for unreached()
@@ -132,23 +133,6 @@ int signum(T val)
     }
 }
 
-class JitSimplerHashBehavior
-{
-public:
-    static const unsigned s_growth_factor_numerator   = 3;
-    static const unsigned s_growth_factor_denominator = 2;
-
-    static const unsigned s_density_factor_numerator   = 3;
-    static const unsigned s_density_factor_denominator = 4;
-
-    static const unsigned s_minimum_allocation = 7;
-
-    inline static void DECLSPEC_NORETURN NoMemory()
-    {
-        NOMEM();
-    }
-};
-
 #if defined(DEBUG) || defined(INLINE_DATA)
 
 // ConfigMethodRange describes a set of methods, specified via their
@@ -184,7 +168,7 @@ public:
     bool Contains(class ICorJitInfo* info, CORINFO_METHOD_HANDLE method);
 
     // Ensure the range string has been parsed.
-    void EnsureInit(const wchar_t* rangeStr, unsigned capacity = DEFAULT_CAPACITY)
+    void EnsureInit(const WCHAR* rangeStr, unsigned capacity = DEFAULT_CAPACITY)
     {
         // Make sure that the memory was zero initialized
         assert(m_inited == 0 || m_inited == 1);
@@ -213,7 +197,7 @@ private:
         unsigned m_high;
     };
 
-    void InitRanges(const wchar_t* rangeStr, unsigned capacity);
+    void InitRanges(const WCHAR* rangeStr, unsigned capacity);
 
     unsigned m_entries;   // number of entries in the range array
     unsigned m_lastRange; // count of low-high pairs
@@ -390,14 +374,23 @@ public:
 #endif // DEBUG
     }
 
+    // When dumping stuff we could try to read a PhasedVariable
+    // This method tells us whether we should read the PhasedVariable
+    bool HasFinalValue() const
+    {
+#ifdef DEBUG
+        return (const_cast<PhasedVar*>(this))->m_writePhase == false;
+#else
+        return true;
+#endif // DEBUG
+    }
+
     // Functions/operators to write the value. Must be in the write phase.
 
     PhasedVar& operator=(const T& value)
     {
 #ifdef DEBUG
-#ifndef LEGACY_BACKEND
         assert(m_writePhase);
-#endif // !LEGACY_BACKEND
         m_initialized = true;
 #endif // DEBUG
         m_value = value;
@@ -407,9 +400,7 @@ public:
     PhasedVar& operator&=(const T& value)
     {
 #ifdef DEBUG
-#ifndef LEGACY_BACKEND
         assert(m_writePhase);
-#endif // !LEGACY_BACKEND
         m_initialized = true;
 #endif // DEBUG
         m_value &= value;
@@ -467,7 +458,6 @@ private:
     bool m_isAllocator[CORINFO_HELP_COUNT];
     bool m_mutatesHeap[CORINFO_HELP_COUNT];
     bool m_mayRunCctor[CORINFO_HELP_COUNT];
-    bool m_mayFinalize[CORINFO_HELP_COUNT];
 
     void init();
 
@@ -518,13 +508,6 @@ public:
         assert(helperId < CORINFO_HELP_COUNT);
         return m_mayRunCctor[helperId];
     }
-
-    bool MayFinalize(CorInfoHelpFunc helperId)
-    {
-        assert(helperId > CORINFO_HELP_UNDEF);
-        assert(helperId < CORINFO_HELP_COUNT);
-        return m_mayFinalize[helperId];
-    }
 };
 
 //*****************************************************************************
@@ -549,11 +532,11 @@ class AssemblyNamesList2
     };
 
     AssemblyName* m_pNames; // List of names
-    IAllocator*   m_alloc;  // IAllocator to use in this class
+    HostAllocator m_alloc;  // HostAllocator to use in this class
 
 public:
     // Take a Unicode string list of assembly names, parse it, and store it.
-    AssemblyNamesList2(const wchar_t* list, __in IAllocator* alloc);
+    AssemblyNamesList2(const WCHAR* list, HostAllocator alloc);
 
     ~AssemblyNamesList2();
 
@@ -564,6 +547,60 @@ public:
     bool IsEmpty()
     {
         return m_pNames == nullptr;
+    }
+};
+
+// MethodSet: Manage a list of methods that is read from a file.
+//
+// Methods are approximately in the format output by JitFunctionTrace, e.g.:
+//
+//     System.CLRConfig:GetBoolValue(ref,byref):bool (MethodHash=3c54d35e)
+//       -- use the MethodHash, not the method name
+//
+//     System.CLRConfig:GetBoolValue(ref,byref):bool
+//       -- use just the name
+//
+// Method names should not have any leading whitespace.
+//
+// TODO: Should this be more related to JitConfigValues::MethodSet?
+//
+class MethodSet
+{
+    // TODO: use a hash table? or two: one on hash value, one on function name
+    struct MethodInfo
+    {
+        char*       m_MethodName;
+        int         m_MethodHash;
+        MethodInfo* m_next;
+
+        MethodInfo(char* methodName, int methodHash)
+            : m_MethodName(methodName), m_MethodHash(methodHash), m_next(nullptr)
+        {
+        }
+    };
+
+    MethodInfo*   m_pInfos; // List of function info
+    HostAllocator m_alloc;  // HostAllocator to use in this class
+
+public:
+    // Take a Unicode string with the filename containing a list of function names, parse it, and store it.
+    MethodSet(const WCHAR* filename, HostAllocator alloc);
+
+    ~MethodSet();
+
+    // Return 'true' if 'functionName' (in UTF-8 format) is in the stored set of assembly names.
+    bool IsInSet(const char* functionName);
+
+    // Return 'true' if 'functionHash' (in UTF-8 format) is in the stored set of assembly names.
+    bool IsInSet(int functionHash);
+
+    // Return 'true' if this method is active. Prefer non-zero methodHash for check over (non-null) methodName.
+    bool IsActiveMethod(const char* methodName, int methodHash);
+
+    // Return 'true' if the assembly name set is empty.
+    bool IsEmpty()
+    {
+        return m_pInfos == nullptr;
     }
 };
 
@@ -617,23 +654,6 @@ unsigned CountDigits(unsigned num, unsigned base = 10);
 
 #endif // DEBUG
 
-// Utility class for lists.
-template <typename T>
-struct ListNode
-{
-    T            data;
-    ListNode<T>* next;
-
-    // Create the class without using constructors.
-    static ListNode<T>* Create(T value, IAllocator* alloc)
-    {
-        ListNode<T>* node = new (alloc) ListNode<T>;
-        node->data        = value;
-        node->next        = nullptr;
-        return node;
-    }
-};
-
 /*****************************************************************************
 * Floating point utility class
 */
@@ -649,6 +669,14 @@ public:
     static double round(double x);
 
     static float round(float x);
+
+    static bool isNormal(double x);
+
+    static bool isNormal(float x);
+
+    static bool hasPreciseReciprocal(double x);
+
+    static bool hasPreciseReciprocal(float x);
 };
 
 // The CLR requires that critical section locks be initialized via its ClrCreateCriticalSection API...but
@@ -717,5 +745,17 @@ private:
     CritSecHolder(const CritSecHolder&) = delete;
     CritSecHolder& operator=(const CritSecHolder&) = delete;
 };
+
+namespace MagicDivide
+{
+uint32_t GetUnsigned32Magic(uint32_t d, bool* add /*out*/, int* shift /*out*/);
+#ifdef _TARGET_64BIT_
+uint64_t GetUnsigned64Magic(uint64_t d, bool* add /*out*/, int* shift /*out*/);
+#endif
+int32_t GetSigned32Magic(int32_t d, int* shift /*out*/);
+#ifdef _TARGET_64BIT_
+int64_t GetSigned64Magic(int64_t d, int* shift /*out*/);
+#endif
+}
 
 #endif // _UTILS_H_

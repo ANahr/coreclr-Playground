@@ -6,15 +6,8 @@ set( CORGUIDS_IDL_SOURCES
   xclrdata.idl
   corprof.idl
   corpub.idl
-  ivalidator.idl
-  ivehandler.idl
-  gchost.idl
   mscorsvc.idl
-  tlbimpexp.idl
-  clrprivappxhosting.idl
   clrprivbinding.idl
-  clrprivhosting.idl
-  clrprivruntimebinders.idl
   corsym.idl
   sospriv.idl
 )
@@ -53,7 +46,12 @@ else()
 
 # The prebuilt files contain extra '!_MIDL_USE_GUIDDEF_' after the #endif, but not in the comment.
 # In order to not to have to modify these prebuilt files, we disable the extra tokens warning.
+if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 add_compile_options(-Wno-extra-tokens)
+elseif (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+add_compile_options(-Wno-endif-labels)
+endif()
+
 add_compile_options(-D_MIDL_USE_GUIDDEF_)
 foreach(IDL_SOURCE IN LISTS CORGUIDS_IDL_SOURCES)
    get_filename_component(IDLNAME ${IDL_SOURCE} NAME_WE)
@@ -61,8 +59,11 @@ foreach(IDL_SOURCE IN LISTS CORGUIDS_IDL_SOURCES)
    list(APPEND CORGUIDS_SOURCES ${C_SOURCE})
 endforeach(IDL_SOURCE)
 
-add_compile_options(-fPIC)
 endif(WIN32)
+
+if(FEATURE_JIT_PITCHING)
+   add_definitions(-DFEATURE_JIT_PITCHING)
+endif(FEATURE_JIT_PITCHING)
 
 # Compile *_i.cpp to lib
 _add_library(corguids ${CORGUIDS_SOURCES})

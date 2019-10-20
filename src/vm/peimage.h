@@ -19,7 +19,6 @@
 #include "peimagelayout.h"
 #include "sstring.h"
 #include "holder.h"
-#include "pefingerprint.h"
 
 class SimpleRWLock;
 // --------------------------------------------------------------------------------
@@ -71,11 +70,8 @@ public:
     };
     PTR_PEImageLayout GetLayout(DWORD imageLayoutMask,DWORD flags); //with ref
     PTR_PEImageLayout GetLoadedLayout(); //no ref
-    PTR_PEImageLayout GetLoadedIntrospectionLayout(); //no ref, introspection only
     BOOL IsOpened();
     BOOL HasLoadedLayout();
-    BOOL HasLoadedIntrospectionLayout();
-    
 
 public:
     // ------------------------------------------------------------
@@ -136,19 +132,15 @@ public:
 
     void   Load();
     void   SetLoadedHMODULE(HMODULE hMod);
-    void   LoadNoMetaData(BOOL bIntrospection);
+    void   LoadNoMetaData();
     void   LoadNoFile();
-    void   LoadFromMapped();  
-    void   LoadForIntrospection();
+    void   LoadFromMapped();
 
     void AllocateLazyCOWPages();
 #endif
     
     BOOL   HasID();
     ULONG GetIDHash();
-    
-    PTR_CVOID GetStrongNameSignature(COUNT_T *pSize = NULL);
-    
 
     // Refcount above images.
     ULONG AddRef();
@@ -158,35 +150,20 @@ public:
     const SString &GetPath();
     BOOL IsFile();
     HANDLE GetFileHandle();
-    HANDLE GetFileHandleLocking();
     void SetFileHandle(HANDLE hFile);
     HRESULT TryOpenFile();    
-
-    HANDLE GetProtectingFileHandle(BOOL bProtectIfNotOpenedYet);
 
     LPCWSTR GetPathForErrorMessages();
 
     // Equality
     BOOL Equals(PEImage *pImage);
-    static ULONG HashStreamIds(UINT64 id1, DWORD id2);
-
-    // Hashing utilities.  (These require a flat version of the file, and 
-    // will open one if necessary.)
-
-#ifndef DACCESS_COMPILE
-    void GetImageBits(DWORD layout, SBuffer &result);
-#endif
-
-    void ComputeHash(ALG_ID algorithm, SBuffer &result);
-    CHECK CheckHash(ALG_ID algorithm, const void *pbHash, COUNT_T cbHash);
 
     void GetMVID(GUID *pMvid);
-    const BOOL HasV1Metadata();
+    BOOL HasV1Metadata();
     IMDInternalImport* GetMDImport();
     BOOL MDImportLoaded();
     IMDInternalImport* GetNativeMDImport(BOOL loadAllowed = TRUE);    
 
-    BOOL HasSecurityDirectory();
     BOOL HasContents() ;
     BOOL HasNativeHeader() ;
     BOOL IsPtrInImage(PTR_CVOID data);
@@ -200,17 +177,13 @@ public:
     static CHECK CheckCanonicalFullPath(const SString &path);
     static CHECK CheckStartup();
     PTR_CVOID GetMetadata(COUNT_T *pSize = NULL);
-    void GetHashedStrongNameSignature(SBuffer &result);
 
 #ifndef FEATURE_PAL
     static void GetPathFromDll(HINSTANCE hMod, SString &result);
-#endif // !FEATURE_PAL    
-    static LocaleID GetFileSystemLocale();
+#endif // !FEATURE_PAL
     static BOOL PathEquals(const SString &p1, const SString &p2);
     BOOL IsTrustedNativeImage(){LIMITED_METHOD_CONTRACT; return m_bIsTrustedNativeImage;};
     void SetIsTrustedNativeImage(){LIMITED_METHOD_CONTRACT; m_bIsTrustedNativeImage=TRUE;};
-    BOOL IsNativeImageInstall(){LIMITED_METHOD_CONTRACT; return m_bIsNativeImageInstall;}
-    void SetIsNativeImageInstall(){LIMITED_METHOD_CONTRACT; m_bIsNativeImageInstall=TRUE;};
 
     void SetModuleFileNameHintForDAC();
 #ifdef DACCESS_COMPILE
@@ -218,32 +191,24 @@ public:
     const SString &GetModuleFileNameHintForDAC();
 #endif
 
-    const BOOL HasNTHeaders();
-    const BOOL HasCorHeader(); 
-    const BOOL HasReadyToRunHeader();
-    void SetPassiveDomainOnly();
-    BOOL PassiveDomainOnly();
+    BOOL HasNTHeaders();
+    BOOL HasCorHeader();
+    BOOL HasReadyToRunHeader();
     BOOL IsReferenceAssembly();
-#ifdef FEATURE_PREJIT  
-    const BOOL GetNativeILHasSecurityDirectory();
-    const BOOL IsNativeILILOnly();
-    const BOOL IsNativeILDll();
+#ifdef FEATURE_PREJIT
+    BOOL IsNativeILILOnly();
+    BOOL IsNativeILDll();
     void GetNativeILPEKindAndMachine(DWORD* pdwKind, DWORD* pdwMachine);
+#endif
     PTR_CVOID GetNativeManifestMetadata(COUNT_T *pSize = NULL);
-#endif
-    const BOOL HasDirectoryEntry(int entry);
-    const mdToken GetEntryPointToken();
-    const DWORD GetCorHeaderFlags(); 
-    const BOOL IsILOnly();
-    const BOOL IsDll();
-    const WORD GetSubsystem();
+    BOOL HasDirectoryEntry(int entry);
+    mdToken GetEntryPointToken();
+    DWORD GetCorHeaderFlags();
+    BOOL IsILOnly();
+    BOOL IsDll();
+    WORD GetSubsystem();
     BOOL  IsFileLocked();
-    const BOOL HasStrongNameSignature();
-#ifndef DACCESS_COMPILE
-    const HRESULT VerifyStrongName(DWORD* verifyOutputFlags);    
-#endif
 
-    BOOL IsStrongNameSigned();
     BOOL IsIbcOptimized();
     BOOL Has32BitNTHeaders();
 
@@ -257,6 +222,12 @@ private:
 #ifndef DACCESS_COMPILE
     // Get or create the layout corresponding to the mask, with an AddRef
     PTR_PEImageLayout GetLayoutInternal(DWORD imageLayoutMask, DWORD flags); 
+
+    // Create the mapped layout
+    PTR_PEImageLayout CreateLayoutMapped();
+
+    // Create the flat layout
+    PTR_PEImageLayout CreateLayoutFlat(BOOL bPermitWriteableSections);
 #endif
     // Get an existing layout corresponding to the mask, no AddRef
     PTR_PEImageLayout GetExistingLayoutInternal(DWORD imageLayoutMask);
@@ -290,6 +261,7 @@ private:
     };
 
     static BOOL CompareImage(UPTR image1, UPTR image2);
+    static BOOL CompareIJWDataBase(UPTR base, UPTR mapping);
 
     void DECLSPEC_NORETURN ThrowFormat(HRESULT hr);
 
@@ -311,8 +283,6 @@ private:
     SString     m_sModuleFileNameHintUsedByDac; // This is only used by DAC
 private:
     BOOL        m_bIsTrustedNativeImage;
-    BOOL        m_bIsNativeImageInstall;
-    BOOL        m_bPassiveDomainOnly;
 #ifdef FEATURE_LAZY_COW_PAGES
     BOOL        m_bAllocatedLazyCOWPages;
 #endif // FEATURE_LAZY_COW_PAGES
@@ -324,8 +294,7 @@ protected:
         IMAGE_FLAT=0,
         IMAGE_MAPPED=1,
         IMAGE_LOADED=2,
-        IMAGE_LOADED_FOR_INTROSPECTION=3,
-        IMAGE_COUNT=4
+        IMAGE_COUNT=3
     };
     
     SimpleRWLock *m_pLayoutLock;
@@ -358,9 +327,48 @@ private:
     HANDLE m_hFile;
     bool   m_bOwnHandle;
 
-    BOOL        m_bSignatureInfoCached;
-    HRESULT   m_hrSignatureInfoStatus;
-    DWORD        m_dwSignatureInfo;    
+    //@TODO:workaround: Remove this when we have one PEImage per mapped image,
+    //@TODO:workaround: and move the lock there
+    // This is for IJW thunk initialization, as it is no longer guaranteed
+    // that the initialization will occur under the loader lock.
+    static CrstStatic   s_ijwHashLock;
+    static PtrHashMap   *s_ijwFixupDataHash;
+
+public:
+        class IJWFixupData
+        {
+        private:
+            Crst            m_lock;
+            void           *m_base;
+            DWORD           m_flags;
+            PTR_LoaderHeap  m_DllThunkHeap;
+
+            // the fixup for the next iteration in FixupVTables
+            // we use it to make sure that we do not try to fix up the same entry twice
+            // if there was a pass that was aborted in the middle
+            COUNT_T         m_iNextFixup;
+            COUNT_T         m_iNextMethod;
+
+            enum {
+                e_FIXED_UP = 0x1
+            };
+
+        public:
+            IJWFixupData(void *pBase);
+            ~IJWFixupData();
+            void *GetBase() { LIMITED_METHOD_CONTRACT; return m_base; }
+            Crst *GetLock() { LIMITED_METHOD_CONTRACT; return &m_lock; }
+            BOOL IsFixedUp() { LIMITED_METHOD_CONTRACT; return m_flags & e_FIXED_UP; }
+            void SetIsFixedUp() { LIMITED_METHOD_CONTRACT; m_flags |= e_FIXED_UP; }
+            PTR_LoaderHeap  GetThunkHeap();
+            void MarkMethodFixedUp(COUNT_T iFixup, COUNT_T iMethod);
+            BOOL IsMethodFixedUp(COUNT_T iFixup, COUNT_T iMethod);
+        };
+
+        static IJWFixupData *GetIJWData(void *pBase);
+        static PTR_LoaderHeap GetDllThunkHeap(void *pBase);
+        static void UnloadIJWModule(void *pBase);
+
 private:
     DWORD m_dwPEKind;
     DWORD m_dwMachine;

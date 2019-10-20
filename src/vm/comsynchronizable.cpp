@@ -20,7 +20,6 @@
 #include "excep.h"
 #include "vars.hpp"
 #include "field.h"
-#include "security.h"
 #include "comsynchronizable.h"
 #include "dbginterface.h"
 #include "comdelegate.h"
@@ -29,7 +28,9 @@
 #include "appdomain.hpp"
 #include "appdomain.inl"
 
-#include "newapis.h"
+#ifndef FEATURE_PAL
+#include "utilcode.h"
+#endif
 
 // To include definition of CAPTURE_BUCKETS_AT_TRANSITION
 #include "exstate.h"
@@ -51,10 +52,9 @@ struct SharedState
             MODE_COOPERATIVE;
         }
         CONTRACTL_END;
-        AppDomainFromIDHolder ad(internal->GetKickOffDomainId(), TRUE);
-        if (ad.IsUnloaded())
-            COMPlusThrow(kAppDomainUnloadedException);
 
+        AppDomain *ad = ::GetAppDomain();
+    
         m_Threadable = ad->CreateHandle(threadable);
         m_ThreadStartArg = ad->CreateHandle(threadStartArg);
 
@@ -71,17 +71,8 @@ struct SharedState
         }
         CONTRACTL_END;
 
-        // It's important to have no GC rendez-vous point between the checking and the clean-up below.
-        // The three handles below could be in an appdomain which is just starting to be unloaded, or an appdomain
-        // which has been unloaded already.  Thus, we need to check whether the appdomain is still valid before
-        // we do the clean-up.  Since we suspend all runtime threads when we try to do the unload, there will be no
-        // race condition between the checking and the clean-up as long as this thread cannot be suspended in between.
-        AppDomainFromIDHolder ad(m_Internal->GetKickOffDomainId(), TRUE);
-        if (!ad.IsUnloaded())
-        {
-            DestroyHandle(m_Threadable);
-            DestroyHandle(m_ThreadStartArg);
-        }
+        DestroyHandle(m_Threadable);
+        DestroyHandle(m_ThreadStartArg);
     }
 };
 
@@ -198,7 +189,6 @@ void ThreadNative::KickOffThread_Worker(LPVOID ptr)
         GC_TRIGGERS;
         THROWS;
         MODE_COOPERATIVE;
-        SO_TOLERANT;
     }
     CONTRACTL_END;
 
@@ -220,7 +210,6 @@ void ThreadNative::KickOffThread_Worker(LPVOID ptr)
     pThread = GetThread();
     _ASSERTE(pThread);
     GCPROTECT_BEGIN(gc);
-    BEGIN_SO_INTOLERANT_CODE(pThread);
 
     gc.orDelegate = ObjectFromHandle(args->share->m_Threadable);
     gc.orThreadStartArg = ObjectFromHandle(args->share->m_ThreadStartArg);
@@ -235,7 +224,7 @@ void ThreadNative::KickOffThread_Worker(LPVOID ptr)
     delete args->share;
     args->share = 0;
 
-    MethodDesc *pMeth = ((DelegateEEClass*)( gc.orDelegate->GetMethodTable()->GetClass() ))->m_pInvokeMethod;
+    MethodDesc *pMeth = ((DelegateEEClass*)( gc.orDelegate->GetMethodTable()->GetClass() ))->GetInvokeMethod();
     _ASSERTE(pMeth);
     MethodDescCallSite invokeMethod(pMeth, &gc.orDelegate);
 
@@ -258,7 +247,6 @@ void ThreadNative::KickOffThread_Worker(LPVOID ptr)
     }
 	STRESS_LOG2(LF_SYNC, LL_INFO10, "Managed thread exiting normally for delegate %p Type %pT\n", OBJECTREFToObject(gc.orDelegate), (size_t) gc.orDelegate->GetMethodTable());
 
-    END_SO_INTOLERANT_CODE;
     GCPROTECT_END();
 }
 
@@ -289,7 +277,7 @@ static void PulseAllHelper(Thread* pThread)
 }
 
 // When an exposed thread is started by Win32, this is where it starts.
-ULONG __stdcall ThreadNative::KickOffThread(void* pass)
+ULONG WINAPI ThreadNative::KickOffThread(void* pass)
 {
 
     CONTRACTL
@@ -297,15 +285,11 @@ ULONG __stdcall ThreadNative::KickOffThread(void* pass)
         GC_TRIGGERS;
         THROWS;
         MODE_ANY;
-        SO_TOLERANT;
     }
     CONTRACTL_END;
 
     ULONG retVal = 0;
     // Before we do anything else, get Setup so that we have a real thread.
-
-    // Our thread isn't setup yet, so we can't use the standard probe
-    BEGIN_SO_INTOLERANT_CODE_NO_THROW_CHECK_THREAD(return E_FAIL);
 
     KickOffThread_Args args;
     // don't have a separate var becuase this can be updated in the worker
@@ -357,7 +341,7 @@ ULONG __stdcall ThreadNative::KickOffThread(void* pass)
         //
 
         // Fire ETW event to correlate with the thread that created current thread
-        if (ETW_EVENT_ENABLED(MICROSOFT_WINDOWS_DOTNETRUNTIME_PROVIDER_Context, ThreadRunning))
+        if (ETW_EVENT_ENABLED(MICROSOFT_WINDOWS_DOTNETRUNTIME_PROVIDER_DOTNET_Context, ThreadRunning))
             FireEtwThreadRunning(pThread, GetClrInstanceId());
 
         // We have a sticky problem here.
@@ -373,7 +357,7 @@ ULONG __stdcall ThreadNative::KickOffThread(void* pass)
         // we can adjust the delegate we are going to invoke on.
 
         _ASSERTE(GetThread() == pThread);        // Now that it's started
-        ManagedThreadBase::KickOff(pThread->GetKickOffDomainId(), KickOffThread_Worker, &args);
+        ManagedThreadBase::KickOff(KickOffThread_Worker, &args);
 
         // If TS_FailStarted is set then the args are deleted in ThreadNative::StartInner
         if ((args.share) && !pThread->HasThreadState(Thread::TS_FailStarted))
@@ -390,26 +374,24 @@ ULONG __stdcall ThreadNative::KickOffThread(void* pass)
         DestroyThread(pThread);
     }
 
-    END_SO_INTOLERANT_CODE;
-
     return retVal;
 }
 
 
-FCIMPL2(void, ThreadNative::Start, ThreadBaseObject* pThisUNSAFE, StackCrawlMark* pStackMark)
+FCIMPL1(void, ThreadNative::Start, ThreadBaseObject* pThisUNSAFE)
 {
     FCALL_CONTRACT;
 
     HELPER_METHOD_FRAME_BEGIN_NOPOLL();
 
-    StartInner(pThisUNSAFE, pStackMark);
+    StartInner(pThisUNSAFE);
 
     HELPER_METHOD_FRAME_END_POLL();
 }
 FCIMPLEND
 
 // Start up a thread, which by now should be in the ThreadStore's Unstarted list.
-void ThreadNative::StartInner(ThreadBaseObject* pThisUNSAFE, StackCrawlMark* pStackMark)
+void ThreadNative::StartInner(ThreadBaseObject* pThisUNSAFE)
 {
     CONTRACTL
     {
@@ -463,8 +445,18 @@ void ThreadNative::StartInner(ThreadBaseObject* pThisUNSAFE, StackCrawlMark* pSt
         pNewThread->IncExternalCount();
 
         // Fire an ETW event to mark the current thread as the launcher of the new thread
-        if (ETW_EVENT_ENABLED(MICROSOFT_WINDOWS_DOTNETRUNTIME_PROVIDER_Context, ThreadCreating))
+        if (ETW_EVENT_ENABLED(MICROSOFT_WINDOWS_DOTNETRUNTIME_PROVIDER_DOTNET_Context, ThreadCreating))
             FireEtwThreadCreating(pNewThread, GetClrInstanceId());
+
+        // copy out the managed name into a buffer that will not move if a GC happens
+        const WCHAR* nativeThreadName = NULL;
+        InlineSString<64> threadNameBuffer;
+        STRINGREF managedThreadName = gc.pThis->GetName();
+        if (managedThreadName != NULL)
+        {
+            managedThreadName->GetSString(threadNameBuffer);
+            nativeThreadName = threadNameBuffer.GetUnicode();
+        }
 
         // As soon as we create the new thread, it is eligible for suspension, etc.
         // So it gets transitioned to cooperative mode before this call returns to
@@ -472,7 +464,7 @@ void ThreadNative::StartInner(ThreadBaseObject* pThisUNSAFE, StackCrawlMark* pSt
 
         BOOL success = pNewThread->CreateNewThread(
                                         pNewThread->RequestedThreadStackSize() /* 0 stackSize override*/,
-                                        KickOffThread, share);
+                                        KickOffThread, share, nativeThreadName);
 
         if (!success)
         {
@@ -535,61 +527,6 @@ void ThreadNative::StartInner(ThreadBaseObject* pThisUNSAFE, StackCrawlMark* pSt
 
     GCPROTECT_END();
 }
-
-FCIMPL1(void, ThreadNative::Abort, ThreadBaseObject* pThis)
-{
-    FCALL_CONTRACT;
-
-    if (pThis == NULL)
-        FCThrowVoid(kNullReferenceException);
-
-    THREADBASEREF thisRef(pThis);
-    // We need to keep the managed Thread object alive so that we can call UserAbort on
-    // unmanaged thread object.
-    HELPER_METHOD_FRAME_BEGIN_1(thisRef);
-
-    Thread *thread = thisRef->GetInternal();
-    if (thread == NULL)
-        COMPlusThrow(kThreadStateException, IDS_EE_THREAD_CANNOT_GET);
-#ifdef _DEBUG
-    DWORD testAbort = g_pConfig->GetHostTestThreadAbort();
-    if (testAbort != 0) {
-        thread->UserAbort(Thread::TAR_Thread, testAbort == 1 ? EEPolicy::TA_Safe : EEPolicy::TA_Rude, INFINITE, Thread::UAC_Normal);
-    }
-    else
-#endif
-        thread->UserAbort(Thread::TAR_Thread, EEPolicy::TA_V1Compatible, INFINITE, Thread::UAC_Normal);
-
-    if (thread->CatchAtSafePoint())
-        CommonTripThread();
-    HELPER_METHOD_FRAME_END_POLL();
-}
-FCIMPLEND
-
-FCIMPL1(void, ThreadNative::ResetAbort, ThreadBaseObject* pThis)
-{
-    FCALL_CONTRACT;
-
-    _ASSERTE(pThis);
-    VALIDATEOBJECT(pThis);
-
-    Thread *thread = pThis->GetInternal();
-    // We do not allow user to reset rude thread abort in MustRun code.
-    if (thread && thread->IsRudeAbort())
-    {
-        return;
-    }
-
-    HELPER_METHOD_FRAME_BEGIN_NOPOLL();
-
-    if (thread == NULL)
-        COMPlusThrow(kThreadStateException, IDS_EE_THREAD_CANNOT_GET);
-    thread->UserResetAbort(Thread::TAR_Thread);
-    thread->ClearAborted();
-    HELPER_METHOD_FRAME_END_POLL();
-}
-FCIMPLEND
-
 
 // Note that you can manipulate the priority of a thread that hasn't started yet,
 // or one that is running.  But you get an exception if you manipulate the priority
@@ -739,15 +676,7 @@ FCIMPL1(void, ThreadNative::Sleep, INT32 iTime)
     if ((iTime < 0) && (iTime != INFINITE_TIMEOUT))
         COMPlusThrowArgumentOutOfRange(W("millisecondsTimeout"), W("ArgumentOutOfRange_NeedNonNegOrNegative1"));
 
-    while(true)
-    {
-        INT64 sPauseTime = g_PauseTime;
-        INT64 sTime = CLRGetTickCount64();
-        GetThread()->UserSleep(iTime);       
-        iTime = (INT32)AdditionalWait(sPauseTime, sTime, iTime);
-        if(iTime == 0)
-            break;
-    }
+    GetThread()->UserSleep(iTime);       
 
     HELPER_METHOD_FRAME_END();
 }
@@ -793,6 +722,27 @@ FCIMPL0(Object*, ThreadNative::GetCurrentThread)
 }
 FCIMPLEND
 
+UINT64 QCALLTYPE ThreadNative::GetCurrentOSThreadId()
+{
+    QCALL_CONTRACT;
+
+    // The Windows API GetCurrentThreadId returns a 32-bit integer thread ID.
+    // On some non-Windows platforms (e.g. OSX), the thread ID is a 64-bit value.
+    // We special case the API for non-Windows to get the 64-bit value and zero-extend
+    // the Windows value to return a single data type on all platforms.
+
+    UINT64 threadId;
+
+    BEGIN_QCALL;
+#ifndef FEATURE_PAL
+    threadId = (UINT64) GetCurrentThreadId();
+#else
+    threadId = (UINT64) PAL_GetCurrentOSThreadId();
+#endif
+    END_QCALL;
+
+    return threadId;
+}
 
 FCIMPL3(void, ThreadNative::SetStart, ThreadBaseObject* pThisUNSAFE, Object* pDelegateUNSAFE, INT32 iRequestedStackSize)
 {
@@ -926,18 +876,8 @@ FCIMPL1(INT32, ThreadNative::GetThreadState, ThreadBaseObject* pThisUNSAFE)
     if (state & Thread::TS_Interruptible)
         res |= ThreadWaitSleepJoin;
 
-    // Don't report a SuspendRequested if the thread has actually Suspended.
-    if ((state & Thread::TS_UserSuspendPending) &&
-        (state & Thread::TS_SyncSuspended)
-       )
-    {
-        res |= ThreadSuspended;
-    }
-    else
-    if (state & Thread::TS_UserSuspendPending)
-    {
-        res |= ThreadSuspendRequested;
-    }
+    // CoreCLR does not support user-requested thread suspension
+    _ASSERTE(!(state & Thread::TS_UserSuspendPending));
 
     HELPER_METHOD_POLL();
     HELPER_METHOD_FRAME_END();
@@ -1116,13 +1056,10 @@ FCIMPL1(void, ThreadNative::StartupSetApartmentState, ThreadBaseObject* pThisUNS
     // Assert that the thread hasn't been started yet.
     _ASSERTE(Thread::TS_Unstarted & thread->GetSnapshotState());
 
-    if ((g_pConfig != NULL) && !g_pConfig->LegacyApartmentInitPolicy())
+    Thread::ApartmentState as = thread->GetExplicitApartment();
+    if (as == Thread::AS_Unknown)
     {
-        Thread::ApartmentState as = thread->GetExplicitApartment();
-        if (as == Thread::AS_Unknown)
-        {
-            thread->SetApartment(Thread::AS_InMTA, TRUE);
-        }
+        thread->SetApartment(Thread::AS_InMTA, TRUE);
     }
 
     HELPER_METHOD_FRAME_END();
@@ -1243,7 +1180,7 @@ void ThreadBaseObject::SetDelegate(OBJECTREF delegate)
     }
 #endif
 
-    SetObjectReferenceUnchecked( (OBJECTREF *)&m_Delegate, delegate );
+    SetObjectReference( (OBJECTREF *)&m_Delegate, delegate );
 
     // If the delegate is being set then initialize the other data members.
     if (m_Delegate != NULL)
@@ -1304,123 +1241,6 @@ void ThreadBaseObject::InitExisting()
 
 }
 
-OBJECTREF ThreadBaseObject::GetManagedThreadCulture(BOOL bUICulture)
-{
-    CONTRACTL {
-        GC_NOTRIGGER;
-        NOTHROW;
-        MODE_COOPERATIVE;
-    }
-    CONTRACTL_END;
-
-    // This is the case when we're building mscorlib and haven't yet created
-    // the system assembly.
-    if (SystemDomain::System()->SystemAssembly()==NULL || g_fForbidEnterEE) {
-        return NULL;
-    }
-
-    OBJECTREF *pCurrentCulture = NULL;
-    Thread    *pThread = GetInternal();
-    FieldDesc *pFD = NULL;
-
-    if (bUICulture)
-    {
-        pFD = pThread->managedThreadCurrentUICulture;
-    }
-    else
-    {
-        pFD = pThread->managedThreadCurrentCulture;
-    }
-
-    if (pFD != NULL)
-    {
-        pCurrentCulture = (OBJECTREF*)pThread->GetStaticFieldAddrNoCreate(pFD, NULL);
-        if (pCurrentCulture)
-        {
-            return *pCurrentCulture;
-        }
-    }
-
-    return NULL;
-}
-
-CULTUREINFOBASEREF ThreadBaseObject::GetCurrentUserCulture()
-{
-    WRAPPER_NO_CONTRACT;
-
-    return (CULTUREINFOBASEREF)GetManagedThreadCulture(false);
-}
-
-CULTUREINFOBASEREF ThreadBaseObject::GetCurrentUICulture()
-{
-    WRAPPER_NO_CONTRACT;
-
-    return (CULTUREINFOBASEREF)GetManagedThreadCulture(true);
-}
-
-// If the thread pool thread switched appdomains and the culture was set, the culture won't be
-// reset for the second appdomain. It's impossible to do general cleanup of thread pool threads
-// because we don't have the right extensible infrastructure for it. For example, if the second
-// appdomain was in a different CLR you won't be able to reset the culture without introducing 
-// new cross-CLR communication mechanism. However, note that this isn't a user scenario in 
-// CoreCLR anyway.
-void ThreadBaseObject::ResetCurrentUserCulture()
-{
-    WRAPPER_NO_CONTRACT;
-    ResetManagedThreadCulture(false);
-}
-
-void ThreadBaseObject::ResetCurrentUICulture()
-{
-    WRAPPER_NO_CONTRACT;
-    ResetManagedThreadCulture(true);
-}
-
-void ThreadBaseObject::ResetManagedThreadCulture(BOOL bUICulture)
-{
-    CONTRACTL
-    {
-        GC_NOTRIGGER;
-        NOTHROW;
-        MODE_COOPERATIVE;
-        SO_TOLERANT;
-    }
-    CONTRACTL_END;
-
-    // This is the case when we're building mscorlib and haven't yet created
-    // the system assembly.
-    if (SystemDomain::System()->SystemAssembly()==NULL || g_fForbidEnterEE) {
-        return;
-    }
-    
-    Thread    *pThread = GetInternal();
-    FieldDesc *pFD = NULL;
-
-    if (bUICulture)
-    {
-        pFD = pThread->managedThreadCurrentUICulture;
-    }
-    else
-    {
-        pFD = pThread->managedThreadCurrentCulture;
-    }
-
-    if (pFD != NULL)
-    {
-        OBJECTREF *pCulture = NULL;
-        BEGIN_SO_INTOLERANT_CODE_NO_THROW_CHECK_THREAD(COMPlusThrowSO());
-        pCulture = (OBJECTREF*)pThread->GetStaticFieldAddrNoCreate(pFD, NULL);
-        if (pCulture) 
-        {
-            SetObjectReferenceUnchecked(pCulture, NULL);
-        }
-        END_SO_INTOLERANT_CODE;
-
-    }
-}
-
-
-
 FCIMPL1(void, ThreadNative::Finalize, ThreadBaseObject* pThisUNSAFE)
 {
     FCALL_CONTRACT;
@@ -1455,106 +1275,22 @@ FCIMPL1(void, ThreadNative::DisableComObjectEagerCleanup, ThreadBaseObject* pThi
 FCIMPLEND
 #endif //FEATURE_COMINTEROP
 
-
-FCIMPL0(Object*, ThreadNative::GetDomain)
-{
-    FCALL_CONTRACT;
-
-    APPDOMAINREF refRetVal = NULL;
-
-    Thread* thread = GetThread();
-
-    if ((thread) && (thread->GetDomain()))
-    {
-        HELPER_METHOD_FRAME_BEGIN_RET_1(refRetVal);
-        refRetVal = (APPDOMAINREF) thread->GetDomain()->GetExposedObject();
-        HELPER_METHOD_FRAME_END();
-    }
-
-    return OBJECTREFToObject(refRetVal);
-}
-FCIMPLEND
-
-#if defined(_TARGET_X86_) && defined(_MSC_VER)
-__declspec(naked) LPVOID __fastcall ThreadNative::FastGetDomain()
-{
-    STATIC_CONTRACT_MODE_COOPERATIVE;
-    STATIC_CONTRACT_GC_NOTRIGGER;
-    STATIC_CONTRACT_NOTHROW;
-    STATIC_CONTRACT_SO_TOLERANT;
-
-    __asm {
-        call GetAppDomain
-        test eax, eax
-        je done
-        mov eax, dword ptr [eax]AppDomain.m_ExposedObject
-        test eax, eax
-        je done
-        mov eax, dword ptr [eax]
-done:
-        ret
-    }
-}
-#else // _TARGET_X86_ && _MSC_VER
-LPVOID F_CALL_CONV ThreadNative::FastGetDomain()
-{
-    CONTRACTL
-    {
-        GC_NOTRIGGER;
-        NOTHROW;
-        MODE_COOPERATIVE;
-        SO_TOLERANT;
-    }
-    CONTRACTL_END;
-
-    Thread *pThread;
-    AppDomain *pDomain;
-    OBJECTHANDLE ExposedObject;
-
-    pDomain = GetAppDomain();
-    if (!pDomain) {
-        return NULL;
-    }
-    ExposedObject = pDomain->m_ExposedObject;
-    if (ExposedObject) {
-        return *(LPVOID *)ExposedObject;
-    }
-    return NULL;
-}
-#endif // _TARGET_X86_ && _MSC_VER
-
-
-//
-// nativeGetSafeCulture is used when the culture get requested from the thread object. 
-// we have to check the culture in the FCALL because in FCALL the thread cannot be 
-// interrupted and unload other app domian.
-// the concern here is if the thread hold a subclassed culture object and somebody 
-// requested it from other app domain then we shouldn't hold any reference to that 
-// culture object any time because the app domain created this culture may get 
-// unloaded and this culture will survive although the type metadata will be unloaded 
-// and GC will crash first time accessing this object after the app domain unload.
-//
-
-void QCALLTYPE ThreadNative::nativeInitCultureAccessors()
-{
-    QCALL_CONTRACT;
-
-    BEGIN_QCALL;
-
-    Thread* pThread = GetThread();
-    pThread->InitCultureAccessors();
-
-    END_QCALL;
-}
-
-
 void QCALLTYPE ThreadNative::InformThreadNameChange(QCall::ThreadHandle thread, LPCWSTR name, INT32 len)
 {
     QCALL_CONTRACT;
 
     BEGIN_QCALL;
-
+    
     Thread* pThread = &(*thread);
+
+#ifndef FEATURE_PAL
+    // Set on Windows 10 Creators Update and later machines the unmanaged thread name as well. That will show up in ETW traces and debuggers which is very helpful
+    // if more and more threads get a meaningful name
+    if (len > 0 && name != NULL && pThread->GetThreadHandle() != INVALID_HANDLE_VALUE)
+    {
+        SetThreadName(pThread->GetThreadHandle(), name);
+    }
+#endif
 
 #ifdef PROFILING_SUPPORTED
     {
@@ -1622,22 +1358,41 @@ FCIMPL1(FC_BOOL_RET, ThreadNative::IsThreadpoolThread, ThreadBaseObject* thread)
 }
 FCIMPLEND
 
+INT32 QCALLTYPE ThreadNative::GetOptimalMaxSpinWaitsPerSpinIteration()
+{
+    QCALL_CONTRACT;
+
+    INT32 optimalMaxNormalizedYieldsPerSpinIteration;
+
+    BEGIN_QCALL;
+
+    // RuntimeThread calls this function only once lazily and caches the result, so ensure initialization
+    EnsureYieldProcessorNormalizedInitialized();
+    optimalMaxNormalizedYieldsPerSpinIteration = g_optimalMaxNormalizedYieldsPerSpinIteration;
+
+    END_QCALL;
+
+    return optimalMaxNormalizedYieldsPerSpinIteration;
+}
 
 FCIMPL1(void, ThreadNative::SpinWait, int iterations)
 {
     FCALL_CONTRACT;
 
+    if (iterations <= 0)
+    {
+        return;
+    }
+
     //
     // If we're not going to spin for long, it's ok to remain in cooperative mode.
     // The threshold is determined by the cost of entering preemptive mode; if we're
     // spinning for less than that number of cycles, then switching to preemptive
-    // mode won't help a GC start any faster.  That number is right around 1000000 
-    // on my machine.
+    // mode won't help a GC start any faster.
     //
-    if (iterations <= 1000000)
+    if (iterations <= 100000)
     {
-        for(int i = 0; i < iterations; i++)
-            YieldProcessor();
+        YieldProcessorNormalized(iterations);
         return;
     }
 
@@ -1647,8 +1402,7 @@ FCIMPL1(void, ThreadNative::SpinWait, int iterations)
     HELPER_METHOD_FRAME_BEGIN_NOPOLL();
     GCX_PREEMP();
 
-    for(int i = 0; i < iterations; i++)
-        YieldProcessor();
+    YieldProcessorNormalized(iterations);
 
     HELPER_METHOD_FRAME_END();
 }
@@ -1669,95 +1423,34 @@ BOOL QCALLTYPE ThreadNative::YieldThread()
     return ret;
 }
 
-
-FCIMPL0(void, ThreadNative::FCMemoryBarrier)
+FCIMPL1(Object*, ThreadNative::GetThreadDeserializationTracker, StackCrawlMark* stackMark)
 {
     FCALL_CONTRACT;
+    OBJECTREF refRetVal = NULL;
+    HELPER_METHOD_FRAME_BEGIN_RET_1(refRetVal)
 
-    MemoryBarrier();
-    FC_GC_POLL();
-}
-FCIMPLEND
-
-FCIMPL2(void, ThreadNative::SetAbortReason, ThreadBaseObject* pThisUNSAFE, Object* pObject)
-{
-    FCALL_CONTRACT;
-
-    if (pThisUNSAFE==NULL)
-        FCThrowResVoid(kNullReferenceException, W("NullReference_This"));
-
-    OBJECTREF refObject = static_cast<OBJECTREF>(pObject);
-
-    Thread *pThread = pThisUNSAFE->GetInternal();
-
-    // If the OBJECTHANDLE is not 0, already set so just return
-    if (pThread != NULL && pThread->m_AbortReason != 0)
-        return;
-
-    // Set up a frame in case of GC or EH
-    HELPER_METHOD_FRAME_BEGIN_1(refObject)
-
-    if (pThread == NULL)
-        COMPlusThrow(kThreadStateException, IDS_EE_THREAD_CANNOT_GET);
-
-    // Get the AppDomain ID for the AppDomain on the currently running thread.
-    //  NOTE: the currently running thread may be different from this thread object!
-    AppDomain *pCurrentDomain = GetThread()->GetDomain();
-    ADID adid = pCurrentDomain->GetId();
-
-    // Create a OBJECTHANDLE for the object.
-    OBJECTHANDLE oh = pCurrentDomain->CreateHandle(refObject);
-
-    // Scope the lock to peeking at and updating the two fields on the Thread object.
-    {   // Atomically check whether the OBJECTHANDLE has been set, and if not,
-        //  store it and the ADID of the object.
-        //  NOTE: get the lock on this thread object, not on the executing thread.
-        Thread::AbortRequestLockHolder lock(pThread);
-        if (pThread->m_AbortReason == 0)
-        {
-            pThread->m_AbortReason = oh;
-            pThread->m_AbortReasonDomainID = adid;
-            // Set the OBJECTHANDLE so we can know that we stored it on the Thread object.
-            oh = 0;
-        }
-    }
-
-    // If the OBJECTHANDLE created above was not stored onto the Thread object, then
-    //  another thread beat this one to the update.  Destroy the OBJECTHANDLE that
-    //  was not used, created above.
-    if (oh != 0)
+    // To avoid reflection trying to bypass deserialization tracking, check the caller
+    // and only allow SerializationInfo to call into this method.
+    MethodTable* pCallerMT = SystemDomain::GetCallersType(stackMark);
+    if (pCallerMT != MscorlibBinder::GetClass(CLASS__SERIALIZATION_INFO))
     {
-        DestroyHandle(oh);
+        COMPlusThrowArgumentException(W("stackMark"), NULL);
     }
 
-    HELPER_METHOD_FRAME_END()
+    Thread* pThread = GetThread();
 
-}
-FCIMPLEND
-
-
-FCIMPL1(void, ThreadNative::ClearAbortReason, ThreadBaseObject* pThisUNSAFE)
-{
-    FCALL_CONTRACT;
-
-    if (pThisUNSAFE==NULL)
-        FCThrowResVoid(kNullReferenceException, W("NullReference_This"));
-
-    Thread *pThread = pThisUNSAFE->GetInternal();
-
-    // Clearing from managed code can only happen on the current thread.
-    _ASSERTE(pThread == GetThread());
-
-    HELPER_METHOD_FRAME_BEGIN_0();
-
-    if (pThread == NULL)
-        COMPlusThrow(kThreadStateException, IDS_EE_THREAD_CANNOT_GET);
-
-    pThread->ClearAbortReason();
+    refRetVal = ObjectFromHandle(pThread->GetOrCreateDeserializationTracker());
 
     HELPER_METHOD_FRAME_END();
 
+    return OBJECTREFToObject(refRetVal);
 }
 FCIMPLEND
 
+FCIMPL0(INT32, ThreadNative::GetCurrentProcessorNumber)
+{
+    FCALL_CONTRACT;
 
+    return ::GetCurrentProcessorNumber();
+}
+FCIMPLEND;

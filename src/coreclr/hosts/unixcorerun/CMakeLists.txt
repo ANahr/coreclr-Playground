@@ -2,8 +2,6 @@ project(unixcorerun)
 
 include_directories(../unixcoreruncommon)
 
-add_compile_options(-fPIE)
-
 set(CORERUN_SOURCES 
     corerun.cpp 
 )
@@ -31,9 +29,5 @@ if(NOT CLR_CMAKE_PLATFORM_ANDROID)
     pthread
   )
 endif()
-
-add_dependencies(corerun
-    coreclr
-)
 
 install_clr(corerun)

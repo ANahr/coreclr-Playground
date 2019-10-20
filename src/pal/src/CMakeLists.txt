@@ -1,7 +1,52 @@
 cmake_minimum_required(VERSION 2.8.12.2)
 
-include_directories(SYSTEM /usr/local/include)
+if(CMAKE_SYSTEM_NAME STREQUAL Darwin OR CMAKE_SYSTEM_NAME STREQUAL FreeBSD)
+  # On OSX and *BSD, we use the libunwind that's part of the OS
+  set(CLR_CMAKE_USE_SYSTEM_LIBUNWIND 1)
+endif(CMAKE_SYSTEM_NAME STREQUAL Darwin OR CMAKE_SYSTEM_NAME STREQUAL FreeBSD)
 
+if(NOT DEFINED ENV{ROOTFS_DIR})
+  include_directories(SYSTEM /usr/local/include)
+endif()
+
+if(NOT CLR_CMAKE_USE_SYSTEM_LIBUNWIND)
+  include_directories(libunwind/include)
+  include_directories(libunwind/include/tdep)
+  include_directories(${CMAKE_CURRENT_BINARY_DIR}/libunwind/include)
+  include_directories(${CMAKE_CURRENT_BINARY_DIR}/libunwind/include/tdep)
+
+  add_subdirectory(libunwind)
+elseif(NOT CMAKE_SYSTEM_NAME STREQUAL Darwin)
+    if(PAL_CMAKE_PLATFORM_ARCH_ARM)
+      find_library(UNWIND_ARCH NAMES unwind-arm)
+    endif()
+
+    if(PAL_CMAKE_PLATFORM_ARCH_ARM64)
+      find_library(UNWIND_ARCH NAMES unwind-aarch64)
+    endif()
+
+    if(PAL_CMAKE_PLATFORM_ARCH_AMD64)
+      find_library(UNWIND_ARCH NAMES unwind-x86_64)
+    endif()
+
+    if(NOT UNWIND_ARCH STREQUAL UNWIND_ARCH-NOTFOUND)
+       set(UNWIND_LIBS ${UNWIND_ARCH})
+    endif()
+
+    find_library(UNWIND_GENERIC NAMES unwind-generic)
+
+    if(NOT UNWIND_GENERIC STREQUAL UNWIND_GENERIC-NOTFOUND)
+      set(UNWIND_LIBS ${UNWIND_LIBS} ${UNWIND_GENERIC})
+    endif()
+
+    find_library(UNWIND NAMES unwind)
+
+    if(UNWIND STREQUAL UNWIND-NOTFOUND)
+      message(FATAL_ERROR "Cannot find libunwind. Try installing libunwind8-dev or libunwind-devel.")
+    endif()
+
+    set(UNWIND_LIBS ${UNWIND_LIBS} ${UNWIND})
+endif(NOT CLR_CMAKE_USE_SYSTEM_LIBUNWIND)
 include(configure.cmake)
 
 project(coreclrpal)
@@ -13,9 +58,7 @@ if(CORECLR_SET_RPATH)
     set(MACOSX_RPATH ON)
 endif(CORECLR_SET_RPATH)
 
-if(CMAKE_VERSION VERSION_EQUAL 3.0 OR CMAKE_VERSION VERSION_GREATER 3.0)
-    cmake_policy(SET CMP0042 NEW)
-endif()
+cmake_policy(SET CMP0042 NEW)
 
 # Include directories
 
@@ -25,9 +68,14 @@ include_directories(include)
 
 if(CLR_CROSS_COMPONENTS_BUILD)
     if(CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL x86_64 OR CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL amd64)
-        if(CLR_CMAKE_TARGET_ARCH STREQUAL "arm")
-            set(PAL_CMAKE_PLATFORM_ARCH_I386 1)
-            add_definitions(-D_X86_)
+        if(CLR_CMAKE_TARGET_ARCH STREQUAL "arm" OR CLR_CMAKE_TARGET_ARCH STREQUAL "armel")
+            if($ENV{CROSSCOMPILE} STREQUAL "1")
+                set(PAL_CMAKE_PLATFORM_ARCH_I386 1)
+                add_definitions(-D_X86_)
+            else()
+                set(PAL_CMAKE_PLATFORM_ARCH_AMD64 1)
+                add_definitions(-D_AMD64_)
+            endif()
         else()
             set(PAL_CMAKE_PLATFORM_ARCH_AMD64 1)
             add_definitions(-D_AMD64_)
@@ -43,6 +91,9 @@ else()
         set(PAL_CMAKE_PLATFORM_ARCH_AMD64 1)
         add_definitions(-D_AMD64_)
     elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL armv7l)
+        set(PAL_CMAKE_PLATFORM_ARCH_ARM 1)
+        add_definitions(-D_ARM_)
+    elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL arm)
         set(PAL_CMAKE_PLATFORM_ARCH_ARM 1)
         add_definitions(-D_ARM_)
     elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL aarch64)
@@ -68,50 +119,56 @@ if(CMAKE_SYSTEM_NAME STREQUAL Darwin)
   )
 endif(CMAKE_SYSTEM_NAME STREQUAL Darwin)
 
-add_definitions(-DPLATFORM_UNIX=1)
-add_definitions(-DLP64COMPATIBLE=1)
-add_definitions(-DFEATURE_PAL=1)
-add_definitions(-DCORECLR=1)
-add_definitions(-DPIC=1)
+if (FEATURE_ENABLE_NO_ADDRESS_SPACE_RANDOMIZATION)
+  add_definitions(-DFEATURE_ENABLE_NO_ADDRESS_SPACE_RANDOMIZATION)
+endif(FEATURE_ENABLE_NO_ADDRESS_SPACE_RANDOMIZATION)
+add_definitions(-DPLATFORM_UNIX)
+add_definitions(-DLP64COMPATIBLE)
+add_definitions(-DFEATURE_PAL)
+add_definitions(-DCORECLR)
+add_definitions(-DPIC)
 add_definitions(-D_FILE_OFFSET_BITS=64)
 if(PAL_CMAKE_PLATFORM_ARCH_AMD64)
-  add_definitions(-DBIT64=1)
-  add_definitions(-D_WIN64=1)
+  add_definitions(-DBIT64)
+  set(PAL_ARCH_SOURCES_DIR amd64)
 elseif(PAL_CMAKE_PLATFORM_ARCH_ARM)
-  add_definitions(-DBIT32=1)
+  add_definitions(-DBIT32)
+  set(PAL_ARCH_SOURCES_DIR arm)
 elseif(PAL_CMAKE_PLATFORM_ARCH_ARM64)
-  add_definitions(-DBIT64=1)
-  add_definitions(-D_WIN64=1)
+  add_definitions(-DBIT64)
+  set(PAL_ARCH_SOURCES_DIR arm64)
 elseif(PAL_CMAKE_PLATFORM_ARCH_I386)
-  add_definitions(-DBIT32=1)
+  add_definitions(-DBIT32)
+  set(PAL_ARCH_SOURCES_DIR i386)
 endif()
 
-if(CMAKE_SYSTEM_NAME STREQUAL Linux AND NOT CLR_CMAKE_PLATFORM_ALPINE_LINUX)
+if(PAL_CMAKE_PLATFORM_ARCH_AMD64 AND CMAKE_SYSTEM_NAME STREQUAL Linux AND NOT CLR_CMAKE_PLATFORM_ALPINE_LINUX)
   # Currently the _xstate is not available on Alpine Linux
   add_definitions(-DXSTATE_SUPPORTED)
-endif(CMAKE_SYSTEM_NAME STREQUAL Linux AND NOT CLR_CMAKE_PLATFORM_ALPINE_LINUX)
+endif(PAL_CMAKE_PLATFORM_ARCH_AMD64 AND CMAKE_SYSTEM_NAME STREQUAL Linux AND NOT CLR_CMAKE_PLATFORM_ALPINE_LINUX)
 
 if(CLR_CMAKE_PLATFORM_ALPINE_LINUX)
   # Setting RLIMIT_NOFILE breaks debugging of coreclr on Alpine Linux for some reason
   add_definitions(-DDONT_SET_RLIMIT_NOFILE)
+  # On Alpine Linux, we need to ensure that the reported stack range for the primary thread is
+  # larger than the initial committed stack size.
+  add_definitions(-DENSURE_PRIMARY_STACK_SIZE)
 endif(CLR_CMAKE_PLATFORM_ALPINE_LINUX)
 
 # turn off capability to remove unused functions (which was enabled in debug build with sanitizers)
 set(CMAKE_SHARED_LINKER_FLAGS_DEBUG "${CMAKE_SHARED_LINKER_FLAGS_DEBUG} -Wl,--no-gc-sections")
 
-add_compile_options(-fPIC)
-
 set(ARCH_SOURCES
-  arch/${ARCH_SOURCES_DIR}/context2.S
-  arch/${ARCH_SOURCES_DIR}/debugbreak.S
-  arch/${ARCH_SOURCES_DIR}/exceptionhelper.S
-  arch/${ARCH_SOURCES_DIR}/processor.cpp
+  arch/${PAL_ARCH_SOURCES_DIR}/context2.S
+  arch/${PAL_ARCH_SOURCES_DIR}/debugbreak.S
+  arch/${PAL_ARCH_SOURCES_DIR}/exceptionhelper.S
+  arch/${PAL_ARCH_SOURCES_DIR}/processor.cpp
 )
 
 if(NOT CMAKE_SYSTEM_NAME STREQUAL Darwin)
   list(APPEND PLATFORM_SOURCES
-    arch/${ARCH_SOURCES_DIR}/callsignalhandlerwrapper.S
-    arch/${ARCH_SOURCES_DIR}/signalhandlerhelper.cpp
+    arch/${PAL_ARCH_SOURCES_DIR}/callsignalhandlerwrapper.S
+    arch/${PAL_ARCH_SOURCES_DIR}/signalhandlerhelper.cpp
   )
 endif(NOT CMAKE_SYSTEM_NAME STREQUAL Darwin)
 
@@ -122,12 +179,10 @@ endif(PAL_CMAKE_PLATFORM_ARCH_ARM)
 set(SOURCES
   cruntime/file.cpp
   cruntime/filecrt.cpp
-  cruntime/lstr.cpp
   cruntime/malloc.cpp
   cruntime/math.cpp
   cruntime/mbstring.cpp
   cruntime/misc.cpp
-  cruntime/misctls.cpp
   cruntime/path.cpp
   cruntime/printf.cpp
   cruntime/printfcpp.cpp
@@ -140,13 +195,12 @@ set(SOURCES
   debug/debug.cpp
   exception/seh.cpp
   exception/signal.cpp
+  exception/remote-unwind.cpp
   file/directory.cpp
-  file/disk.cpp
   file/file.cpp
   file/filetime.cpp
   file/find.cpp
   file/path.cpp
-  file/shmfilelockmgr.cpp
   handlemgr/handleapi.cpp
   handlemgr/handlemgr.cpp
   init/pal.cpp
@@ -154,26 +208,28 @@ set(SOURCES
   loader/module.cpp
   loader/modulename.cpp
   locale/unicode.cpp
-  locale/unicode_data.cpp
+  locale/unicodedata.cpp
   locale/utf8.cpp
   map/common.cpp
   map/map.cpp
   map/virtual.cpp
   memory/heap.cpp
   memory/local.cpp
+  misc/cgroup.cpp
   misc/dbgmsg.cpp
   misc/environ.cpp
   misc/error.cpp
   misc/errorstrings.cpp
   misc/fmtmessage.cpp
-  misc/identity.cpp
+  misc/jitsupport.cpp
   misc/miscpalapi.cpp
   misc/msgbox.cpp
+  misc/perfjitdump.cpp
   misc/strutil.cpp
   misc/sysinfo.cpp
   misc/time.cpp
   misc/utils.cpp
-  misc/version.cpp
+  numa/numa.cpp
   objmgr/palobjbase.cpp
   objmgr/shmobject.cpp
   objmgr/shmobjectmanager.cpp
@@ -221,20 +277,32 @@ set(SOURCES
   thread/process.cpp
   thread/thread.cpp
   thread/threadsusp.cpp
-  thread/tls.cpp
 )
+
+if(NOT CLR_CMAKE_USE_SYSTEM_LIBUNWIND)
+  set(LIBUNWIND_OBJECTS $<TARGET_OBJECTS:libunwind>)
+endif(NOT CLR_CMAKE_USE_SYSTEM_LIBUNWIND)
 
 add_library(coreclrpal
   STATIC
   ${SOURCES}
   ${ARCH_SOURCES}
   ${PLATFORM_SOURCES}
+  ${LIBUNWIND_OBJECTS}
 )
 
-add_library(tracepointprovider
-  STATIC
-  misc/tracepointprovider.cpp
-)
+# There is only one function exported in 'tracepointprovider.cpp' namely 'PAL_InitializeTracing',
+# which is guarded with '#if defined(__linux__)'. On macOS, Xcode issues the following warning:
+#
+# > warning: /Applications/Xcode-9.4.1.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ranlib:
+# > warning for library: libtracepointprovider.a the table of contents is empty (no object file members in the library define global symbols)
+#
+if(CMAKE_SYSTEM_NAME STREQUAL Linux)
+  add_library(tracepointprovider
+    STATIC
+    misc/tracepointprovider.cpp
+  )
+endif(CMAKE_SYSTEM_NAME STREQUAL Linux)
 
 if(CMAKE_SYSTEM_NAME STREQUAL Darwin)
   find_library(COREFOUNDATION CoreFoundation)
@@ -250,29 +318,16 @@ if(CMAKE_SYSTEM_NAME STREQUAL Darwin)
 endif(CMAKE_SYSTEM_NAME STREQUAL Darwin)
 
 if(CMAKE_SYSTEM_NAME STREQUAL FreeBSD)
-  find_library(UNWIND unwind)
   find_library(INTL intl)
   target_link_libraries(coreclrpal
     pthread
     rt
-    ${UNWIND}
+    ${UNWIND_LIBS}
     ${INTL}
   )
 endif(CMAKE_SYSTEM_NAME STREQUAL FreeBSD)
 
 if(CMAKE_SYSTEM_NAME STREQUAL Linux)
-  if(PAL_CMAKE_PLATFORM_ARCH_ARM)
-    find_library(UNWIND_ARCH NAMES unwind-arm)
-  endif()
-
-  if(PAL_CMAKE_PLATFORM_ARCH_ARM64)
-    find_library(UNWIND_ARCH NAMES unwind-aarch64)
-  endif()
-
-  if(PAL_CMAKE_PLATFORM_ARCH_AMD64)
-    find_library(UNWIND_ARCH NAMES unwind-x86_64)
-  endif()
-
   if(CLR_CMAKE_PLATFORM_ALPINE_LINUX OR CLR_CMAKE_PLATFORM_ANDROID)
     find_library(INTL intl)
   endif()
@@ -287,30 +342,23 @@ if(CMAKE_SYSTEM_NAME STREQUAL Linux)
   endif()
 
   if(CLR_CMAKE_PLATFORM_ANDROID)
+    find_library(LZMA NAMES lzma)
+
+    if(LZMA STREQUAL LZMA-NOTFOUND)
+      message(FATAL_ERROR "Cannot find liblzma.")
+    endif(LZMA STREQUAL LZMA-NOTFOUND)
+
     target_link_libraries(coreclrpal
       gnustl_shared
       android-support
-      android-glob)
-  endif()
-
-  if(NOT CLR_CMAKE_PLATFORM_ANDROID)
-    find_library(UNWIND NAMES unwind)
-
-    if(UNWIND STREQUAL UNWIND-NOTFOUND)
-      message(FATAL_ERROR "Cannot find libunwind. Try installing libunwind8-dev and libunwind8.")
-    endif(UNWIND STREQUAL UNWIND-NOTFOUND)
-
-    target_link_libraries(coreclrpal ${UNWIND})
+      android-glob
+      ${LZMA})
   endif()
 
   if(CLR_MAKE_PLATFORM_ANDROID)
     find_library(ANDROID_SUPPORT NAMES android-support)
     find_library(ANDROID_GLOB NAMES android-glob)
     find_library(INTL NAMES intl)
-
-    if(UNWIND_ARCH STREQUAL UNWIND_ARCH-NOTFOUND)
-      message(FATAL_ERROR "Cannot find libunwind.")
-    endif()
 
     if(ANDROID_SUPPORT STREQUAL ANDROID_SUPPORT-NOTFOUND)
       message(FATAL_ERROR "Cannot find android-support.")
@@ -325,30 +373,25 @@ if(CMAKE_SYSTEM_NAME STREQUAL Linux)
     endif()
   endif()
 
-  find_library(UNWIND_GENERIC NAMES unwind-generic)
-
   target_link_libraries(coreclrpal
     dl
-    uuid
   )
-
-  if(NOT UNWIND_GENERIC STREQUAL UNWIND_GENERIC-NOTFOUND)
-    target_link_libraries(coreclrpal ${UNWIND_GENERIC})
-  endif(NOT UNWIND_GENERIC STREQUAL UNWIND_GENERIC-NOTFOUND)
-
-  if(NOT UNWIND_ARCH STREQUAL UNWIND_ARCH-NOTFOUND)
-    target_link_libraries(coreclrpal ${UNWIND_ARCH})
-  endif(NOT UNWIND_ARCH STREQUAL UNWIND_ARCH-NOTFOUND)
 
   if(NOT INTL STREQUAL INTL-NOTFOUND)
     target_link_libraries(coreclrpal ${INTL})
   endif(NOT INTL STREQUAL INTL-NOTFOUND)
 
+  if(CLR_CMAKE_USE_SYSTEM_LIBUNWIND)
+    target_link_libraries(coreclrpal ${UNWIND_LIBS})
+  endif(CLR_CMAKE_USE_SYSTEM_LIBUNWIND)
+
 endif(CMAKE_SYSTEM_NAME STREQUAL Linux)
 
 if(CMAKE_SYSTEM_NAME STREQUAL NetBSD)
+  if (CLR_CMAKE_USE_SYSTEM_LIBUNWIND)
+    find_library(UNWIND unwind)
+  endif()
   add_definitions(-D_KMEMUSER)
-  find_library(UNWIND unwind)
   find_library(INTL intl)
   find_library(KVM kvm)
   target_link_libraries(coreclrpal
@@ -363,8 +406,9 @@ endif(CMAKE_SYSTEM_NAME STREQUAL NetBSD)
 add_subdirectory(examples)
 
 if(FEATURE_EVENT_TRACE)
-    add_subdirectory($ENV{__IntermediatesDir}/Generated/eventprovider ${CMAKE_CURRENT_BINARY_DIR}/eventprovider)
+  add_subdirectory(eventprovider)
 endif(FEATURE_EVENT_TRACE)
 
+
 # Install the static PAL library for VS
-install (TARGETS coreclrpal DESTINATION lib)
+_install (TARGETS coreclrpal DESTINATION lib)

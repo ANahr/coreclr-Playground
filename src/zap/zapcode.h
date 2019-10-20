@@ -30,7 +30,7 @@ class ZapBlobWithRelocs;
 #ifdef REDHAWK
 typedef ZapNode ZapGCInfo;
 #else
-#if defined(WIN64EXCEPTIONS)
+#if defined(FEATURE_EH_FUNCLETS)
 class ZapGCInfo;
 #else
 typedef ZapBlob ZapGCInfo;
@@ -78,7 +78,7 @@ class ZapMethodHeader : public ZapNode
     ZapUnwindInfo * m_pUnwindInfo;
     ZapUnwindInfo * m_pColdUnwindInfo;  // May be NULL
 
-#ifdef WIN64EXCEPTIONS
+#ifdef FEATURE_EH_FUNCLETS
     ZapUnwindInfo * m_pUnwindInfoFragments; // Linked list of all unwind info fragments
 #endif
 
@@ -317,7 +317,7 @@ class ZapMethodEntryPointTable
             return (count_t)(size_t)k.m_handle ^ (count_t)k.m_accessFlags;
         }
 
-        static const element_t Null() { LIMITED_METHOD_CONTRACT; return NULL; }
+        static element_t Null() { LIMITED_METHOD_CONTRACT; return NULL; }
         static bool IsNull(const element_t &e) { LIMITED_METHOD_CONTRACT; return e == NULL; }
     };
 
@@ -435,7 +435,7 @@ public:
     static int __cdecl CompareUnwindInfo(const void * a, const void * b);
 };
 
-#ifdef WIN64EXCEPTIONS
+#ifdef FEATURE_EH_FUNCLETS
 //---------------------------------------------------------------------------------------
 //
 // Zapping of unwind data
@@ -517,7 +517,7 @@ class ZapUnwindDataTable
             return ZapBlob::SHashTraits::Hash(k.m_unwindData) ^ k.m_fIsFilterFunclet;
         }
 
-        static const element_t Null() { LIMITED_METHOD_CONTRACT; return NULL; }
+        static element_t Null() { LIMITED_METHOD_CONTRACT; return NULL; }
         static bool IsNull(const element_t &e) { LIMITED_METHOD_CONTRACT; return e == NULL; }
     };
     // Hashtable with all unwind data blobs. If two methods have unwind data
@@ -537,14 +537,14 @@ public:
 
     ZapUnwindData * GetUnwindData(PVOID pBlob, SIZE_T cbBlob, BOOL fIsFilterFunclet);
 };
-#endif // WIN64EXCEPTIONS
+#endif // FEATURE_EH_FUNCLETS
 
 
 //---------------------------------------------------------------------------------------
 //
 // Zapping of GC info
 //
-#ifdef WIN64EXCEPTIONS
+#ifdef FEATURE_EH_FUNCLETS
 class ZapGCInfo : public ZapUnwindData
 {
     DWORD m_cbGCInfo;
@@ -638,7 +638,7 @@ class ZapGCInfoTable
             return ZapBlob::SHashTraits::Hash(k.m_gcInfo) ^ ZapBlob::SHashTraits::Hash(k.m_unwindInfo);
         }
 
-        static const element_t Null() { LIMITED_METHOD_CONTRACT; return NULL; }
+        static element_t Null() { LIMITED_METHOD_CONTRACT; return NULL; }
         static bool IsNull(const element_t &e) { LIMITED_METHOD_CONTRACT; return e == NULL; }
     };
 
@@ -792,7 +792,7 @@ public:
 
     virtual UINT GetAlignment()
     {
-        return sizeof(TADDR);
+        return TARGET_POINTER_SIZE;
     }
 
     virtual ZapNodeType GetType()
@@ -829,7 +829,7 @@ public:
     }
     virtual UINT GetAlignment()
     {
-        return sizeof(TADDR);
+        return TARGET_POINTER_SIZE;
     }
     virtual DWORD GetSize();
     virtual void Save(ZapWriter* pZapWriter);

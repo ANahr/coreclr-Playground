@@ -8,6 +8,7 @@
 //----------------------------------------------------------
 
 #include "standardpch.h"
+#include "lightweightmap.h"
 #include "commandline.h"
 #include "superpmi.h"
 #include "mclist.h"
@@ -16,7 +17,7 @@
 
 // NOTE: this is parsed by parallelsuperpmi.cpp::ProcessChildStdOut() to determine if an incorrect
 // argument usage error has occurred.
-const char* const g_SuperPMIUsageFirstLine      = "SuperPMI is a JIT compiler testing tool.";
+const char* const g_SuperPMIUsageFirstLine = "SuperPMI is a JIT compiler testing tool.";
 
 void CommandLine::DumpHelp(const char* program)
 {
@@ -106,13 +107,28 @@ void CommandLine::DumpHelp(const char* program)
     printf("\n");
     printf(" -target <target>\n");
     printf("     Used by the assembly differences calculator. This specifies the target\n");
-    printf("     architecture for cross-compilation. Currently allowed <target> value: arm64\n");
+    printf("     architecture for cross-compilation. Currently allowed <target> values: arm, arm64\n");
     printf("\n");
-#ifdef USE_COREDISTOOLS
     printf(" -coredistools\n");
     printf("     Use disassembly tools from the CoreDisTools library\n");
-    printf("\n");
+#if defined(USE_MSVCDIS)
+    printf("     Default: use MSVCDIS.\n");
+#elif defined(USE_COREDISTOOLS)
+    printf("     Ignored: MSVCDIS is not available, so CoreDisTools will be used.\n");
+#else
+    printf("     Ignored: neither MSVCDIS nor CoreDisTools is available.\n");
 #endif // USE_COREDISTOOLS
+    printf("\n");
+    printf(" -jitoption [force] key=value\n");
+    printf("     Set the JIT option named \"key\" to \"value\" for JIT 1 if the option was not set.\n");
+    printf("     With optional force flag overwrites the existing value if it was already set.\n");
+    printf("     NOTE: do not use a \"COMPlus_\" prefix, \"key\" and \"value\" are case sensitive!\n");
+    printf("\n");
+    printf(" -jit2option [force] key=value\n");
+    printf("     Set the JIT option named \"key\" to \"value\" for JIT 2 if the option was not set.\n");
+    printf("     With optional force flag overwrites the existing value if it was already set.\n");
+    printf("     NOTE: do not use a \"COMPlus_\" prefix, \"key\" and \"value\" are case sensitive!\n");
+    printf("\n");
     printf("Inputs are case sensitive.\n");
     printf("\n");
     printf("SuperPMI method contexts are stored in files with extension .MC, implying\n");
@@ -135,23 +151,54 @@ void CommandLine::DumpHelp(const char* program)
     printf("     ; if there are any failures, record their MC numbers in the file fail.mcl\n");
 }
 
-//Assumption: All inputs are initialized to default or real value.  we'll just set the stuff we see on the command line.
-//Assumption: Single byte names are passed in.. mb stuff doesnt cause an obvious problem... but it might have issues...
-//Assumption: Values larger than 2^31 aren't expressible from the commandline.... (atoi) Unless you pass in negatives.. :-|
+static bool ParseJitOption(const char* optionString, WCHAR** key, WCHAR** value)
+{
+    char tempKey[1024];
+
+    unsigned i;
+    for (i = 0; optionString[i] != '='; i++)
+    {
+        if ((i >= 1023) || (optionString[i] == '\0'))
+        {
+            return false;
+        }
+        tempKey[i] = optionString[i];
+    }
+    tempKey[i] = '\0';
+
+    const char* tempVal = &optionString[i + 1];
+
+    const unsigned keyLen = i;
+    WCHAR*       keyBuf = new WCHAR[keyLen + 1];
+    MultiByteToWideChar(CP_UTF8, 0, tempKey, keyLen + 1, keyBuf, keyLen + 1);
+
+    const unsigned valLen = (unsigned)strlen(tempVal);
+    WCHAR*       valBuf = new WCHAR[valLen + 1];
+    MultiByteToWideChar(CP_UTF8, 0, tempVal, valLen + 1, valBuf, valLen + 1);
+
+    *key   = keyBuf;
+    *value = valBuf;
+    return true;
+}
+
+// Assumption: All inputs are initialized to default or real value.  we'll just set the stuff we see on the command
+// line. Assumption: Single byte names are passed in.. mb stuff doesnt cause an obvious problem... but it might have
+// issues... Assumption: Values larger than 2^31 aren't expressible from the commandline.... (atoi) Unless you pass in
+// negatives.. :-|
 bool CommandLine::Parse(int argc, char* argv[], /* OUT */ Options* o)
 {
-    size_t argLen = 0;
-    size_t tempLen = 0;
-    bool foundJit = false;
-    bool foundFile = false;
+    size_t argLen    = 0;
+    size_t tempLen   = 0;
+    bool   foundJit  = false;
+    bool   foundFile = false;
 
-    if (argc == 1) //Print help when no args are passed
+    if (argc == 1) // Print help when no args are passed
     {
         DumpHelp(argv[0]);
         return false;
     }
 
-    for (int i = 1; i<argc; i++)
+    for (int i = 1; i < argc; i++)
     {
         bool isASwitch = (argv[i][0] == '-');
 #ifndef FEATURE_PAL
@@ -161,21 +208,20 @@ bool CommandLine::Parse(int argc, char* argv[], /* OUT */ Options* o)
         }
 #endif // !FEATURE_PAL
 
-        //Process a switch
+        // Process a switch
         if (isASwitch)
         {
             argLen = strlen(argv[i]);
 
-            if (argLen >1)
-                argLen--; //adjust for leading switch
+            if (argLen > 1)
+                argLen--; // adjust for leading switch
             else
             {
                 DumpHelp(argv[0]);
                 return false;
             }
 
-            if ((_strnicmp(&argv[i][1], "help", argLen) == 0) ||
-                (_strnicmp(&argv[i][1], "HELP", argLen) == 0) ||
+            if ((_strnicmp(&argv[i][1], "help", argLen) == 0) || (_strnicmp(&argv[i][1], "HELP", argLen) == 0) ||
                 (_strnicmp(&argv[i][1], "?", argLen) == 0))
             {
                 DumpHelp(argv[0]);
@@ -219,12 +265,12 @@ bool CommandLine::Parse(int argc, char* argv[], /* OUT */ Options* o)
                     DumpHelp(argv[0]);
                     return false;
                 }
-                char *tempStr = new char[tempLen + 1];
+                char* tempStr = new char[tempLen + 1];
                 strcpy_s(tempStr, tempLen + 1, argv[i]);
                 if (!foundJit)
                 {
                     o->nameOfJit = tempStr;
-                    foundJit = true;
+                    foundJit     = true;
                 }
                 else
                 {
@@ -246,7 +292,7 @@ bool CommandLine::Parse(int argc, char* argv[], /* OUT */ Options* o)
                     DumpHelp(argv[0]);
                     return false;
                 }
-                char *tempStr = new char[tempLen + 1];
+                char* tempStr = new char[tempLen + 1];
                 strcpy_s(tempStr, tempLen + 1, argv[i]);
                 o->reproName = tempStr;
             }
@@ -353,11 +399,12 @@ bool CommandLine::Parse(int argc, char* argv[], /* OUT */ Options* o)
 
                 o->compileList = argv[i]; // Save this in case we need it for -parallel.
             }
-#ifdef USE_COREDISTOOLS
-            else if ((_strnicmp(&argv[i][1], "coredistools", argLen) == 0)) {
+            else if ((_strnicmp(&argv[i][1], "coredistools", argLen) == 0))
+            {
+#ifndef USE_COREDISTOOLS // If USE_COREDISTOOLS is not defined, then allow the switch, but ignore it.
                 o->useCoreDisTools = true;
-            }
 #endif // USE_COREDISTOOLS
+            }
             else if ((_strnicmp(&argv[i][1], "matchHash", argLen) == 0))
             {
                 if (++i >= argc)
@@ -394,13 +441,14 @@ bool CommandLine::Parse(int argc, char* argv[], /* OUT */ Options* o)
                 if (i + 1 < argc)
                 {
                     // If so, does it look like a worker count?
-                    bool isWorkerCount = true;
-                    size_t nextlen = strlen(argv[i + 1]);
+                    bool   isWorkerCount = true;
+                    size_t nextlen       = strlen(argv[i + 1]);
                     for (size_t j = 0; j < nextlen; j++)
                     {
                         if (!isdigit(argv[i + 1][j]))
                         {
-                            isWorkerCount = false; // Doesn't look like a worker count; bail out and let someone else handle it.
+                            isWorkerCount =
+                                false; // Doesn't look like a worker count; bail out and let someone else handle it.
                             break;
                         }
                     }
@@ -417,7 +465,8 @@ bool CommandLine::Parse(int argc, char* argv[], /* OUT */ Options* o)
                         }
                         if (o->workerCount > MAXIMUM_WAIT_OBJECTS)
                         {
-                            LogError("Invalid workers count specified, workers count cannot be more than %d.", MAXIMUM_WAIT_OBJECTS);
+                            LogError("Invalid workers count specified, workers count cannot be more than %d.",
+                                     MAXIMUM_WAIT_OBJECTS);
                             DumpHelp(argv[0]);
                             return false;
                         }
@@ -455,7 +504,8 @@ bool CommandLine::Parse(int argc, char* argv[], /* OUT */ Options* o)
 
                 if (o->offset < 1 || o->increment < 1)
                 {
-                    LogError("Incorrect offset/increment specified for -stride. Offset and increment both must be > 0.");
+                    LogError(
+                        "Incorrect offset/increment specified for -stride. Offset and increment both must be > 0.");
                     DumpHelp(argv[0]);
                     return false;
                 }
@@ -472,6 +522,22 @@ bool CommandLine::Parse(int argc, char* argv[], /* OUT */ Options* o)
                     return false;
                 }
             }
+            else if (_strnicmp(&argv[i][1], "jitoption", argLen) == 0)
+            {
+                i++;
+                if (!AddJitOption(i, argc, argv, &o->jitOptions, &o->forceJitOptions))
+                {
+                    return false;
+                }
+            }
+            else if (_strnicmp(&argv[i][1], "jit2option", argLen) == 0)
+            {
+                i++;
+                if (!AddJitOption(i, argc, argv, &o->jit2Options, &o->forceJit2Options))
+                {
+                    return false;
+                }
+            }
             else
             {
                 LogError("Unknown switch '%s' passed as argument.", argv[i]);
@@ -479,11 +545,11 @@ bool CommandLine::Parse(int argc, char* argv[], /* OUT */ Options* o)
                 return false;
             }
         }
-        //Process an input filename
-        //String comparisons on file extensions must be case-insensitive since we run on Windows
+        // Process an input filename
+        // String comparisons on file extensions must be case-insensitive since we run on Windows
         else
         {
-            char *lastdot = strrchr(argv[i], '.');
+            char* lastdot = strrchr(argv[i], '.');
             if (lastdot == nullptr)
             {
                 DumpHelp(argv[0]);
@@ -527,11 +593,28 @@ bool CommandLine::Parse(int argc, char* argv[], /* OUT */ Options* o)
         DumpHelp(argv[0]);
         return false;
     }
-    if (o->targetArchitecture != nullptr && (0 != _stricmp(o->targetArchitecture, "arm64")))
+    if (o->targetArchitecture != nullptr)
     {
-        LogError("Illegal target architecture specified with -target (only arm64 is supported).");
-        DumpHelp(argv[0]);
-        return false;
+        const char* errorMessage = nullptr;
+#ifdef _TARGET_AMD64_
+        if (0 != _stricmp(o->targetArchitecture, "arm64"))
+        {
+            errorMessage = "Illegal target architecture specified with -target (only arm64 is supported on x64 host).";
+        }
+#elif defined(_TARGET_X86_)
+        if (0 != _stricmp(o->targetArchitecture, "arm"))
+        {
+            errorMessage = "Illegal target architecture specified with -target (only arm is supported on x86 host).";
+        }
+#else
+        errorMessage = "-target is unsupported on this platform.";
+#endif
+        if (errorMessage != nullptr)
+        {
+            LogError(errorMessage);
+            DumpHelp(argv[0]);
+            return false;
+        }
     }
     if (o->skipCleanup && !o->parallel)
     {
@@ -539,5 +622,69 @@ bool CommandLine::Parse(int argc, char* argv[], /* OUT */ Options* o)
         DumpHelp(argv[0]);
         return false;
     }
+    return true;
+}
+
+//-------------------------------------------------------------
+// AddJitOption: Parse the value that was passed with -jitOption flag.
+//
+// Arguments:
+//    currArgument     - current argument number. Points to the token next to -jitOption. After the function
+//                       points to the last parsed token
+//    argc             - number of all arguments
+//    argv             - arguments as array of char*
+//    pJitOptions      - a jit options map, that sets the option, if it was not already set.
+//    pForceJitOptions - a jit options map, that forces the option even if it was already set.
+//
+// Returns:
+//    False if an error occurred, true if the option was parsed and added.
+bool CommandLine::AddJitOption(int&  currArgument,
+                               int   argc,
+                               char* argv[],
+                               LightWeightMap<DWORD, DWORD>** pJitOptions,
+                               LightWeightMap<DWORD, DWORD>** pForceJitOptions)
+{
+    if (currArgument >= argc)
+    {
+        DumpHelp(argv[0]);
+        return false;
+    }
+
+    LightWeightMap<DWORD, DWORD>* targetjitOptions = nullptr;
+
+    if (_strnicmp(argv[currArgument], "force", strlen(argv[currArgument])) == 0)
+    {
+        if (*pForceJitOptions == nullptr)
+        {
+            *pForceJitOptions = new LightWeightMap<DWORD, DWORD>();
+        }
+        targetjitOptions = *pForceJitOptions;
+        currArgument++;
+    }
+    else
+    {
+        if (*pJitOptions == nullptr)
+        {
+            *pJitOptions = new LightWeightMap<DWORD, DWORD>();
+        }
+        targetjitOptions = *pJitOptions;
+    }
+
+    WCHAR* key;
+    WCHAR* value;
+    if ((currArgument >= argc) || !ParseJitOption(argv[currArgument], &key, &value))
+    {
+        DumpHelp(argv[0]);
+        return false;
+    }
+
+    DWORD keyIndex =
+        (DWORD)targetjitOptions->AddBuffer((unsigned char*)key, sizeof(WCHAR) * ((unsigned int)wcslen(key) + 1));
+    DWORD valueIndex =
+        (DWORD)targetjitOptions->AddBuffer((unsigned char*)value, sizeof(WCHAR) * ((unsigned int)wcslen(value) + 1));
+    targetjitOptions->Add(keyIndex, valueIndex);
+
+    delete[] key;
+    delete[] value;
     return true;
 }

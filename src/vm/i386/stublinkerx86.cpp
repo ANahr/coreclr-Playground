@@ -16,12 +16,10 @@
 #include "field.h"
 #include "stublink.h"
 
-#include "tls.h"
 #include "frames.h"
 #include "excep.h"
 #include "dllimport.h"
 #include "log.h"
-#include "security.h"
 #include "comdelegate.h"
 #include "array.h"
 #include "jitinterface.h"
@@ -29,7 +27,6 @@
 #include "dbginterface.h"
 #include "eeprofinterfaces.h"
 #include "eeconfig.h"
-#include "securitydeclarative.h"
 #ifdef _TARGET_X86_
 #include "asmconstants.h"
 #endif // _TARGET_X86_
@@ -84,12 +81,6 @@ EXCEPTION_HELPERS(ArrayOpStubTypeMismatchException);
 extern "C" VOID __cdecl DebugCheckStubUnwindInfo();
 #endif // _DEBUG
 #endif // _TARGET_AMD64_
-
-// Presumably this code knows what it is doing with TLS.  If we are hiding these
-// services from normal code, reveal them here.
-#ifdef TlsGetValue
-#undef TlsGetValue
-#endif
 
 #ifdef FEATURE_COMINTEROP
 Thread* __stdcall CreateThreadBlockReturnHr(ComMethodFrame *pFrame);
@@ -999,7 +990,7 @@ VOID StubLinkerCPU::X86EmitPushImm8(BYTE value)
 // Emits:
 //    PUSH <ptr>
 //---------------------------------------------------------------
-VOID StubLinkerCPU::X86EmitPushImmPtr(LPVOID value WIN64_ARG(X86Reg tmpReg /*=kR10*/))
+VOID StubLinkerCPU::X86EmitPushImmPtr(LPVOID value BIT64_ARG(X86Reg tmpReg /*=kR10*/))
 {
     STANDARD_VM_CONTRACT;
 
@@ -1251,7 +1242,7 @@ VOID StubLinkerCPU::X86EmitReturn(WORD wArgBytes)
     CONTRACTL
     {
         STANDARD_VM_CHECK;
-#ifdef _TARGET_AMD64_
+#if defined(_TARGET_AMD64_) || defined(UNIX_X86_ABI)
         PRECONDITION(wArgBytes == 0);
 #endif
 
@@ -1417,7 +1408,7 @@ VOID StubLinkerCPU::X86EmitSPIndexPush(__int32 ofs)
         // The offset can be expressed in a byte (can use the byte
         // form of the push esp instruction)
 
-        BYTE code[] = {0xff, 0x74, 0x24, ofs8};
+        BYTE code[] = {0xff, 0x74, 0x24, (BYTE)ofs8};
         EmitBytes(code, sizeof(code));   
     }
     else
@@ -1740,6 +1731,49 @@ VOID StubLinkerCPU::X64EmitMovSSToMem(X86Reg Xmmreg, X86Reg baseReg, __int32 ofs
 {
     STANDARD_VM_CONTRACT;
     X64EmitMovXmmWorker(0xF3, 0x11, Xmmreg, baseReg, ofs);
+}
+
+VOID StubLinkerCPU::X64EmitMovqRegXmm(X86Reg reg, X86Reg Xmmreg)
+{
+    STANDARD_VM_CONTRACT;
+    X64EmitMovqWorker(0x7e, Xmmreg, reg);
+}
+
+VOID StubLinkerCPU::X64EmitMovqXmmReg(X86Reg Xmmreg, X86Reg reg)
+{
+    STANDARD_VM_CONTRACT;
+    X64EmitMovqWorker(0x6e, Xmmreg, reg);
+}
+
+//-----------------------------------------------------------------------------
+// Helper method for emitting movq between xmm and general purpose reqister
+//-----------------------------------------------------------------------------
+VOID StubLinkerCPU::X64EmitMovqWorker(BYTE opcode, X86Reg Xmmreg, X86Reg reg)
+{
+    BYTE    codeBuffer[10];
+    unsigned int     nBytes  = 0;
+    codeBuffer[nBytes++] = 0x66;
+    BYTE rex = REX_PREFIX_BASE | REX_OPERAND_SIZE_64BIT;
+    if (reg >= kR8)
+    {
+        rex |= REX_MODRM_RM_EXT;
+        reg = X86RegFromAMD64Reg(reg);
+    }
+    if (Xmmreg >= kXMM8)
+    {
+        rex |= REX_MODRM_REG_EXT;
+        Xmmreg = X86RegFromAMD64Reg(Xmmreg);
+    }
+    codeBuffer[nBytes++] = rex;
+    codeBuffer[nBytes++] = 0x0f;
+    codeBuffer[nBytes++] = opcode;
+    BYTE modrm = static_cast<BYTE>((Xmmreg << 3) | reg);
+    codeBuffer[nBytes++] = 0xC0|modrm;
+
+    _ASSERTE(nBytes <= _countof(codeBuffer));
+    
+    // Lastly, emit the encoded bytes
+    EmitBytes(codeBuffer, nBytes);    
 }
 
 //---------------------------------------------------------------
@@ -2322,7 +2356,7 @@ static const X86Reg c_argRegs[] = {
 
 #ifndef CROSSGEN_COMPILE
 
-#if defined(_DEBUG) && (defined(_TARGET_AMD64_) || defined(_TARGET_X86_)) && !defined(FEATURE_PAL)
+#if defined(_DEBUG) && !defined(FEATURE_PAL)
 void StubLinkerCPU::EmitJITHelperLoggingThunk(PCODE pJitHelper, LPVOID helperFuncCount)
 {
     STANDARD_VM_CONTRACT;
@@ -2360,95 +2394,7 @@ void StubLinkerCPU::EmitJITHelperLoggingThunk(PCODE pJitHelper, LPVOID helperFun
 #endif
     X86EmitTailcallWithSinglePop(NewExternalCodeLabel(pJitHelper), kECX);
 }
-#endif // _DEBUG && (_TARGET_AMD64_ || _TARGET_X86_) && !FEATURE_PAL
-
-#ifndef FEATURE_IMPLICIT_TLS
-//---------------------------------------------------------------
-// Emit code to store the current Thread structure in dstreg
-// preservedRegSet is a set of registers to be preserved
-// TRASHES  EAX, EDX, ECX unless they are in preservedRegSet.
-// RESULTS  dstreg = current Thread
-//---------------------------------------------------------------
-VOID StubLinkerCPU::X86EmitTLSFetch(DWORD idx, X86Reg dstreg, unsigned preservedRegSet)
-{
-    CONTRACTL
-    {
-        STANDARD_VM_CHECK;
-
-    // It doesn't make sense to have the destination register be preserved
-        PRECONDITION((preservedRegSet & (1<<dstreg)) == 0);
-        AMD64_ONLY(PRECONDITION(dstreg < 8)); // code below doesn't support high registers
-    }
-    CONTRACTL_END;
-
-    TLSACCESSMODE mode = GetTLSAccessMode(idx);
-
-#ifdef _DEBUG
-    {
-        static BOOL f = TRUE;
-        f = !f;
-        if (f)
-        {
-           mode = TLSACCESS_GENERIC;
-        }
-    }
-#endif
-
-    switch (mode)
-    {
-        case TLSACCESS_WNT: 
-            {
-                unsigned __int32 tlsofs = offsetof(TEB, TlsSlots) + (idx * sizeof(void*));
-#ifdef _TARGET_AMD64_                
-                BYTE code[] = {0x65,0x48,0x8b,0x04,0x25};    // mov dstreg, qword ptr gs:[IMM32]
-                static const int regByteIndex = 3;
-#elif defined(_TARGET_X86_)
-                BYTE code[] = {0x64,0x8b,0x05};              // mov dstreg, dword ptr fs:[IMM32]
-                static const int regByteIndex = 2;
-#endif 
-                code[regByteIndex] |= (dstreg << 3);
-
-                EmitBytes(code, sizeof(code));
-                Emit32(tlsofs);
-            }
-            break;
-
-        case TLSACCESS_GENERIC:
-
-            X86EmitPushRegs(preservedRegSet & ((1<<kEAX)|(1<<kEDX)|(1<<kECX)));
-
-            X86EmitPushImm32(idx);
-#ifdef _TARGET_AMD64_
-            X86EmitPopReg (kECX);       // arg in reg
-#endif
-
-            // call TLSGetValue
-            X86EmitCall(NewExternalCodeLabel((LPVOID) TlsGetValue), sizeof(void*));
-
-            // mov dstreg, eax
-            X86EmitMovRegReg(dstreg, kEAX);
-
-            X86EmitPopRegs(preservedRegSet & ((1<<kEAX)|(1<<kEDX)|(1<<kECX)));
-
-            break;
-
-        default:
-            _ASSERTE(0);
-    }
-
-#ifdef _DEBUG
-    // Trash caller saved regs that we were not told to preserve, and that aren't the dstreg.
-    preservedRegSet |= 1<<dstreg;
-    if (!(preservedRegSet & (1<<kEAX)))
-        X86EmitDebugTrashReg(kEAX);
-    if (!(preservedRegSet & (1<<kEDX)))
-        X86EmitDebugTrashReg(kEDX);
-    if (!(preservedRegSet & (1<<kECX)))
-        X86EmitDebugTrashReg(kECX);
-#endif
-
-}
-#endif // FEATURE_IMPLICIT_TLS
+#endif // _DEBUG && !FEATURE_PAL
 
 VOID StubLinkerCPU::X86EmitCurrentThreadFetch(X86Reg dstreg, unsigned preservedRegSet)
 {
@@ -2456,89 +2402,59 @@ VOID StubLinkerCPU::X86EmitCurrentThreadFetch(X86Reg dstreg, unsigned preservedR
     {
         STANDARD_VM_CHECK;
 
-    // It doesn't make sense to have the destination register be preserved
-        PRECONDITION((preservedRegSet & (1<<dstreg)) == 0);
+        // It doesn't make sense to have the destination register be preserved
+        PRECONDITION((preservedRegSet & (1 << dstreg)) == 0);
         AMD64_ONLY(PRECONDITION(dstreg < 8)); // code below doesn't support high registers
     }
     CONTRACTL_END;
 
-#ifdef FEATURE_IMPLICIT_TLS
+#ifdef FEATURE_PAL
 
-    X86EmitPushRegs(preservedRegSet & ((1<<kEAX)|(1<<kEDX)|(1<<kECX)));
+    X86EmitPushRegs(preservedRegSet & ((1 << kEAX) | (1 << kEDX) | (1 << kECX)));
 
-    //TODO: Inline the instruction instead of a call
     // call GetThread
-    X86EmitCall(NewExternalCodeLabel((LPVOID) GetThread), sizeof(void*));
+    X86EmitCall(NewExternalCodeLabel((LPVOID)GetThread), sizeof(void*));
 
     // mov dstreg, eax
     X86EmitMovRegReg(dstreg, kEAX);
 
-    X86EmitPopRegs(preservedRegSet & ((1<<kEAX)|(1<<kEDX)|(1<<kECX)));
+    X86EmitPopRegs(preservedRegSet & ((1 << kEAX) | (1 << kEDX) | (1 << kECX)));
 
 #ifdef _DEBUG
     // Trash caller saved regs that we were not told to preserve, and that aren't the dstreg.
-    preservedRegSet |= 1<<dstreg;
-    if (!(preservedRegSet & (1<<kEAX)))
+    preservedRegSet |= 1 << dstreg;
+    if (!(preservedRegSet & (1 << kEAX)))
         X86EmitDebugTrashReg(kEAX);
-    if (!(preservedRegSet & (1<<kEDX)))
+    if (!(preservedRegSet & (1 << kEDX)))
         X86EmitDebugTrashReg(kEDX);
-    if (!(preservedRegSet & (1<<kECX)))
+    if (!(preservedRegSet & (1 << kECX)))
         X86EmitDebugTrashReg(kECX);
 #endif // _DEBUG
 
-#else // FEATURE_IMPLICIT_TLS
+#else // FEATURE_PAL
 
-    X86EmitTLSFetch(GetThreadTLSIndex(), dstreg, preservedRegSet);
-    
-#endif // FEATURE_IMPLICIT_TLS
-
-}
-
-VOID StubLinkerCPU::X86EmitCurrentAppDomainFetch(X86Reg dstreg, unsigned preservedRegSet)
-{
-    CONTRACTL
-    {
-        STANDARD_VM_CHECK;
-
-    // It doesn't make sense to have the destination register be preserved
-        PRECONDITION((preservedRegSet & (1<<dstreg)) == 0);
-        AMD64_ONLY(PRECONDITION(dstreg < 8)); // code below doesn't support high registers
-    }
-    CONTRACTL_END;
-
-#ifdef FEATURE_IMPLICIT_TLS
-    X86EmitPushRegs(preservedRegSet & ((1<<kEAX)|(1<<kEDX)|(1<<kECX)));
-
-    //TODO: Inline the instruction instead of a call
-    // call GetThread
-    X86EmitCall(NewExternalCodeLabel((LPVOID) GetAppDomain), sizeof(void*));
-
-    // mov dstreg, eax
-    X86EmitMovRegReg(dstreg, kEAX);
-
-    X86EmitPopRegs(preservedRegSet & ((1<<kEAX)|(1<<kEDX)|(1<<kECX)));
-
-#ifdef _DEBUG
-    // Trash caller saved regs that we were not told to preserve, and that aren't the dstreg.
-    preservedRegSet |= 1<<dstreg;
-    if (!(preservedRegSet & (1<<kEAX)))
-        X86EmitDebugTrashReg(kEAX);
-    if (!(preservedRegSet & (1<<kEDX)))
-        X86EmitDebugTrashReg(kEDX);
-    if (!(preservedRegSet & (1<<kECX)))
-        X86EmitDebugTrashReg(kECX);
+#ifdef _TARGET_AMD64_
+    BYTE code[] = { 0x65,0x48,0x8b,0x04,0x25 };    // mov dstreg, qword ptr gs:[IMM32]
+    static const int regByteIndex = 3;
+#elif defined(_TARGET_X86_)
+    BYTE code[] = { 0x64,0x8b,0x05 };              // mov dstreg, dword ptr fs:[IMM32]
+    static const int regByteIndex = 2;
 #endif
+    code[regByteIndex] |= (dstreg << 3);
 
-#else // FEATURE_IMPLICIT_TLS
+    EmitBytes(code, sizeof(code));
+    Emit32(offsetof(TEB, ThreadLocalStoragePointer));
 
-    X86EmitTLSFetch(GetAppDomainTLSIndex(), dstreg, preservedRegSet);
+    X86EmitIndexRegLoad(dstreg, dstreg, sizeof(void *) * (g_TlsIndex & 0xFFFF));
 
-#endif // FEATURE_IMPLICIT_TLS
+    X86EmitIndexRegLoad(dstreg, dstreg, (g_TlsIndex & 0x7FFF0000) >> 16);
+
+#endif // FEATURE_PAL
 }
 
 #if defined(_TARGET_X86_)
 
-#ifdef PROFILING_SUPPORTED
+#if defined(PROFILING_SUPPORTED) && !defined(FEATURE_STUBS_AS_IL)
 VOID StubLinkerCPU::EmitProfilerComCallProlog(TADDR pFrameVptr, X86Reg regFrame)
 {
     STANDARD_VM_CONTRACT;
@@ -2622,7 +2538,7 @@ VOID StubLinkerCPU::EmitProfilerComCallEpilog(TADDR pFrameVptr, X86Reg regFrame)
         _ASSERTE(!"Unrecognized vtble passed to EmitComMethodStubEpilog with profiling turned on.");
     }
 }
-#endif // PROFILING_SUPPORTED
+#endif // PROFILING_SUPPORTED && !FEATURE_STUBS_AS_IL
 
 
 #ifndef FEATURE_STUBS_AS_IL
@@ -2863,56 +2779,7 @@ VOID StubLinkerCPU::EmitSetup(CodeLabel *pForwardRef)
 {
     STANDARD_VM_CONTRACT;
 
-#ifdef FEATURE_IMPLICIT_TLS
-    DWORD idx = 0;
-    TLSACCESSMODE mode = TLSACCESS_GENERIC;
-#else
-    DWORD idx = GetThreadTLSIndex();
-    TLSACCESSMODE mode = GetTLSAccessMode(idx);
-#endif
-
-#ifdef _DEBUG
-    {
-        static BOOL f = TRUE;
-        f = !f;
-        if (f)
-        {
-           mode = TLSACCESS_GENERIC;
-        }
-    }
-#endif
-
-    switch (mode)
-    {
-        case TLSACCESS_WNT: 
-#ifndef FEATURE_PAL
-            {
-                unsigned __int32 tlsofs = offsetof(TEB, TlsSlots) + (idx * sizeof(void*));
-
-                static const BYTE code[] = {0x64,0x8b,0x1d};              // mov ebx, dword ptr fs:[IMM32]
-                EmitBytes(code, sizeof(code));
-                Emit32(tlsofs);
-            }
-#else  // !FEATURE_PAL
-            _ASSERTE("TLSACCESS_WNT mode is not supported");
-#endif // !FEATURE_PAL
-            break;
-
-        case TLSACCESS_GENERIC:
-#ifdef FEATURE_IMPLICIT_TLS
-            X86EmitCall(NewExternalCodeLabel((LPVOID) GetThread), sizeof(void*));
-#else
-            X86EmitPushImm32(idx);
-
-            // call TLSGetValue
-            X86EmitCall(NewExternalCodeLabel((LPVOID) TlsGetValue), sizeof(void*));
-#endif
-            // mov ebx,eax
-            Emit16(0xc389);
-            break;
-        default:
-            _ASSERTE(0);
-    }
+    X86EmitCurrentThreadFetch(kEBX, 0);
 
     // cmp ebx, 0
     static const BYTE b[] = { 0x83, 0xFB, 0x0};
@@ -3152,7 +3019,6 @@ VOID StubLinkerCPU::EmitMethodStubProlog(TADDR pFrameVptr, int transitionBlockOf
 #endif // _TARGET_X86_
 
     // ebx <-- GetThread()
-    // Trashes X86TLSFetch_TRASHABLE_REGS
     X86EmitCurrentThreadFetch(kEBX, 0);
 
 #if _DEBUG
@@ -3268,7 +3134,7 @@ VOID StubLinkerCPU::EmitMethodStubEpilog(WORD numArgBytes, int transitionBlockOf
     X86EmitPopReg(kR15);
 #endif
 
-#ifdef _TARGET_AMD64_
+#if defined(_TARGET_AMD64_) || defined(UNIX_X86_ABI)
     // Caller deallocates argument space.  (Bypasses ASSERT in
     // X86EmitReturn.)
     numArgBytes = 0;
@@ -3825,37 +3691,6 @@ VOID StubLinkerCPU::EmitDisable(CodeLabel *pForwardRef, BOOL fCallIn, X86Reg Thr
     }
     CONTRACTL_END;
 
-#if defined(FEATURE_COMINTEROP) && defined(MDA_SUPPORTED)
-    // If we are checking whether the current thread is already holds the loader lock, vector
-    // such cases to the rare disable pathway, where we can check again.
-    if (fCallIn && (NULL != MDA_GET_ASSISTANT(Reentrancy)))
-    {
-        CodeLabel   *pNotReentrantLabel = NewCodeLabel();
-
-        // test byte ptr [ebx + Thread.m_fPreemptiveGCDisabled],1
-        X86EmitOffsetModRM(0xf6, (X86Reg)0, ThreadReg, Thread::GetOffsetOfGCFlag());
-        Emit8(1);
-
-        // jz NotReentrant
-        X86EmitCondJump(pNotReentrantLabel, X86CondCode::kJZ);
-        
-        X86EmitPushReg(kEAX);
-        X86EmitPushReg(kEDX);
-        X86EmitPushReg(kECX);
-
-        X86EmitCall(NewExternalCodeLabel((LPVOID) HasIllegalReentrancy), 0);
-
-        // If the probe fires, we go ahead and allow the call anyway.  At this point, there could be
-        // GC heap corruptions.  So the probe detects the illegal case, but doesn't prevent it.
-
-        X86EmitPopReg(kECX);
-        X86EmitPopReg(kEDX);
-        X86EmitPopReg(kEAX);
-
-        EmitLabel(pNotReentrantLabel);
-    }
-#endif
-
     // move byte ptr [ebx + Thread.m_fPreemptiveGCDisabled],1
     X86EmitOffsetModRM(0xc6, (X86Reg)0, ThreadReg, Thread::GetOffsetOfGCFlag());
     Emit8(1);
@@ -4002,30 +3837,88 @@ VOID StubLinkerCPU::EmitShuffleThunk(ShuffleEntry *pShuffleEntryArray)
 #ifdef UNIX_AMD64_ABI
     for (ShuffleEntry* pEntry = pShuffleEntryArray; pEntry->srcofs != ShuffleEntry::SENTINEL; pEntry++)
     {
-        if (pEntry->srcofs & ShuffleEntry::REGMASK)
+        if (pEntry->srcofs == ShuffleEntry::HELPERREG)
         {
-            // If source is present in register then destination must also be a register
-            _ASSERTE(pEntry->dstofs & ShuffleEntry::REGMASK);
-            // Both the srcofs and dstofs must be of the same kind of registers - float or general purpose.
-            _ASSERTE((pEntry->dstofs & ShuffleEntry::FPREGMASK) == (pEntry->srcofs & ShuffleEntry::FPREGMASK));
-
-            int dstRegIndex = pEntry->dstofs & ShuffleEntry::OFSREGMASK;
-            int srcRegIndex = pEntry->srcofs & ShuffleEntry::OFSREGMASK;
-
-            if (pEntry->srcofs & ShuffleEntry::FPREGMASK) 
+            if (pEntry->dstofs & ShuffleEntry::REGMASK)
             {
-                // movdqa dstReg, srcReg
-                X64EmitMovXmmXmm((X86Reg)(kXMM0 + dstRegIndex), (X86Reg)(kXMM0 + srcRegIndex));
+                // movq dstReg, xmm8
+                int dstRegIndex = pEntry->dstofs & ShuffleEntry::OFSREGMASK;
+                X64EmitMovqRegXmm(c_argRegs[dstRegIndex], (X86Reg)kXMM8);
             }
             else
             {
-                // mov dstReg, srcReg
-                X86EmitMovRegReg(c_argRegs[dstRegIndex], c_argRegs[srcRegIndex]);
+                // movsd [rax + dst], xmm8
+                int dstOffset = (pEntry->dstofs + 1) * sizeof(void*);
+                X64EmitMovSDToMem((X86Reg)kXMM8, SCRATCH_REGISTER_X86REG, dstOffset);
+            }
+        }
+        else if (pEntry->dstofs == ShuffleEntry::HELPERREG)
+        {
+            if (pEntry->srcofs & ShuffleEntry::REGMASK)
+            {
+                // movq xmm8, srcReg
+                int srcRegIndex = pEntry->srcofs & ShuffleEntry::OFSREGMASK;
+                X64EmitMovqXmmReg((X86Reg)kXMM8, c_argRegs[srcRegIndex]);
+            }
+            else
+            {
+                // movsd xmm8, [rax + src]
+                int srcOffset = (pEntry->srcofs + 1) * sizeof(void*);
+                X64EmitMovSDFromMem((X86Reg)(kXMM8), SCRATCH_REGISTER_X86REG, srcOffset);
+            }
+        }
+        else if (pEntry->srcofs & ShuffleEntry::REGMASK)
+        {
+            // Source in a general purpose or float register, destination in the same kind of a register or on stack
+            int srcRegIndex = pEntry->srcofs & ShuffleEntry::OFSREGMASK;
+
+            if (pEntry->dstofs & ShuffleEntry::REGMASK)
+            {
+                // Source in register, destination in register
+
+                // Both the srcofs and dstofs must be of the same kind of registers - float or general purpose.
+                _ASSERTE((pEntry->dstofs & ShuffleEntry::FPREGMASK) == (pEntry->srcofs & ShuffleEntry::FPREGMASK));
+                int dstRegIndex = pEntry->dstofs & ShuffleEntry::OFSREGMASK;
+
+                if (pEntry->srcofs & ShuffleEntry::FPREGMASK) 
+                {
+                    // movdqa dstReg, srcReg
+                    X64EmitMovXmmXmm((X86Reg)(kXMM0 + dstRegIndex), (X86Reg)(kXMM0 + srcRegIndex));
+                }
+                else
+                {
+                    // mov dstReg, srcReg
+                    X86EmitMovRegReg(c_argRegs[dstRegIndex], c_argRegs[srcRegIndex]);
+                }
+            }
+            else
+            {
+                // Source in register, destination on stack
+                int dstOffset = (pEntry->dstofs + 1) * sizeof(void*);
+
+                if (pEntry->srcofs & ShuffleEntry::FPREGMASK) 
+                {
+                    if (pEntry->dstofs & ShuffleEntry::FPSINGLEMASK)
+                    {
+                        // movss [rax + dst], srcReg
+                        X64EmitMovSSToMem((X86Reg)(kXMM0 + srcRegIndex), SCRATCH_REGISTER_X86REG, dstOffset);
+                    }
+                    else
+                    {
+                        // movsd [rax + dst], srcReg
+                        X64EmitMovSDToMem((X86Reg)(kXMM0 + srcRegIndex), SCRATCH_REGISTER_X86REG, dstOffset);
+                    }
+                }
+                else
+                {
+                    // mov [rax + dst], srcReg
+                    X86EmitIndexRegStore (SCRATCH_REGISTER_X86REG, dstOffset, c_argRegs[srcRegIndex]);
+                }
             }
         }
         else if (pEntry->dstofs & ShuffleEntry::REGMASK)
         {
-            // source must be on the stack
+            // Source on stack, destination in register
             _ASSERTE(!(pEntry->srcofs & ShuffleEntry::REGMASK));
 
             int dstRegIndex = pEntry->dstofs & ShuffleEntry::OFSREGMASK;
@@ -4052,10 +3945,8 @@ VOID StubLinkerCPU::EmitShuffleThunk(ShuffleEntry *pShuffleEntryArray)
         }
         else
         {
-            // source must be on the stack
+            // Source on stack, destination on stack
             _ASSERTE(!(pEntry->srcofs & ShuffleEntry::REGMASK));
-
-            // dest must be on the stack
             _ASSERTE(!(pEntry->dstofs & ShuffleEntry::REGMASK));
 
             // mov r10, [rax + src]
@@ -4222,6 +4113,10 @@ VOID StubLinkerCPU::EmitShuffleThunk(ShuffleEntry *pShuffleEntryArray)
 
     if (haveMemMemMove)
         X86EmitPopReg(SCRATCH_REGISTER_X86REG);
+
+#ifdef UNIX_X86_ABI
+    _ASSERTE(pWalk->stacksizedelta == 0);
+#endif
 
     if (pWalk->stacksizedelta)
         X86EmitAddEsp(pWalk->stacksizedelta);
@@ -5717,8 +5612,12 @@ COPY_VALUE_CLASS:
     X86EmitPopReg(kFactorReg);
     X86EmitPopReg(kTotalReg);
 
+#ifndef UNIX_X86_ABI
     // ret N
     X86EmitReturn(pArrayOpScript->m_cbretpop);
+#else
+    X86EmitReturn(0);
+#endif
 #endif // !_TARGET_AMD64_
 
     // Exception points must clean up the stack for all those extra args.
@@ -5912,7 +5811,7 @@ void TailCallFrame::GcScanRoots(promote_func *fn, ScanContext* sc)
 
                 offset &= 0x7FFFFFFC;
                 
-#ifdef _WIN64
+#ifdef BIT64
                 offset <<= 1;
 #endif
                 offset += sizeof(void*);
@@ -5972,12 +5871,12 @@ static void EncodeOneGCOffset(CPUSTUBLINKER *pSl, ULONG delta, BOOL maybeInterio
     // we use the 1 bit to denote a range
     _ASSERTE((delta % sizeof(void*)) == 0);
 
-#if defined(_WIN64)
+#if defined(BIT64)
     // For 64-bit, we have 3 bits of alignment, so we allow larger frames
     // by shifting and gaining a free high-bit.
     ULONG encodedDelta = delta >> 1;
 #else
-    // For 32-bit, we just limit our frame size to <2GB. (I know, such a bummer!)
+    // For 32-bit, we just limit our frame size to <2GB.
     ULONG encodedDelta = delta;
 #endif
     _ASSERTE((encodedDelta & 0x80000003) == 0);
@@ -6087,6 +5986,43 @@ static void AppendGCLayout(ULONGARRAY &gcLayout, size_t baseOffset, BOOL fIsType
         _ASSERTE(pMT);
         _ASSERTE(pMT->IsValueType());
 
+        BOOL isByRefLike = pMT->IsByRefLike();
+        if (isByRefLike)
+        {
+            FindByRefPointerOffsetsInByRefLikeObject(
+                pMT,
+                0 /* baseOffset */,
+                [&](size_t pointerOffset)
+                {
+                    // 'gcLayout' requires stack offsets relative to the top of the stack to be recorded, such that subtracting
+                    // the offset from the stack top yields the address of the field, given that subtracting 'baseOffset' from
+                    // the stack top yields the address of the first field in this struct. See TailCallFrame::GcScanRoots() for
+                    // how these offsets are used to calculate stack addresses for fields.
+                    _ASSERTE(pointerOffset < baseOffset);
+                    size_t stackOffsetFromTop = baseOffset - pointerOffset;
+                    _ASSERTE(FitsInU4(stackOffsetFromTop));
+
+                    // Offsets in 'gcLayout' are expected to be in increasing order
+                    int gcLayoutInsertIndex = gcLayout.Count();
+                    _ASSERTE(gcLayoutInsertIndex >= 0);
+                    for (; gcLayoutInsertIndex != 0; --gcLayoutInsertIndex)
+                    {
+                        ULONG prevStackOffsetFromTop = gcLayout[gcLayoutInsertIndex - 1] & ~(ULONG)1;
+                        if (stackOffsetFromTop > prevStackOffsetFromTop)
+                        {
+                            break;
+                        }
+                        if (stackOffsetFromTop == prevStackOffsetFromTop)
+                        {
+                            return;
+                        }
+                    }
+
+                    _ASSERTE(gcLayout.Count() == 0 || stackOffsetFromTop > (gcLayout[gcLayout.Count() - 1] & ~(ULONG)1));
+                    *gcLayout.InsertThrowing(gcLayoutInsertIndex) = (ULONG)(stackOffsetFromTop | 1); // "| 1" to mark it as an interior pointer
+                });
+        }
+
         // walk the GC descriptors, reporting the correct offsets
         if (pMT->ContainsPointers())
         {
@@ -6113,9 +6049,24 @@ static void AppendGCLayout(ULONGARRAY &gcLayout, size_t baseOffset, BOOL fIsType
                 size_t stop = start - (cur->GetSeriesSize() + size);
                 for (size_t off = stop + sizeof(void*); off <= start; off += sizeof(void*))
                 {
-                    _ASSERTE(gcLayout.Count() == 0 || off > gcLayout[gcLayout.Count() - 1]);
                     _ASSERTE(FitsInU4(off));
-                    *gcLayout.AppendThrowing() = (ULONG)off;
+
+                    int gcLayoutInsertIndex = gcLayout.Count();
+                    _ASSERTE(gcLayoutInsertIndex >= 0);
+                    if (isByRefLike)
+                    {
+                        // Offsets in 'gcLayout' are expected to be in increasing order and for by-ref-like types the by-refs would
+                        // have already been inserted into 'gcLayout' above. Find the appropriate index at which to insert this
+                        // offset.
+                        while (gcLayoutInsertIndex != 0 && off < gcLayout[gcLayoutInsertIndex - 1])
+                        {
+                            --gcLayoutInsertIndex;
+                            _ASSERTE(off != (gcLayout[gcLayoutInsertIndex] & ~(ULONG)1));
+                        }
+                    }
+
+                    _ASSERTE(gcLayoutInsertIndex == 0 || off > (gcLayout[gcLayoutInsertIndex - 1] & ~(ULONG)1));
+                    *gcLayout.InsertThrowing(gcLayoutInsertIndex) = (ULONG)off;
                 }
                 cur++;
 
@@ -6125,6 +6076,7 @@ static void AppendGCLayout(ULONGARRAY &gcLayout, size_t baseOffset, BOOL fIsType
 }
 
 Stub * StubLinkerCPU::CreateTailCallCopyArgsThunk(CORINFO_SIG_INFO * pSig,
+                                                  MethodDesc* pMD,
                                                   CorInfoHelperTailCallSpecialHandling flags)
 {
     STANDARD_VM_CONTRACT;
@@ -6514,7 +6466,8 @@ Stub * StubLinkerCPU::CreateTailCallCopyArgsThunk(CORINFO_SIG_INFO * pSig,
         EncodeGCOffsets(pSl, gcLayout);
     }
 
-    return pSl->Link();
+    LoaderHeap* pHeap = pMD->GetLoaderAllocator()->GetStubHeap();
+    return pSl->Link(pHeap);
 }
 #endif // DACCESS_COMPILE
 
@@ -6537,6 +6490,49 @@ TADDR FixupPrecode::GetMethodDesc()
 }
 #endif
 
+#ifdef FIXUP_PRECODE_PREALLOCATE_DYNAMIC_METHOD_JUMP_STUBS
+PCODE FixupPrecode::GetDynamicMethodPrecodeFixupJumpStub()
+{
+    WRAPPER_NO_CONTRACT;
+    _ASSERTE(((PTR_MethodDesc)GetMethodDesc())->IsLCGMethod());
+
+    // The precode fixup jump stub is shared by all fixup precodes in a chunk, and immediately follows the MethodDesc. Jump
+    // stubs cannot be reused currently for the same method:
+    //   - The jump stub's target would change separately from the precode being updated from "call Func" to "jmp Func", both
+    //     changes would have to be done atomically with runtime suspension, which is not done currently
+    //   - When changing the entry point from one version of jitted code to another, the jump stub's target pointer is not
+    //     aligned to 8 bytes in order to be able to do an interlocked update of the target address
+    // So, when initially the precode intends to be of the form "call PrecodeFixupThunk", if the target address happens to be
+    // too far for a relative 32-bit jump, it will use the shared precode fixup jump stub. When changing the entry point to
+    // jitted code, the jump stub associated with the precode is patched, and the precode is updated to use that jump stub.
+    //
+    // Notes:
+    // - Dynamic method descs, and hence their precodes and preallocated jump stubs, may be reused for a different method
+    //   (along with reinitializing the precode), but only with a transition where the original method is no longer accessible
+    //   to user code
+    // - Concurrent calls to a dynamic method that has not yet been jitted may trigger multiple writes to the jump stub
+    //   associated with the precode, but only to the same target address (and while the precode is still pointing to
+    //   PrecodeFixupThunk)
+    return GetBase() + sizeof(PTR_MethodDesc);
+}
+
+PCODE FixupPrecode::GetDynamicMethodEntryJumpStub()
+{
+    WRAPPER_NO_CONTRACT;
+    _ASSERTE(((PTR_MethodDesc)GetMethodDesc())->IsLCGMethod());
+
+    // m_PrecodeChunkIndex has a value inverted to the order of precodes in memory (the precode at the lowest address has the
+    // highest index, and the precode at the highest address has the lowest index). To map a precode to its jump stub by memory
+    // order, invert the precode index to get the jump stub index. Also skip the precode fixup jump stub (see
+    // GetDynamicMethodPrecodeFixupJumpStub()).
+    UINT32 count = ((PTR_MethodDesc)GetMethodDesc())->GetMethodDescChunk()->GetCount();
+    _ASSERTE(m_PrecodeChunkIndex < count);
+    SIZE_T jumpStubIndex = count - m_PrecodeChunkIndex;
+
+    return GetBase() + sizeof(PTR_MethodDesc) + jumpStubIndex * BACK_TO_BACK_JUMP_ALLOCATE_SIZE;
+}
+#endif // FIXUP_PRECODE_PREALLOCATE_DYNAMIC_METHOD_JUMP_STUBS
+
 #ifdef DACCESS_COMPILE
 void FixupPrecode::EnumMemoryRegions(CLRDataEnumMemoryFlags flags)
 {
@@ -6551,12 +6547,27 @@ void FixupPrecode::EnumMemoryRegions(CLRDataEnumMemoryFlags flags)
 
 #ifndef DACCESS_COMPILE
 
+void rel32SetInterlocked(/*PINT32*/ PVOID pRel32, TADDR target, MethodDesc* pMD)
+{
+    CONTRACTL
+    {
+        THROWS;         // Creating a JumpStub could throw OutOfMemory
+        GC_NOTRIGGER;
+    }
+    CONTRACTL_END;
+
+    INT32 targetRel32 = rel32UsingJumpStub((INT32*)pRel32, target, pMD);
+
+    _ASSERTE(IS_ALIGNED(pRel32, sizeof(INT32)));
+    FastInterlockExchange((LONG*)pRel32, (LONG)targetRel32);
+}
+
 BOOL rel32SetInterlocked(/*PINT32*/ PVOID pRel32, TADDR target, TADDR expected, MethodDesc* pMD)
 {
     CONTRACTL
     {
         THROWS;         // Creating a JumpStub could throw OutOfMemory
-        GC_TRIGGERS;
+        GC_NOTRIGGER;
     }
     CONTRACTL_END;
 
@@ -6574,10 +6585,10 @@ void StubPrecode::Init(MethodDesc* pMD, LoaderAllocator *pLoaderAllocator /* = N
 {
     WRAPPER_NO_CONTRACT;
 
-    IN_WIN64(m_movR10 = X86_INSTR_MOV_R10_IMM64);   // mov r10, pMethodDesc
-    IN_WIN32(m_movEAX = X86_INSTR_MOV_EAX_IMM32);   // mov eax, pMethodDesc
+    IN_TARGET_64BIT(m_movR10 = X86_INSTR_MOV_R10_IMM64);   // mov r10, pMethodDesc
+    IN_TARGET_32BIT(m_movEAX = X86_INSTR_MOV_EAX_IMM32);   // mov eax, pMethodDesc
     m_pMethodDesc = (TADDR)pMD;
-    IN_WIN32(m_mov_rm_r = X86_INSTR_MOV_RM_R);      // mov reg,reg
+    IN_TARGET_32BIT(m_mov_rm_r = X86_INSTR_MOV_RM_R);      // mov reg,reg
     m_type = type;
     m_jmp = X86_INSTR_JMP_REL32;        // jmp rel32
 
@@ -6600,31 +6611,6 @@ void NDirectImportPrecode::Init(MethodDesc* pMD, LoaderAllocator *pLoaderAllocat
 }
 
 #endif // HAS_NDIRECT_IMPORT_PRECODE
-
-
-#ifdef HAS_REMOTING_PRECODE
-
-void RemotingPrecode::Init(MethodDesc* pMD, LoaderAllocator *pLoaderAllocator /* = NULL */)
-{
-    WRAPPER_NO_CONTRACT;
-
-    IN_WIN64(m_movR10 = X86_INSTR_MOV_R10_IMM64);   // mov r10, pMethodDesc
-    IN_WIN32(m_movEAX = X86_INSTR_MOV_EAX_IMM32);   // mov eax, pMethodDesc
-    m_pMethodDesc = (TADDR)pMD;
-    m_type = PRECODE_REMOTING;          // nop
-    m_call = X86_INSTR_CALL_REL32;
-    m_jmp = X86_INSTR_JMP_REL32;        // jmp rel32
-
-    if (pLoaderAllocator != NULL)
-    {
-        m_callRel32 = rel32UsingJumpStub(&m_callRel32,
-            GetEEFuncEntryPoint(PrecodeRemotingThunk), NULL /* pMD */, pLoaderAllocator);
-        m_rel32 = rel32UsingJumpStub(&m_rel32,
-            GetPreStubEntryPoint(), NULL /* pMD */, pLoaderAllocator);
-    }
-}
-
-#endif // HAS_REMOTING_PRECODE
 
 
 #ifdef HAS_FIXUP_PRECODE
@@ -6656,11 +6642,48 @@ void FixupPrecode::Init(MethodDesc* pMD, LoaderAllocator *pLoaderAllocator, int 
 
     _ASSERTE(GetMethodDesc() == (TADDR)pMD);
 
+    PCODE target = (PCODE)GetEEFuncEntryPoint(PrecodeFixupThunk);
+#ifdef FIXUP_PRECODE_PREALLOCATE_DYNAMIC_METHOD_JUMP_STUBS
+    if (pMD->IsLCGMethod())
+    {
+        m_rel32 = rel32UsingPreallocatedJumpStub(&m_rel32, target, GetDynamicMethodPrecodeFixupJumpStub(), false /* emitJump */);
+        return;
+    }
+#endif // FIXUP_PRECODE_PREALLOCATE_DYNAMIC_METHOD_JUMP_STUBS
     if (pLoaderAllocator != NULL)
     {
-        m_rel32 = rel32UsingJumpStub(&m_rel32,
-            GetEEFuncEntryPoint(PrecodeFixupThunk), NULL /* pMD */, pLoaderAllocator);
+        m_rel32 = rel32UsingJumpStub(&m_rel32, target, NULL /* pMD */, pLoaderAllocator);
     }
+}
+
+void FixupPrecode::ResetTargetInterlocked()
+{
+    CONTRACTL
+    {
+        THROWS;         // Creating a JumpStub could throw OutOfMemory
+        GC_NOTRIGGER;
+    }
+    CONTRACTL_END;
+
+    FixupPrecode newValue = *this;
+    newValue.m_op = X86_INSTR_CALL_REL32; // call PrecodeFixupThunk
+    newValue.m_type = FixupPrecode::TypePrestub;
+
+    PCODE target = (PCODE)GetEEFuncEntryPoint(PrecodeFixupThunk);
+    MethodDesc* pMD = (MethodDesc*)GetMethodDesc();
+#ifdef FIXUP_PRECODE_PREALLOCATE_DYNAMIC_METHOD_JUMP_STUBS
+    // The entry point of LCG methods cannot revert back to the original entry point, as their jump stubs would have to be
+    // reused, which is currently not supported. This method is intended for resetting the entry point while the method is
+    // callable, which implies that the entry point may later be changed again to something else. Currently, this is not done
+    // for LCG methods. See GetDynamicMethodPrecodeFixupJumpStub() for more.
+    _ASSERTE(!pMD->IsLCGMethod());
+#endif // FIXUP_PRECODE_PREALLOCATE_DYNAMIC_METHOD_JUMP_STUBS
+
+    newValue.m_rel32 = rel32UsingJumpStub(&m_rel32, target, pMD);
+
+    _ASSERTE(IS_ALIGNED(this, sizeof(INT64)));
+    EnsureWritableExecutablePages(this, sizeof(INT64));
+    FastInterlockExchangeLong((INT64*)this, *(INT64*)&newValue);
 }
 
 BOOL FixupPrecode::SetTargetInterlocked(TADDR target, TADDR expected)
@@ -6668,28 +6691,52 @@ BOOL FixupPrecode::SetTargetInterlocked(TADDR target, TADDR expected)
     CONTRACTL
     {
         THROWS;         // Creating a JumpStub could throw OutOfMemory
-        GC_TRIGGERS;
+        GC_NOTRIGGER;
     }
     CONTRACTL_END;
 
     INT64 oldValue = *(INT64*)this;
     BYTE* pOldValue = (BYTE*)&oldValue;
 
-    if (pOldValue[OFFSETOF_PRECODE_TYPE_CALL_OR_JMP] != FixupPrecode::TypePrestub)
-        return FALSE;
-
     MethodDesc * pMD = (MethodDesc*)GetMethodDesc();
     g_IBCLogger.LogMethodPrecodeWriteAccess(pMD);
     
+#ifdef FIXUP_PRECODE_PREALLOCATE_DYNAMIC_METHOD_JUMP_STUBS
+    // A different jump stub is used for this case, see Init(). This call is unexpected for resetting the entry point.
+    _ASSERTE(!pMD->IsLCGMethod() || target != (TADDR)GetEEFuncEntryPoint(PrecodeFixupThunk));
+#endif // FIXUP_PRECODE_PREALLOCATE_DYNAMIC_METHOD_JUMP_STUBS
+
     INT64 newValue = oldValue;
     BYTE* pNewValue = (BYTE*)&newValue;
 
-    pNewValue[OFFSETOF_PRECODE_TYPE_CALL_OR_JMP] = FixupPrecode::Type;
+    if (pOldValue[OFFSETOF_PRECODE_TYPE_CALL_OR_JMP] == FixupPrecode::TypePrestub)
+    {
+        pNewValue[OFFSETOF_PRECODE_TYPE_CALL_OR_JMP] = FixupPrecode::Type;
 
-    pOldValue[offsetof(FixupPrecode,m_op)] = X86_INSTR_CALL_REL32;
-    pNewValue[offsetof(FixupPrecode,m_op)] = X86_INSTR_JMP_REL32;
-
-    *(INT32*)(&pNewValue[offsetof(FixupPrecode,m_rel32)]) = rel32UsingJumpStub(&m_rel32, target, pMD);
+        pOldValue[offsetof(FixupPrecode, m_op)] = X86_INSTR_CALL_REL32;
+        pNewValue[offsetof(FixupPrecode, m_op)] = X86_INSTR_JMP_REL32;
+    }
+    else if (pOldValue[OFFSETOF_PRECODE_TYPE_CALL_OR_JMP] == FixupPrecode::Type)
+    {
+#ifdef FEATURE_CODE_VERSIONING
+        // No change needed, jmp is already in place
+#else
+        // Setting the target more than once is unexpected
+        return FALSE;
+#endif
+    }
+    else
+    {
+        // Pre-existing code doesn't conform to the expectations for a FixupPrecode
+        return FALSE;
+    }
+	
+    *(INT32*)(&pNewValue[offsetof(FixupPrecode, m_rel32)]) =
+#ifdef FIXUP_PRECODE_PREALLOCATE_DYNAMIC_METHOD_JUMP_STUBS
+        pMD->IsLCGMethod() ?
+            rel32UsingPreallocatedJumpStub(&m_rel32, target, GetDynamicMethodEntryJumpStub(), true /* emitJump */) :
+#endif // FIXUP_PRECODE_PREALLOCATE_DYNAMIC_METHOD_JUMP_STUBS
+            rel32UsingJumpStub(&m_rel32, target, pMD);
 
     _ASSERTE(IS_ALIGNED(this, sizeof(INT64)));
     EnsureWritableExecutablePages(this, sizeof(INT64));
@@ -6757,7 +6804,7 @@ void ThisPtrRetBufPrecode::Init(MethodDesc* pMD, LoaderAllocator *pLoaderAllocat
 {
     WRAPPER_NO_CONTRACT;
 
-    IN_WIN64(m_nop1 = X86_INSTR_NOP;)   // nop
+    IN_TARGET_64BIT(m_nop1 = X86_INSTR_NOP;)   // nop
 #ifdef UNIX_AMD64_ABI
     m_prefix1 = 0x48;
     m_movScratchArg0 = 0xC78B;          // mov rax,rdi
@@ -6766,11 +6813,11 @@ void ThisPtrRetBufPrecode::Init(MethodDesc* pMD, LoaderAllocator *pLoaderAllocat
     m_prefix3 = 0x48;
     m_movArg1Scratch = 0xF08B;          // mov rsi,rax
 #else
-    IN_WIN64(m_prefix1 = 0x48;)
+    IN_TARGET_64BIT(m_prefix1 = 0x48;)
     m_movScratchArg0 = 0xC889;          // mov r/eax,r/ecx
-    IN_WIN64(m_prefix2 = 0x48;)
+    IN_TARGET_64BIT(m_prefix2 = 0x48;)
     m_movArg0Arg1 = 0xD189;             // mov r/ecx,r/edx
-    IN_WIN64(m_prefix3 = 0x48;)
+    IN_TARGET_64BIT(m_prefix3 = 0x48;)
     m_movArg1Scratch = 0xC289;          // mov r/edx,r/eax
 #endif
     m_nop2 = X86_INSTR_NOP;             // nop
@@ -6794,8 +6841,10 @@ BOOL ThisPtrRetBufPrecode::SetTargetInterlocked(TADDR target, TADDR expected)
     _ASSERTE(m_rel32 == REL32_JMP_SELF);
 
     // Use pMD == NULL to allocate the jump stub in non-dynamic heap that has the same lifetime as the precode itself
-    m_rel32 = rel32UsingJumpStub(&m_rel32, target, NULL /* pMD */, ((MethodDesc *)GetMethodDesc())->GetLoaderAllocatorForCode());
+    INT32 newRel32 = rel32UsingJumpStub(&m_rel32, target, NULL /* pMD */, ((MethodDesc *)GetMethodDesc())->GetLoaderAllocator());
 
+    _ASSERTE(IS_ALIGNED(&m_rel32, sizeof(INT32)));
+    FastInterlockExchange((LONG *)&m_rel32, (LONG)newRel32);
     return TRUE;
 }
 #endif // !DACCESS_COMPILE

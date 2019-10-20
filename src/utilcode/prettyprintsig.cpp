@@ -167,7 +167,7 @@ LPCWSTR PrettyPrintSigWorker(
 
 //*****************************************************************************
 //*****************************************************************************
-// pretty prints 'type' to the buffer 'out' returns a poitner to the next type, 
+// pretty prints 'type' to the buffer 'out' returns a pointer to the next type, 
 // or 0 on a format failure 
 
 static PCCOR_SIGNATURE PrettyPrintType(
@@ -335,15 +335,9 @@ static PCCOR_SIGNATURE PrettyPrintType(
                 {       
                     if (sizes[i] != 0 && lowerBounds[i] != 0)   
                     {   
-                        if (lowerBounds[i] == 0)        
-                            appendStrNumW(out, sizes[i]);
-                        else    
-                        {       
-                            appendStrNumW(out, lowerBounds[i]);
-                            appendStrW(out, W("..."));
-                            if (sizes[i] != 0)  
-                                appendStrNumW(out, lowerBounds[i] + sizes[i] + 1);
-                        }       
+                        appendStrNumW(out, lowerBounds[i]);
+                        appendStrW(out, W("..."));
+                        appendStrNumW(out, lowerBounds[i] + sizes[i] + 1);
                     }   
                     if (i < rank-1) 
                         appendStrW(out, W(","));
@@ -556,13 +550,20 @@ HRESULT PrettyPrintSigWorkerInternal(
         CQuickBytes       * out,        // where to put the pretty printed string       
         IMDInternalImport * pIMDI);     // Import api to use.
 
+static HRESULT PrettyPrintClass(
+    PCCOR_SIGNATURE     &typePtr,   // type to convert
+    PCCOR_SIGNATURE     typeEnd,    // end of the signature.
+    CQuickBytes         *out,       // where to put the pretty printed string
+    IMDInternalImport   *pIMDI);    // ptr to IMDInternal class with ComSig
+
+
 #ifdef _PREFAST_
 #pragma warning(push)
 #pragma warning(disable:21000) // Suppress PREFast warning about overly large function
 #endif
 //*****************************************************************************
 //*****************************************************************************
-// pretty prints 'type' to the buffer 'out' returns a poitner to the next type, 
+// pretty prints 'type' to the buffer 'out' returns a pointer to the next type, 
 // or 0 on a format failure 
 
 __checkReturn 
@@ -581,8 +582,6 @@ static HRESULT PrettyPrintTypeA(
 
     mdToken     tk;                     // A type's token.
     const CHAR  *str;                   // Temporary string.
-    LPCUTF8     pNS;                    // A type's namespace.
-    LPCUTF8     pN;                     // A type's name.
     HRESULT     hr;                     // A result.
 
     PCCOR_SIGNATURE typeEnd = typePtr + typeLen;    // End of the signature.
@@ -685,55 +684,27 @@ static HRESULT PrettyPrintTypeA(
     case ELEMENT_TYPE_CLASS:
         str = "class "; 
         goto DO_CLASS;
+
+    DO_CLASS:
+        IfFailGo(appendStrA(out, str));
+        IfFailGo(PrettyPrintClass(typePtr, typeEnd, out, pIMDI));
+        break;
         
     case ELEMENT_TYPE_CMOD_REQD:
         str = "required_modifier ";
-        goto DO_CLASS;
+        goto CMOD;
         
     case ELEMENT_TYPE_CMOD_OPT:
         str = "optional_modifier ";
-        goto DO_CLASS;
+        goto CMOD;
         
-    DO_CLASS:
-        typePtr += CorSigUncompressToken(typePtr, &tk); 
+    CMOD:
         IfFailGo(appendStrA(out, str));
-        str = "<UNKNOWN>";
-        
-        if (TypeFromToken(tk) == mdtTypeSpec)
-        {
-            ULONG cSig;
-            PCCOR_SIGNATURE sig;
-            IfFailGo(pIMDI->GetSigFromToken(tk, &cSig, &sig));
-            IfFailGo(PrettyPrintTypeA(sig, cSig, out, pIMDI));
-        }
-        else
-        {
-            if (TypeFromToken(tk) == mdtTypeRef)
-            {
-                //<TODO>@consider: assembly name?</TODO>
-                if (FAILED(pIMDI->GetNameOfTypeRef(tk, &pNS, &pN)))
-                {
-                    pNS = pN = "Invalid TypeRef record";
-                }
-            }
-            else
-            {
-                _ASSERTE(TypeFromToken(tk) == mdtTypeDef);
-                if (FAILED(pIMDI->GetNameOfTypeDef(tk, &pN, &pNS)))
-                {
-                    pNS = pN = "Invalid TypeDef record";
-                }
-            }
-            
-            if (pNS && *pNS)
-            {
-                IfFailGo(appendStrA(out, pNS));
-                IfFailGo(appendStrA(out, NAMESPACE_SEPARATOR_STR));
-            }
-            IfFailGo(appendStrA(out, pN));
-        }
+        IfFailGo(PrettyPrintClass(typePtr, typeEnd, out, pIMDI));
+        IfFailGo(appendStrA(out, " "));
+        IfFailGo(PrettyPrintTypeA(typePtr, (typeEnd - typePtr), out, pIMDI));
         break;
-        
+
     case ELEMENT_TYPE_SZARRAY:
         IfFailGo(PrettyPrintTypeA(typePtr, (typeEnd - typePtr), out, pIMDI)); 
         IfFailGo(appendStrA(out, "[]"));
@@ -772,15 +743,9 @@ static HRESULT PrettyPrintTypeA(
                 {
                     if (sizes[i] != 0 && lowerBounds[i] != 0)
                     {
-                        if (lowerBounds[i] == 0)
-                            appendStrNumA(out, sizes[i]);
-                        else
-                         {
-                             appendStrNumA(out, lowerBounds[i]);
-                             IfFailGo(appendStrA(out, "..."));
-                             if (sizes[i] != 0)
-                                 appendStrNumA(out, lowerBounds[i] + sizes[i] + 1);
-                         }
+                         appendStrNumA(out, lowerBounds[i]);
+                         IfFailGo(appendStrA(out, "..."));
+                         appendStrNumA(out, lowerBounds[i] + sizes[i] + 1);
                     }
                     if (i < rank-1) 
                         IfFailGo(appendStrA(out, ","));
@@ -865,6 +830,68 @@ static HRESULT PrettyPrintTypeA(
 #ifdef _PREFAST_
 #pragma warning(pop)
 #endif
+
+// pretty prints the class 'type' to the buffer 'out'
+static HRESULT PrettyPrintClass(
+    PCCOR_SIGNATURE     &typePtr,   // type to convert
+    PCCOR_SIGNATURE     typeEnd,    // end of the signature.
+    CQuickBytes         *out,       // where to put the pretty printed string
+    IMDInternalImport   *pIMDI)     // ptr to IMDInternal class with ComSig
+{
+    CONTRACTL
+    {
+        NOTHROW;
+        INJECT_FAULT(return E_OUTOFMEMORY;);
+    }
+    CONTRACTL_END
+
+    mdToken     tk;
+    const CHAR  *str;   // type's token.
+    LPCUTF8     pNS;    // type's namespace.
+    LPCUTF8     pN;     // type's name.
+    HRESULT     hr;     // result
+
+    IfFailGo(CorSigUncompressToken_EndPtr(typePtr, typeEnd, &tk));
+    str = "<UNKNOWN>";
+
+    if (TypeFromToken(tk) == mdtTypeSpec)
+    {
+        ULONG cSig;
+        PCCOR_SIGNATURE sig;
+        IfFailGo(pIMDI->GetSigFromToken(tk, &cSig, &sig));
+        IfFailGo(PrettyPrintTypeA(sig, cSig, out, pIMDI));
+    }
+    else
+    {
+        if (TypeFromToken(tk) == mdtTypeRef)
+        {
+            //<TODO>@consider: assembly name?</TODO>
+            if (FAILED(pIMDI->GetNameOfTypeRef(tk, &pNS, &pN)))
+            {
+                pNS = pN = "Invalid TypeRef record";
+            }
+        }
+        else
+        {
+            _ASSERTE(TypeFromToken(tk) == mdtTypeDef);
+            if (FAILED(pIMDI->GetNameOfTypeDef(tk, &pN, &pNS)))
+            {
+                pNS = pN = "Invalid TypeDef record";
+            }
+        }
+
+        if (pNS && *pNS)
+        {
+            IfFailGo(appendStrA(out, pNS));
+            IfFailGo(appendStrA(out, NAMESPACE_SEPARATOR_STR));
+        }
+        IfFailGo(appendStrA(out, pN));
+    }
+    return S_OK;
+
+ErrExit:
+    return hr;
+} // static HRESULT PrettyPrintClass()
 
 //*****************************************************************************
 // Converts a com signature to a text signature.

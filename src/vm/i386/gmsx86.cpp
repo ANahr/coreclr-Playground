@@ -126,7 +126,7 @@ static bool shouldEnterCall(PTR_BYTE ip) {
 
     int pushes = 0;
 
-    // we should start unbalenced pops within 48 instrs. If not, it is not a special epilog function
+    // we should start unbalanced pops within 48 instrs. If not, it is not a special epilog function
     // the only reason we need as many instructions as we have below is because  coreclr
     // gets instrumented for profiling, code coverage, BBT etc, and we want these things to
     // just work.
@@ -134,6 +134,7 @@ static bool shouldEnterCall(PTR_BYTE ip) {
         switch(*ip) {
             case 0xF2:              // repne
             case 0xF3:              // repe
+            case 0x90:              // nop
                 ip++;
                 break;
 
@@ -368,7 +369,6 @@ void LazyMachState::unwindLazyState(LazyMachState* baseState,
     CONTRACTL {
         NOTHROW;
         GC_NOTRIGGER;
-        SO_TOLERANT;
         SUPPORTS_DAC;
     } CONTRACTL_END;
 
@@ -894,6 +894,8 @@ void LazyMachState::unwindLazyState(LazyMachState* baseState,
 
             case 0x01:                           // ADD mod/rm
             case 0x03:
+            case 0x11:                           // ADC mod/rm
+            case 0x13:
             case 0x29:                           // SUB mod/rm
             case 0x2B:
                 datasize = 0;
@@ -1280,7 +1282,6 @@ void LazyMachState::unwindLazyState(LazyMachState* baseState,
     CONTRACTL {
         NOTHROW;
         GC_NOTRIGGER;
-        SO_TOLERANT;
         SUPPORTS_DAC;
     } CONTRACTL_END;
 
@@ -1295,10 +1296,10 @@ void LazyMachState::unwindLazyState(LazyMachState* baseState,
     ctx.Esi = lazyState->_esi = baseState->_esi;
     ctx.Ebx = lazyState->_ebx = baseState->_ebx;
 
-    nonVolRegPtrs.Edi = &(lazyState->_edi);
-    nonVolRegPtrs.Esi = &(lazyState->_esi);
-    nonVolRegPtrs.Ebx = &(lazyState->_ebx);
-    nonVolRegPtrs.Ebp = &(lazyState->_ebp);
+    nonVolRegPtrs.Edi = &(baseState->_edi);
+    nonVolRegPtrs.Esi = &(baseState->_esi);
+    nonVolRegPtrs.Ebx = &(baseState->_ebx);
+    nonVolRegPtrs.Ebp = &(baseState->_ebp);
 
     PCODE pvControlPc;
 

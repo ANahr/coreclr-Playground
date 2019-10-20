@@ -107,7 +107,7 @@ struct EventStaticEntry
     ULONGLONG ObjectID;
     ULONGLONG TypeID;
     ULONG Flags;
-    wchar_t Name[0];
+    WCHAR Name[0];
 
     // Writes one EventStaticEntry to the buffer specified by ptr.  Since we don't actually know how large the event will be,
     // this write may fail if the remaining buffer is not large enough.  This function returns the number of bytes written
@@ -120,11 +120,11 @@ struct EventStaticEntry
         // sizeRemaining must be larger than the structure + 1 wchar for the struct and
         // null terminator of Name.  We will do a better bounds check when we know the
         // size of the field name.
-        if (sizeRemaining < sizeof(EventStaticEntry) + sizeof(wchar_t))
+        if (sizeRemaining < (int)(sizeof(EventStaticEntry) + sizeof(WCHAR)))
             return -1;
 
         // The location in the structure to write to.  We won't actually write here unless we have sufficient buffer.
-        wchar_t *name = (wchar_t *)(ptr + offsetof(EventStaticEntry, Name));
+        WCHAR *name = (WCHAR *)(ptr + offsetof(EventStaticEntry, Name));
         int len = 0;
         
         LPCUTF8 utf8Name = 0;
@@ -162,7 +162,7 @@ struct EventStaticEntry
         entry->TypeID = typeId;
         entry->Flags = flags;
 
-        return sizeof(EventStaticEntry) + len * sizeof(wchar_t);
+        return sizeof(EventStaticEntry) + len * sizeof(WCHAR);
     }
 };
 
@@ -254,6 +254,9 @@ class BulkTypeEventLogger
 {
 private:
 
+    // The maximum event size, and the size of the buffer that we allocate to hold the event contents.
+    static const size_t kSizeOfEventBuffer = 65536;
+
     // Estimate of how many bytes we can squeeze in the event data for the value struct
     // array.  (Intentionally overestimate the size of the non-array parts to keep it safe.)
     static const int kMaxBytesTypeValues = (cbMaxEtwEvent - 0x30);
@@ -294,9 +297,7 @@ private:
     // List of types we've batched.
     BulkTypeValue m_rgBulkTypeValues[kMaxCountTypeValues];
 
-#ifdef FEATURE_PAL
-    BYTE m_BulkTypeEventBuffer[65536];
-#endif
+    BYTE *m_pBulkTypeEventBuffer;
 
 #ifdef FEATURE_REDHAWK
     int LogSingleType(EEType * pEEType);
@@ -308,8 +309,31 @@ public:
     BulkTypeEventLogger() :
         m_nBulkTypeValueCount(0),
         m_nBulkTypeValueByteCount(0)
+        , m_pBulkTypeEventBuffer(NULL)
     {
-        LIMITED_METHOD_CONTRACT;
+        CONTRACTL
+        {
+            NOTHROW;
+            GC_NOTRIGGER;
+            MODE_ANY;
+        }
+        CONTRACTL_END;
+
+        m_pBulkTypeEventBuffer = new (nothrow) BYTE[kSizeOfEventBuffer];
+    }
+
+    ~BulkTypeEventLogger()
+    {
+        CONTRACTL
+        {
+            NOTHROW;
+            GC_NOTRIGGER;
+            MODE_ANY;
+        }
+        CONTRACTL_END;
+
+        delete[] m_pBulkTypeEventBuffer;
+        m_pBulkTypeEventBuffer = NULL;
     }
 
     void LogTypeAndParameters(ULONGLONG thAsAddr, ETW::TypeSystemLog::TypeLogBehavior typeLogBehavior);

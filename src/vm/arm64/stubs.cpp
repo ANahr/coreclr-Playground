@@ -10,10 +10,13 @@
 #include "common.h"
 #include "dllimportcallback.h"
 #include "comdelegate.h"
-#include "tls.h"
 #include "asmconstants.h"
 #include "virtualcallstub.h"
 #include "jitinterface.h"
+#include "ecall.h"
+
+EXTERN_C void JIT_UpdateWriteBarrierState(bool skipEphemeralCheck);
+
 
 #ifndef DACCESS_COMPILE
 //-----------------------------------------------------------------------
@@ -1067,34 +1070,43 @@ void emitCOMStubCall (ComCallMethodDesc *pCOMMethod, PCODE target)
 }
 #endif // FEATURE_COMINTEROP
 
-
-void JIT_ProfilerEnterLeaveTailcallStub(UINT_PTR ProfilerHandle)
-{
-    _ASSERTE(!"ARM64:NYI");
-}
-
 void JIT_TailCall() 
 {
     _ASSERTE(!"ARM64:NYI");
 }
 
+#if !defined(DACCESS_COMPILE) && !defined(CROSSGEN_COMPILE)
 void InitJITHelpers1()
 {
-    return;
+    STANDARD_VM_CONTRACT;
+
+    _ASSERTE(g_SystemInfo.dwNumberOfProcessors != 0);
+
+    // Allocation helpers, faster but non-logging
+    if (!((TrackAllocationsEnabled()) ||
+        (LoggingOn(LF_GCALLOC, LL_INFO10))
+#ifdef _DEBUG
+        || (g_pConfig->ShouldInjectFault(INJECTFAULT_GCHEAP) != 0)
+#endif // _DEBUG
+        ))
+    {
+        if (GCHeapUtilities::UseThreadAllocationContexts())
+        {
+            SetJitHelperFunction(CORINFO_HELP_NEWSFAST, JIT_NewS_MP_FastPortable);
+            SetJitHelperFunction(CORINFO_HELP_NEWSFAST_ALIGN8, JIT_NewS_MP_FastPortable);
+            SetJitHelperFunction(CORINFO_HELP_NEWARR_1_VC, JIT_NewArr1VC_MP_FastPortable);
+            SetJitHelperFunction(CORINFO_HELP_NEWARR_1_OBJ, JIT_NewArr1OBJ_MP_FastPortable);
+
+            ECall::DynamicallyAssignFCallImpl(GetEEFuncEntryPoint(AllocateString_MP_FastPortable), ECall::FastAllocateString);
+        }
+    }
+
+    JIT_UpdateWriteBarrierState(GCHeapUtilities::IsServerHeap());
 }
 
-EXTERN_C void __stdcall ProfileEnterNaked(UINT_PTR clientData)
-{
-    _ASSERTE(!"ARM64:NYI");
-}
-EXTERN_C void __stdcall ProfileLeaveNaked(UINT_PTR clientData)
-{
-    _ASSERTE(!"ARM64:NYI");
-}
-EXTERN_C void __stdcall ProfileTailcallNaked(UINT_PTR clientData)
-{
-    _ASSERTE(!"ARM64:NYI");
-}
+#else
+EXTERN_C void JIT_UpdateWriteBarrierState(bool) {}
+#endif // !defined(DACCESS_COMPILE) && !defined(CROSSGEN_COMPILE)
 
 PTR_CONTEXT GetCONTEXTFromRedirectedStubStackFrame(T_DISPATCHER_CONTEXT * pDispatcherContext)
 {
@@ -1183,14 +1195,6 @@ AdjustContextForVirtualStub(
 }
 #endif // !(DACCESS_COMPILE && CROSSGEN_COMPILE)
 
-#ifdef FEATURE_COMINTEROP
-extern "C" void GenericComPlusCallStub(void)
-{
-    // This is not required for coreclr scenarios
-    throw "GenericComPlusCallStub is not implemented yet.";    
-}
-#endif // FEATURE_COMINTEROP
-
 UMEntryThunk * UMEntryThunk::Decode(void *pCallback)
 {
     _ASSERTE(offsetof(UMEntryThunkCode, m_code) == 0);
@@ -1231,56 +1235,19 @@ void UMEntryThunkCode::Encode(BYTE* pTargetCode, void* pvSecretParam)
     FlushInstructionCache(GetCurrentProcess(),&m_code,sizeof(m_code));
 }
 
+#ifndef DACCESS_COMPILE
 
-#ifdef PROFILING_SUPPORTED
-#include "proftoeeinterfaceimpl.h"
-
-extern UINT_PTR ProfileGetIPFromPlatformSpecificHandle(void * handle)
+void UMEntryThunkCode::Poison()
 {
-    _ASSERTE(!"ARM64:NYI");
-    return NULL;
+    m_pTargetCode = (TADDR)UMEntryThunk::ReportViolation;
+
+    // ldp x16, x0, [x12]
+    m_code[1] = 0xa9400190;
+
+    ClrFlushInstructionCache(&m_code,sizeof(m_code));
 }
 
-extern void ProfileSetFunctionIDInPlatformSpecificHandle(void * pPlatformSpecificHandle, FunctionID functionID)
-{
-    _ASSERTE(!"ARM64:NYI");
-}
-
-ProfileArgIterator::ProfileArgIterator(MetaSig * pMetaSig, void* platformSpecificHandle)
-    : m_argIterator(pMetaSig)
-{
-    _ASSERTE(!"ARM64:NYI");
-}
-
-ProfileArgIterator::~ProfileArgIterator()
-{
-    _ASSERTE(!"ARM64:NYI");
-}
-
-LPVOID ProfileArgIterator::GetNextArgAddr()
-{
-    _ASSERTE(!"ARM64:NYI");
-    return NULL;
-}
-
-LPVOID ProfileArgIterator::GetHiddenArgValue(void)
-{
-    _ASSERTE(!"ARM64:NYI");
-    return NULL;
-}
-
-LPVOID ProfileArgIterator::GetThis(void)
-{
-    _ASSERTE(!"ARM64:NYI");
-    return NULL;
-}
-
-LPVOID ProfileArgIterator::GetReturnBufferAddr(void)
-{
-    _ASSERTE(!"ARM64:NYI");
-    return NULL;
-}
-#endif
+#endif // DACCESS_COMPILE
 
 #if !defined(DACCESS_COMPILE)
 VOID ResetCurrentContext()
@@ -1294,15 +1261,38 @@ LONG CLRNoCatchHandler(EXCEPTION_POINTERS* pExceptionInfo, PVOID pv)
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
-void StompWriteBarrierEphemeral(bool isRuntimeSuspended)
+void FlushWriteBarrierInstructionCache()
 {
-    return;
+    // this wouldn't be called in arm64, just to comply with gchelpers.h
 }
 
-void StompWriteBarrierResize(bool isRuntimeSuspended, bool bReqUpperBoundsCheck)
+#ifndef CROSSGEN_COMPILE
+int StompWriteBarrierEphemeral(bool isRuntimeSuspended)
 {
-    return;
+    JIT_UpdateWriteBarrierState(GCHeapUtilities::IsServerHeap());
+    return SWB_PASS;
 }
+
+int StompWriteBarrierResize(bool isRuntimeSuspended, bool bReqUpperBoundsCheck)
+{
+    JIT_UpdateWriteBarrierState(GCHeapUtilities::IsServerHeap());
+    return SWB_PASS;
+}
+
+#ifdef FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
+int SwitchToWriteWatchBarrier(bool isRuntimeSuspended)
+{
+    JIT_UpdateWriteBarrierState(GCHeapUtilities::IsServerHeap());
+    return SWB_PASS;
+}
+
+int SwitchToNonWriteWatchBarrier(bool isRuntimeSuspended)
+{
+    JIT_UpdateWriteBarrierState(GCHeapUtilities::IsServerHeap());
+    return SWB_PASS;
+}
+#endif // FEATURE_USE_SOFTWARE_WRITE_WATCH_FOR_GC_HEAP
+#endif // CROSSGEN_COMPILE
 
 #ifdef DACCESS_COMPILE
 BOOL GetAnyThunkTarget (T_CONTEXT *pctx, TADDR *pTarget, TADDR *pTargetMethodDesc)
@@ -1702,9 +1692,9 @@ void StubLinkerCPU::Init()
 VOID StubLinkerCPU::EmitShuffleThunk(ShuffleEntry *pShuffleEntryArray)
 {
     // On entry x0 holds the delegate instance. Look up the real target address stored in the MethodPtrAux
-    // field and save it in x9. Tailcall to the target method after re-arranging the arguments
-    // ldr x9, [x0, #offsetof(DelegateObject, _methodPtrAux)]
-    EmitLoadStoreRegImm(eLOAD, IntReg(9), IntReg(0), DelegateObject::GetOffsetOfMethodPtrAux());
+    // field and save it in x16(ip). Tailcall to the target method after re-arranging the arguments
+    // ldr x16, [x0, #offsetof(DelegateObject, _methodPtrAux)]
+    EmitLoadStoreRegImm(eLOAD, IntReg(16), IntReg(0), DelegateObject::GetOffsetOfMethodPtrAux());
     //add x11, x0, DelegateObject::GetOffsetOfMethodPtrAux() - load the indirection cell into x11 used by ResolveWorkerAsmStub
     EmitAddImm(IntReg(11), IntReg(0), DelegateObject::GetOffsetOfMethodPtrAux());
 
@@ -1732,14 +1722,14 @@ VOID StubLinkerCPU::EmitShuffleThunk(ShuffleEntry *pShuffleEntryArray)
             // dest must be on the stack
             _ASSERTE(!(pEntry->dstofs & ShuffleEntry::REGMASK));
 
-            EmitLoadStoreRegImm(eLOAD, IntReg(8), RegSp, pEntry->srcofs * sizeof(void*));
-            EmitLoadStoreRegImm(eSTORE, IntReg(8), RegSp, pEntry->dstofs * sizeof(void*));
+            EmitLoadStoreRegImm(eLOAD, IntReg(9), RegSp, pEntry->srcofs * sizeof(void*));
+            EmitLoadStoreRegImm(eSTORE, IntReg(9), RegSp, pEntry->dstofs * sizeof(void*));
         }
     }
 
     // Tailcall to target
-    // br x9
-    EmitJumpRegister(IntReg(9));
+    // br x16
+    EmitJumpRegister(IntReg(16));
 }
 
 void StubLinkerCPU::EmitCallLabel(CodeLabel *target, BOOL fTailCall, BOOL fIndirect)
@@ -1768,33 +1758,6 @@ void StubLinkerCPU::EmitCallManagedMethod(MethodDesc *pMD, BOOL fTailCall)
 }
 
 #ifndef CROSSGEN_COMPILE
-
-EXTERN_C UINT32 _tls_index;
-void StubLinkerCPU::EmitGetThreadInlined(IntReg Xt)
-{
-#if defined(FEATURE_IMPLICIT_TLS) && !defined(FEATURE_PAL)
-    // Trashes x8.
-    IntReg X8 = IntReg(8);
-    _ASSERTE(Xt != X8);
-    
-    // Load the _tls_index
-    EmitLabelRef(NewExternalCodeLabel((LPVOID)&_tls_index), reinterpret_cast<LoadFromLabelInstructionFormat&>(gLoadFromLabelIF), X8);
-    
-    // Load Teb->ThreadLocalStoragePointer into x8
-    EmitLoadStoreRegImm(eLOAD, Xt, IntReg(18), offsetof(_TEB, ThreadLocalStoragePointer));
-
-    // index it with _tls_index, i.e Teb->ThreadLocalStoragePointer[_tls_index]. 
-    // This will give us the TLS section for the module on this thread's context
-    EmitLoadRegReg(Xt, Xt, X8, eLSL);
-
-    // read the Thread* from TLS section
-    EmitAddImm(Xt, Xt, OFFSETOF__TLS__tls_CurrentThread);
-    EmitLoadStoreRegImm(eLOAD, Xt, Xt, 0);
-#else
-    _ASSERTE(!"NYI:StubLinkerCPU::EmitGetThreadInlined");
-#endif
-
-}
 
 void StubLinkerCPU::EmitUnboxMethodStub(MethodDesc *pMD)
 {
@@ -1992,7 +1955,7 @@ PCODE DynamicHelpers::CreateReturnConst(LoaderAllocator * pAllocator, TADDR arg)
 
     BEGIN_DYNAMIC_HELPER_EMIT(16);
  
-    // ldr x0, <lable>
+    // ldr x0, <label>
     *(DWORD*)p = 0x58000040;
     p += 4;
     
